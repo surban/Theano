@@ -2260,6 +2260,40 @@ class T_Scan(unittest.TestCase):
         assert numpy.allclose(vnh0, tnh0, atol = 1e-6)
         assert numpy.allclose(vnW , tnW , atol = 1e-6)
 
+    def test_pushout_all(self):
+        W1 = tensor.matrix('W1')
+        W2 = tensor.matrix('W2')
+        h0 = tensor.vector('h0')
+
+        def lambda_fn(h, W1, W2):
+            return tensor.dot(h, W1 + W2)
+
+        o, _ = theano.scan(lambda_fn,
+                           non_sequences =[h0,W1,W2],
+                           n_steps = 5)
+
+        f = theano.function([h0,W1,W2], o, mode= mode_with_opt)
+
+        scan_nodes = [x for x in f.maker.env.toposort()
+                     if isinstance(x.op,
+                                   theano.scan_module.scan_op.Scan)]
+        assert len(scan_nodes) == 0
+
+        seed = utt.fetch_seed()
+        rng  = numpy.random.RandomState(seed)
+        floatX = theano.config.floatX
+        v_h = numpy.array(rng.uniform(size=(2,)), dtype= floatX)
+        v_W1 = numpy.array(rng.uniform(size=(2,2)), dtype=floatX)
+        v_W2 = numpy.array(rng.uniform(size=(2,2)), dtype = floatX)
+
+        v_out = numpy.dot(v_h, v_W1+ v_W2)
+        sol = numpy.zeros((5,2))
+        # This line is here to make sol have the same shape as the output of
+        # theano. Note that what we ask theano to do is to repeat the 2
+        # elements vector v_out 5 times
+        sol[:,:] = v_out
+        assert numpy.allclose(sol, f(v_h, v_W1, v_W2))
+
 
     def test_pushout(self):
         W1 = tensor.matrix('W1')
@@ -2526,18 +2560,21 @@ class T_Scan(unittest.TestCase):
                     theano.dot(x_tm1, W),
                     y_tm1 + theano.dot(x_tm1, W_out)]
 
-        outputs, updates = theano.scan( f_rnn_cmpl
+        rval, updates = theano.scan( f_rnn_cmpl
                                        , [ u1
                                           , u2]
-                                       , [ dict(store_steps = 3)
-                                          , dict(initial = x0, return_steps = 2)
-                                          , dict(initial=y0, taps=[-1,-3],
-                                                 return_steps = 4)]
+                                       , [ None
+                                          , dict(initial = x0)
+                                          , dict(initial=y0, taps=[-1,-3])]
                                        , W_in1
                                        , n_steps           = None
                                        , truncate_gradient = -1
                                        , go_backwards      = False)
 
+        outputs = []
+        outputs += [rval[0][-3:]]
+        outputs += [rval[1][-2:]]
+        outputs += [rval[2][-4:]]
         f4     = theano.function([u1,u2,x0,y0,W_in1], outputs
                                  , updates = updates
                                  , allow_input_downcast = True
@@ -2562,6 +2599,31 @@ class T_Scan(unittest.TestCase):
         assert numpy.allclose(theano_x , v_x[-2:])
         assert numpy.allclose(theano_y , v_y[-4:])
 
+    def test_opt_order(self):
+        """  Verify that scan optimizations are applied before blas
+           optimizations.
+           This is needed as otherwise, the dot won't become a dot22
+           so it will be slower and won't get transferred to the gpu.
+        """
+        x = theano.tensor.matrix('x')
+        A = theano.tensor.matrix('A')
+
+        z, updates = theano.scan(
+            theano.dot,
+            sequences=[],
+            non_sequences=[x, A],
+            n_steps=2)
+        f = theano.function([x, A], z)
+        topo = f.maker.env.toposort()
+        if theano.config.mode != "FAST_COMPILE":
+            assert any([isinstance(node.op, tensor.blas.Dot22)
+                        for node in topo])
+
+        vx = numpy.array([[1., 1.], [2., 2.]], dtype=theano.config.floatX)
+        vA = numpy.array([[1., 1.], [1., 0.]], dtype=theano.config.floatX)
+        vR = numpy.array([[[2, 1], [4, 2]], [[2, 1], [4, 2]]],
+                         dtype=theano.config.floatX)
+        assert numpy.allclose(f(vx, vA), vR)
 
 
 def test_speed():
