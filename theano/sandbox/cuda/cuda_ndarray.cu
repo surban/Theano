@@ -1023,8 +1023,8 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
     }
 
     //broadcast to the same number of dimensions.
-    int other_dims[self->nd];
-    int other_strides[self->nd];
+    int * other_dims = (int *)malloc(sizeof(int) * self->nd);
+    int * other_strides = (int *)malloc(sizeof(int) *self->nd);
     int added_dims = self->nd - other->nd;
     // Add the added broadcasted dimensions
     for (int i = 0; i< added_dims; ++i)
@@ -1050,6 +1050,8 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 PyExc_ValueError,
                 "CudaNdarray_inplace_elemwise need same dimensions (or broadcastable dimension)");
             Py_XDECREF(new_other);
+			free(other_dims);
+			free(other_strides);
             return -1;
         }
         // if we're broadcasting other, then make sure it has stride 0
@@ -1069,9 +1071,13 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 " un-initialized array when the new value have more than"
                 " 0 or 1 broadcastable dimensions");
             Py_XDECREF(new_other);
+			free(other_dims);
+			free(other_strides);
             return 0;
         }
         Py_XDECREF(new_other);
+		free(other_dims);
+		free(other_strides);
         return 0;
     }
 
@@ -1103,6 +1109,8 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
+					free(other_dims);
+					free(other_strides);
                     return -1;
                 }
             }
@@ -1136,6 +1144,8 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
+					free(other_dims);
+					free(other_strides);
                     return -1;
                 }
             }
@@ -1174,6 +1184,8 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
+					free(other_dims);
+					free(other_strides);
                     return -1;
                 }
             }
@@ -1215,6 +1227,8 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
+					free(other_dims);
+					free(other_strides);
                     return -1;
                 }
             }
@@ -1260,6 +1274,8 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k4",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
+					free(other_dims);
+					free(other_strides);
                     return -1;
                 }
             }
@@ -1306,6 +1322,8 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                             "k4",
                             cudaGetErrorString(err));
                         Py_XDECREF(new_other);
+						free(other_dims);
+						free(other_strides);
                         return -1;
                     }
                 }
@@ -1318,12 +1336,16 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 "inplace_elemwise w nd=%i\n",
                 self->nd);
             Py_XDECREF(new_other);
+			free(other_dims);
+			free(other_strides);
             return -1;
         }
     }
     if (verbose)
         fprintf(stderr, "INPLACE ADD/DIV end\n");
     Py_XDECREF(new_other);
+	free(other_dims);
+	free(other_strides);
     return 0;
 }
 
@@ -2808,13 +2830,14 @@ int CudaNdarray_CopyFromCudaNdarray(CudaNdarray * self,
     {
         new_other = (CudaNdarray *) CudaNdarray_View(other);
         int added_dims = self->nd - other->nd;
-        int pattern[self->nd];
+        int * pattern = (int *)malloc(sizeof(int) * self->nd);
         for(int i = 0; i < added_dims; i++)
             pattern[i] = -1;
         for(int i = 0; i < other->nd; i++)
             pattern[i + added_dims] = i;
         CudaNdarray_dimshuffle(new_other, self->nd, pattern);
         other = new_other;
+		free(pattern);
     }
     assert(self->nd == other->nd);
     //standard elemwise dim checks (also compute total size)
