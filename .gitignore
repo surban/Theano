@@ -14,6 +14,7 @@
 *.snm
 *.toc
 *.vrb
+*.suo
 .noseids
 Theano.egg-info
 \#*\#
@@ -33,4 +34,4 @@ theano/generated_version.py
 theano/generated_version.py.out
 distribute-*.egg
 distribute-*.tar.gz
-Theano.suo
+
