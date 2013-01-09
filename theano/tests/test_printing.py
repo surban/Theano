@@ -47,6 +47,34 @@ def test_pydotprint_cond_highlight():
             ' is no IfElse node in the graph\n')
 
 
+def test_pydotprint_long_name():
+    """This is a REALLY PARTIAL TEST.
+
+    It prints a graph where there are variable and apply nodes whose long
+    names are different, but not the shortened names.
+    We should not merge those nodes in the dot graph.
+
+    """
+
+    # Skip test if pydot is not available.
+    if not theano.printing.pydot_imported:
+        raise SkipTest('pydot not available')
+
+    x = tensor.dvector()
+    mode = theano.compile.mode.get_default_mode().excluding("fusion")
+    f = theano.function([x], [x * 2, x + x], mode=mode)
+    f([1, 2, 3, 4])
+
+    s = StringIO.StringIO()
+    new_handler = logging.StreamHandler(s)
+    new_handler.setLevel(logging.DEBUG)
+    orig_handler = theano.logging_default_handler
+
+    theano.printing.pydotprint(f, max_label_size=5,
+                               print_output_file=False,
+                               assert_nb_all_strings=6)
+
+
 def test_pydotprint_profile():
     """Just check that pydotprint does not crash with ProfileMode."""
 
@@ -117,8 +145,8 @@ def test_debugprint():
 """
 
     if s != reference:
-        print '--'+s+'--'
-        print '--'+reference+'--'
+        print '--' + s + '--'
+        print '--' + reference + '--'
 
     assert s == reference
 
@@ -137,11 +165,10 @@ def test_debugprint():
 """
 
     if s != reference:
-        print '--'+s+'--'
-        print '--'+reference+'--'
+        print '--' + s + '--'
+        print '--' + reference + '--'
 
     assert s == reference
-
 
     # test ids=CHAR, stop_on_name=True
     s = StringIO.StringIO()
@@ -156,11 +183,10 @@ def test_debugprint():
 """
 
     if s != reference:
-        print '--'+s+'--'
-        print '--'+reference+'--'
+        print '--' + s + '--'
+        print '--' + reference + '--'
 
     assert s == reference
-
 
     # test ids=
     s = StringIO.StringIO()
@@ -176,7 +202,7 @@ def test_debugprint():
    |E 
 """
     if s != reference:
-        print '--'+s+'--'
-        print '--'+reference+'--'
+        print '--' + s + '--'
+        print '--' + reference + '--'
 
     assert s == reference

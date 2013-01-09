@@ -91,7 +91,7 @@ verify_grad.E_grad = T.verify_grad.E_grad
 
 class TestOptimizationMixin(object):
     def assertFunctionContains(self, f, op, min=1, max=sys.maxint):
-        toposort = f.maker.env.toposort()
+        toposort = f.maker.fgraph.toposort()
         matches = [node for node in toposort if node.op == op]
         assert (min <= len(matches) <= max), (toposort, matches,
                                               str(op), len(matches), min, max)
@@ -106,7 +106,7 @@ class TestOptimizationMixin(object):
         return self.assertFunctionContains(f, op, min=N, max=N)
 
     def assertFunctionContainsClass(self, f, op, min=1, max=sys.maxint):
-        toposort = f.maker.env.toposort()
+        toposort = f.maker.fgraph.toposort()
         matches = [node for node in toposort if isinstance(node.op, op)]
         assert (min <= len(matches) <= max), (toposort, matches,
                                               str(op), len(matches), min, max)
@@ -166,19 +166,27 @@ class T_OpContractMixin(object):
 class InferShapeTester(unittest.TestCase):
     def setUp(self):
         seed_rng()
+        # Take into account any mode that may be defined in a child class
+        mode = getattr(self, 'mode', theano.compile.get_default_mode())
         # This mode seems to be the minimal one including the shape_i
         # optimizations, if we don't want to enumerate them explicitly.
-        self.mode = theano.compile.get_default_mode().including("canonicalize")
+        self.mode = mode.including("canonicalize")
 
-    def _compile_and_check(self, inputs, outputs, numeric_inputs, cls):
-        outputs_function = theano.function(inputs, outputs, mode=self.mode)
+    def _compile_and_check(self, inputs, outputs, numeric_inputs, cls,
+                           excluding=None):
+        """This tests the infer_shape method only"""
+        mode = self.mode
+        if excluding:
+            mode = mode.excluding(*excluding)
+
+        outputs_function = theano.function(inputs, outputs, mode=mode)
         shapes_function = theano.function(inputs, [o.shape for o in outputs],
-                mode=self.mode)
+                                          mode=mode)
         #theano.printing.debugprint(shapes_function)
         # Check that the Op is removed from the compiled function.
-        topo_shape = shapes_function.maker.env.toposort()
+        topo_shape = shapes_function.maker.fgraph.toposort()
         assert not any(isinstance(t.op, cls) for t in topo_shape)
-        topo_out = outputs_function.maker.env.toposort()
+        topo_out = outputs_function.maker.fgraph.toposort()
         assert any(isinstance(t.op, cls) for t in topo_out)
         # Check that the shape produced agrees with the actual shape.
         numeric_outputs = outputs_function(*numeric_inputs)

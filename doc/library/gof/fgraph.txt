@@ -1,0 +1,38 @@
+
+.. _libdoc_gof_fgraph:
+
+================================================
+:mod:`fgraph` -- Graph Container [doc TODO]
+================================================
+
+.. module:: fgraph
+   :platform: Unix, Windows
+   :synopsis: Theano Internals
+.. moduleauthor:: LISA
+
+
+Guide
+=====
+
+FunctionGraph
+-------------
+
+.. _libdoc_gof_fgraphfeature:
+
+FunctionGraph Features
+----------------------
+
+.. _libdoc_gof_fgraphfeaturelist:
+
+FunctionGraph Feature List
+^^^^^^^^^^^^^^^^^^^^^^^^^^
+* ReplaceValidate
+* DestroyHandler
+
+Reference
+=========
+
+.. class:: FunctionGraph
+
+    ***TODO***
+

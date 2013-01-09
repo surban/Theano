@@ -17,6 +17,7 @@ import os
 import sys
 import time
 from optparse import OptionParser
+import subprocess
 
 import numpy
 import theano
@@ -53,7 +54,12 @@ def execute(execute=True, verbose=True, M=2000, N=2000, K=2000,
         print 'Numpy dot module:', numpy.dot.__module__
         print 'Numpy location:', numpy.__file__
         print 'Numpy version:', numpy.__version__
-        print
+        if (theano.config.device.startswith("gpu") or
+            theano.config.init_gpu_device.startswith("gpu")):
+            print 'nvcc version:'
+            subprocess.call((theano.sandbox.cuda.nvcc_compiler.nvcc_path,
+                             "--version"))
+            print
 
     a = theano.shared(numpy.ones((M, N), dtype=theano.config.floatX,
                                  order=order))
@@ -61,12 +67,11 @@ def execute(execute=True, verbose=True, M=2000, N=2000, K=2000,
                                  order=order))
     c = theano.shared(numpy.ones((M, K), dtype=theano.config.floatX,
                                  order=order))
-    f = theano.function([], updates={c: 0.4 * c + .8 * T.dot(a, b)},
+    f = theano.function([], updates=[(c, 0.4 * c + .8 * T.dot(a, b))],
                         mode=theano.compile.ProfileMode())
 
-
     if any([x.op.__class__.__name__ == 'Gemm' for x in
-            f.maker.env.toposort()]):
+            f.maker.fgraph.toposort()]):
         c_impl = f.profile.apply_cimpl.values()
         assert len(c_impl) == 1
         if c_impl[0]:
@@ -74,19 +79,24 @@ def execute(execute=True, verbose=True, M=2000, N=2000, K=2000,
         else:
             impl = 'CPU (without direct Theano binding to blas but with numpy/scipy binding to blas)'
     elif any([x.op.__class__.__name__ == 'GpuGemm' for x in
-              f.maker.env.toposort()]):
+              f.maker.fgraph.toposort()]):
         impl = 'GPU'
     else:
         impl = 'ERROR, unable to tell if Theano used the cpu or the gpu:\n'
-        impl += str(f.maker.env.toposort())
+        impl += str(f.maker.fgraph.toposort())
 
     t0 = 0
     t1 = -1
 
     if execute:
+        sync = (hasattr(theano, "sandbox") and
+                hasattr(theano.sandbox, "cuda") and
+                theano.sandbox.cuda.cuda_available)
         t0 = time.time()
         for i in range(iters):
             f()
+        if sync:
+            theano.sandbox.cuda.synchronize()
         t1 = time.time()
     return t1 - t0, impl
 
@@ -183,19 +193,39 @@ if __name__ == "__main__":
         goto2 1.13/8                                                      1.94s
         goto2 1.13/16                                                     3.16s
 
-        Test time in float32 with cuda 3.0.14
+        Test time in float32
         (cuda version 3.2RC and up have a faster gemm on the Fermi/GTX[45]??)
 
         gpu/cuda version
-        GTX580/3.2        0.20s
-        GTX480/3.2        0.24s
+        M2050(Amazon)/5.0 0.25s
+
+        GTX680/4.2        0.154s
+        GTX580/4.2        0.164s
+        GTX480/4.2        0.192s
+        GTX470/4.2        0.238s
+        C2075/4.2         0.25s
+        GTX285/4.2        0.452s #cuda 3.0 seam faster? driver version?
+        GT520/4.2         2.68s
+        GTX560/4.2        0.30s
+
+        GTX460/4.0        0.45s
+
+        GTX580/3.2        0.203s
+        GTX680/3.2        0.218s
+        GTX480/3.2        0.237s
+        GTX470/3.2        0.297s
+        GTX285/3.2        0.452s #cuda 3.0 seam faster? driver version?
+
         GTX480/3.0        0.27s
+        M2070/4.1         0.27s
         GTX470/3.2        0.29s
         M2070/3.2         0.32s
         GTX470/3.0        0.34s
         GTX285/3.0        0.40s
         C1060/3.2         0.46s
         GTX550Ti/4.0      0.57s
+        520/3.2           3.06s
+        520M/3.2          3.19s with bumblebee on Ubuntu 12.04
         GT220/3.2RC       3.80s
         GT210/4.0         6.35s
         8500GT/3.0       10.68s

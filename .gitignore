@@ -34,4 +34,4 @@ theano/generated_version.py
 theano/generated_version.py.out
 distribute-*.egg
 distribute-*.tar.gz
-
+*.DS_Store

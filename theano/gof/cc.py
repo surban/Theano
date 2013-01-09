@@ -11,6 +11,9 @@ import sys
 from itertools import izip
 
 
+import numpy
+
+
 if sys.version_info[:2] >= (2, 5):
     import hashlib
 
@@ -390,27 +393,29 @@ def struct_variable_codeblocks(variable, policies, id, symbol_table, sub):
 class CLinker(link.Linker):
     """WRITEME
 
-    Creates C code for an env, compiles it and returns callables
+    Creates C code for an fgraph, compiles it and returns callables
     through make_thunk and make_function that make use of the compiled
     code.
 
-    no_recycling can contain a list of Variables that belong to the env.
+    no_recycling can contain a list of Variables that belong to the fgraph.
     If a Variable is in no_recycling, CLinker will clear the output storage
     associated to it during the computation (to avoid reusing it).
     """
 
-    def __init__(self):
-        self.env = None
+    def __init__(self, schedule=None):
+        self.fgraph = None
+        if schedule:
+            self.schedule = schedule
 
-    def accept(self, env, no_recycling=None):
+    def accept(self, fgraph, no_recycling=None):
         """WRITEME"""
         if no_recycling is None:
             no_recycling =  []
-        if self.env is not None and self.env is not env:
-            return type(self)().accept(env, no_recycling)
+        if self.fgraph is not None and self.fgraph is not fgraph:
+            return type(self)().accept(fgraph, no_recycling)
             #raise Exception("Cannot accept from a Linker that is already"
-            #                " tied to another Env.")
-        self.env = env
+            #                " tied to another FunctionGraph.")
+        self.fgraph = fgraph
         self.fetch_variables()
         self.no_recycling = no_recycling
         return self
@@ -420,24 +425,24 @@ class CLinker(link.Linker):
         Fills the inputs, outputs, variables, orphans,
         temps and node_order fields.
         """
-        env = self.env
-        self.inputs = env.inputs
-        self.outputs = env.outputs
-        # list(env.variables)
+        fgraph = self.fgraph
+        self.inputs = fgraph.inputs
+        self.outputs = fgraph.outputs
+        # list(fgraph.variables)
         self.variables = graph.variables(self.inputs, self.outputs)
         # The orphans field is listified to ensure a consistent order.
-        #list(env.orphans.difference(self.outputs))
+        #list(fgraph.orphans.difference(self.outputs))
         self.orphans = list(r for r in self.variables
-                            if isinstance(r, graph.Value) and
+                            if isinstance(r, graph.Constant) and
                             r not in self.inputs)
         self.temps = list(set(self.variables).difference(
                 self.inputs).difference(self.outputs).difference(self.orphans))
         self.consts = []
-        self.node_order = env.toposort()
+        self.node_order = self.schedule(fgraph)
 
     def code_gen(self):
         """WRITEME
-        Generates code for a struct that does the computation of the env and
+        Generates code for a struct that does the computation of the fgraph and
         stores it in the struct_code field of the instance.
 
         If reuse_storage is True, outputs and temporaries will be stored in
@@ -494,8 +499,8 @@ class CLinker(link.Linker):
                 policy = [[get_nothing, get_nothing, get_nothing],
                           [get_c_declare, get_c_extract, get_c_cleanup]]
             elif variable in self.orphans:
-                if not isinstance(variable, graph.Value):
-                    raise TypeError("All orphans to CLinker must be Value"
+                if not isinstance(variable, graph.Constant):
+                    raise TypeError("All orphans to CLinker must be Constant"
                                     " instances.", variable)
                 if isinstance(variable, graph.Constant):
                     try:
@@ -716,9 +721,11 @@ class CLinker(link.Linker):
                 pass
 
         c_compiler = self.c_compiler()
-        ret += c_compiler.compile_args()
 
         ret = list(set(ret))  # to remove duplicate
+        # The args set by the compiler include the user flags. We do not want
+        # to reorder them
+        ret += c_compiler.compile_args()
         for x in [y.type for y in self.variables] + [
             y.op for y in self.node_order]:
             try:
@@ -819,7 +826,7 @@ class CLinker(link.Linker):
     def __compile__(self, input_storage=None,
                     output_storage=None, keep_lock=False):
         """WRITEME
-        Compiles this linker's env.
+        Compiles this linker's fgraph.
 
         @type input_storage: list or None
         @param input_storage: list of lists of length 1. In order to use
@@ -849,9 +856,9 @@ class CLinker(link.Linker):
                                     keep_lock=keep_lock)
         return (thunk,
                 [link.Container(input, storage) for input, storage in
-                 izip(self.env.inputs, input_storage)],
+                 izip(self.fgraph.inputs, input_storage)],
                 [link.Container(output, storage, True) for output, storage in
-                 izip(self.env.outputs, output_storage)],
+                 izip(self.fgraph.outputs, output_storage)],
                 error_storage)
 
     def get_init_tasks(self):
@@ -879,7 +886,7 @@ class CLinker(link.Linker):
     def make_thunk(self, input_storage=None, output_storage=None,
                    keep_lock=False):
         """WRITEME
-        Compiles this linker's env and returns a function to perform the
+        Compiles this linker's fgraph and returns a function to perform the
         computations, as well as lists of storage cells for both the
         inputs and outputs.
 
@@ -918,7 +925,7 @@ class CLinker(link.Linker):
         The signature has the following form:
         {{{
             'CLinker.cmodule_key', compilation args, libraries,
-            header_dirs, config md5,
+            header_dirs, numpy ABI version, config md5,
             (op0, input_signature0, output_signature0),
             (op1, input_signature1, output_signature1),
             ...
@@ -931,9 +938,9 @@ class CLinker(link.Linker):
         passed to the compiler, the libraries to link against, an md5 hash
         of theano.config (for all config options where "in_c_key" is True).
         It is followed by elements for every node in the
-        topological ordering of `self.env`.
+        topological ordering of `self.fgraph`.
 
-        If the Op of any Apply in the Env does not have
+        If the Op of any Apply in the FunctionGraph does not have
         c_code_cache_ok()==True, then this function raises a KeyError
         exception.
 
@@ -982,15 +989,15 @@ class CLinker(link.Linker):
         no_recycling set. Older versions of compiled modules only have the
         no_recycle list.
         """
-        return self.cmodule_key_(self.env, self.no_recycling,
+        return self.cmodule_key_(self.fgraph, self.no_recycling,
                           compile_args=self.compile_args(),
                           libraries=self.libraries(),
                           header_dirs=self.header_dirs(),
+                          c_compiler=self.c_compiler(),
                           )
 
-    @staticmethod
-    def cmodule_key_(env, no_recycling, compile_args=None, libraries=None,
-                     header_dirs=None, insert_config_md5=True):
+    def cmodule_key_(self, fgraph, no_recycling, compile_args=None, libraries=None,
+                     header_dirs=None, insert_config_md5=True, c_compiler=None):
         """
         Do the actual computation of cmodule_key in a static method
         to allow it to be reused in scalar.Composite.__eq__
@@ -1001,12 +1008,12 @@ class CLinker(link.Linker):
             libraries = []
         if header_dirs is None:
             header_dirs = []
-        order = list(env.toposort())
+        order = self.schedule(fgraph)
         #set of variables that have been computed by nodes we have
         # seen 'so far' in the loop below
-        env_computed_set = set()
-        env_inputs_dict = dict((i, (-1, pos)) for pos, i in
-                               enumerate(env.inputs))
+        fgraph_computed_set = set()
+        fgraph_inputs_dict = dict((i, (-1, pos)) for pos, i in
+                               enumerate(fgraph.inputs))
         constant_ids = dict()
         op_pos = {}  # Apply -> topological position
 
@@ -1032,6 +1039,13 @@ class CLinker(link.Linker):
             args = tuple(args)
             sig.append(args)
 
+        #We must always add the numpy ABI version here as
+        # DynamicModule always add the include <numpy/arrayobject.h>
+        sig.append('NPY_ABI_VERSION=0x%X' %
+                   numpy.core.multiarray._get_ndarray_c_version())
+        if c_compiler:
+            sig.append('c_compiler_str=' + c_compiler.version_str())
+
         # IMPORTANT: The 'md5' prefix is used to isolate the compilation
         # parameters from the rest of the key. If you want to add more key
         # elements, they should be before this md5 hash if and only if they
@@ -1045,8 +1059,8 @@ class CLinker(link.Linker):
 
         def in_sig(i, topological_pos, i_idx):
             # assert that every input to every node is one of'
-            # - an env input
-            # - an output from a node in the Env
+            # - an fgraph input
+            # - an output from a node in the FunctionGraph
             # - a Constant
 
             # It is important that a variable (i)
@@ -1073,20 +1087,20 @@ class CLinker(link.Linker):
                     isig = constant_ids[id(i)]
                 #print 'SIGNATURE', i.signature()
                 #return i.signature()
-            elif i in env_inputs_dict:  # inputs
-                isig = env_inputs_dict[i]
+            elif i in fgraph_inputs_dict:  # inputs
+                isig = fgraph_inputs_dict[i]
             else:
                 if i.owner is None:
                     assert all(all(out is not None for out in o.outputs)
                                for o in order)
-                    assert all(input.owner is None for input in env.inputs)
+                    assert all(input.owner is None for input in fgraph.inputs)
                     raise Exception('what is this?', (i, type(i), i.clients,
-                                                      env))
+                                                      fgraph))
 
-                if i in env.outputs:
+                if i in fgraph.outputs:
                     isig = (op_pos[i.owner],  # outputs
                             i.owner.outputs.index(i),
-                            env.outputs.index(i))
+                            fgraph.outputs.index(i))
                 else:
                     isig = (op_pos[i.owner], i.owner.outputs.index(i))  # temps
             return (isig, i in no_recycling)
@@ -1118,7 +1132,7 @@ class CLinker(link.Linker):
                 return None
 
             op_pos[node] = node_pos
-            env_computed_set.update(node.outputs)
+            fgraph_computed_set.update(node.outputs)
 
         #crystalize the signature and version
         sig = tuple(sig)
@@ -1126,7 +1140,7 @@ class CLinker(link.Linker):
         for v in version:
             if not v:
                 # one of the ops or types here is unversioned,
-                # so this env is entirely unversioned
+                # so this fgraph is entirely unversioned
                 return ((), sig)
         return version, sig
 
@@ -1186,7 +1200,7 @@ class CLinker(link.Linker):
                     libs=libs,
                     preargs=preargs)
             except Exception, e:
-                e.args += (str(self.env),)
+                e.args += (str(self.fgraph),)
                 raise
         finally:
             release_lock()
@@ -1195,7 +1209,7 @@ class CLinker(link.Linker):
 
     def build_dynamic_module(self):
         """Return a cmodule.DynamicModule instance full of the code
-        for our env.
+        for our fgraph.
         """
         self.code_gen()
         module_name = self.hash
@@ -1248,7 +1262,7 @@ class CLinker(link.Linker):
         out_storage -> list of lists of length 1, one per output
 
         Returns a thunk that points to an instance of a C struct that
-        can carry on the computation of this linker's env. That thunk,
+        can carry on the computation of this linker's fgraph. That thunk,
         when executed, will fetch its inputs from in_storage, put its
         outputs in out_storage and if an error occurs will put the
         type, value and traceback of the exception in error_storage.
@@ -1349,7 +1363,8 @@ class _CThunk(object):
                 # this can be used to retrieve the location the Op was declared
                 exc_value.__thunk_trace__ = trace
             except Exception:
-                print >> sys.stderr, 'ERROR retrieving error_storage',
+                print >> sys.stderr, ('ERROR retrieving error_storage.'
+                                      ' Was the error set in the c code?'),
                 print >> sys.stderr, self.error_storage
                 raise
 
@@ -1358,16 +1373,16 @@ class _CThunk(object):
 
 class OpWiseCLinker(link.LocalLinker):
     """WRITEME
-    Uses CLinker on the individual Ops that comprise an env and loops
+    Uses CLinker on the individual Ops that comprise an fgraph and loops
     over them in Python. The variable is slower than a compiled version of
-    the whole env, but saves on compilation time because small changes
+    the whole fgraph, but saves on compilation time because small changes
     in the computation graph won't necessarily trigger any recompilation,
     only local changes in the Variables or Ops that are used.
 
     If fallback_on_perform is True, OpWiseCLinker will use an op's
     perform method if no C version can be generated.
 
-    no_recycling can contain a list of Variables that belong to the env.
+    no_recycling can contain a list of Variables that belong to the fgraph.
     If a Variable is in no_recycling, CLinker will clear the output storage
     associated to it prior to computation (to avoid reusing it).
 
@@ -1382,22 +1397,30 @@ class OpWiseCLinker(link.LocalLinker):
 
     def __init__(self,
             fallback_on_perform=True,
-            allow_gc=True,
-            nice_errors=True):
-        self.env = None
+            allow_gc=None,
+            nice_errors=True,
+            schedule=None):
+        if allow_gc is None:
+            allow_gc = config.allow_gc
+        self.fgraph = None
         self.fallback_on_perform = fallback_on_perform
         self.nice_errors = nice_errors
         self.allow_gc = allow_gc
+        if schedule:
+            self.schedule = schedule
 
-    def accept(self, env, no_recycling=None):
+    def accept(self, fgraph, no_recycling=None):
         if no_recycling is None:
             no_recycling = []
-        if self.env is not None and self.env is not env:
-            return type(self)(self.fallback_on_perform).accept(env,
-                                                               no_recycling)
+        if self.fgraph is not None and self.fgraph is not fgraph:
+            return type(self)(
+                    fallback_on_perform=self.fallback_on_perform,
+                    allow_gc=self.allow_gc,
+                    nice_errors=self.nice_errors
+                    ).accept(fgraph, no_recycling)
             #raise Exception("Cannot accept from a Linker that is
-            #already tied to another Env.")
-        self.env = env
+            #already tied to another FunctionGraph.")
+        self.fgraph = fgraph
         self.no_recycling = no_recycling
         return self
 
@@ -1410,12 +1433,12 @@ class OpWiseCLinker(link.LocalLinker):
         orig_n_lock = getattr(get_lock, "n_lock", 0)
         try:
 
-            env = self.env
-            order = env.toposort()
+            fgraph = self.fgraph
+            order = self.schedule(fgraph)
             no_recycling = self.no_recycling
 
             input_storage, output_storage, storage_map = link.map_storage(
-                                    env, order, input_storage, output_storage)
+                                    fgraph, order, input_storage, output_storage)
             if self.allow_gc:
                 computed, last_user = link.gc_helper(order)
                 post_thunk_old_storage = []
@@ -1435,7 +1458,8 @@ class OpWiseCLinker(link.LocalLinker):
                 # make_thunk
                 old_value = getattr(node.op, '_op_use_c_code', False)
                 try:
-                    node.op._op_use_c_code = True
+                    if theano.config.cxx:
+                        node.op._op_use_c_code = True
                     thunks += [node.op.make_thunk(node,
                                         storage_map,
                                         compute_map,
@@ -1449,7 +1473,7 @@ class OpWiseCLinker(link.LocalLinker):
                     post_thunk_old_storage.append([storage_map[input]
                         for input in node.inputs
                         if ((input in computed) and
-                            (input not in env.outputs) and
+                            (input not in fgraph.outputs) and
                             node == last_user[input])])
 
             if no_recycling is True:
@@ -1457,9 +1481,9 @@ class OpWiseCLinker(link.LocalLinker):
                 no_recycling = utils.difference(no_recycling, input_storage)
             else:
                 no_recycling = [storage_map[r]
-                                for r in no_recycling if r not in env.inputs]
+                                for r in no_recycling if r not in fgraph.inputs]
 
-            f = link.streamline(env, thunks, order,
+            f = link.streamline(fgraph, thunks, order,
                     post_thunk_old_storage,
                     no_recycling=no_recycling,
                     nice_errors=self.nice_errors)
@@ -1474,9 +1498,9 @@ class OpWiseCLinker(link.LocalLinker):
 
         return (f,
                 [link.Container(input, storage)
-                 for input, storage in izip(env.inputs, input_storage)],
+                 for input, storage in izip(fgraph.inputs, input_storage)],
                 [link.Container(output, storage, True)
-                 for output, storage in izip(env.outputs, output_storage)],
+                 for output, storage in izip(fgraph.outputs, output_storage)],
                 thunks,
                 order)
 
@@ -1493,17 +1517,17 @@ def _default_checker(x, y):
 
 class DualLinker(link.Linker):
     """WRITEME
-    Runs the env in parallel using PerformLinker and CLinker.
+    Runs the fgraph in parallel using PerformLinker and CLinker.
 
     The thunk/function produced by DualLinker uses PerformLinker as the
     "main" implementation: the inputs and outputs are fed to/taken from
     the Ops' perform. However, DualLinker also instantiates a copy of
-    the env on which it runs OpWiseCLinker. At each step, the variables
+    the fgraph on which it runs OpWiseCLinker. At each step, the variables
     of perform and of the C implementation are verified using a checker
     function.
     """
 
-    def __init__(self, checker=_default_checker):
+    def __init__(self, checker=_default_checker, schedule=None):
         """
         Initialize a DualLinker.
 
@@ -1522,34 +1546,38 @@ class DualLinker(link.Linker):
         careful not to share data between the two outputs (or inplace
         operations that use them will interfere).
 
-        no_recycling can contain a list of Variables that belong to the env.
+        no_recycling can contain a list of Variables that belong to the fgraph.
         If a Variable is in no_recycling, CLinker will clear the output storage
         associated to it during the computation (to avoid reusing it).
         """
-        self.env = None
+        self.fgraph = None
         self.checker = checker
+        if schedule:
+            self.schedule = schedule
 
-    def accept(self, env, no_recycling=None):
+    def accept(self, fgraph, no_recycling=None):
         if no_recycling is None:
             no_recycling = []
-        if self.env is not None and self.env is not env:
-            return type(self)(self.checker).accept(env, no_recycling)
+        if self.fgraph is not None and self.fgraph is not fgraph:
+            return type(self)(self.checker).accept(fgraph, no_recycling)
             # raise Exception("Cannot accept from a Linker that is already "
-            #                 "tied to another Env.")
-        self.env = env
+            #                 "tied to another FunctionGraph.")
+        self.fgraph = fgraph
         self.no_recycling = no_recycling
         return self
 
     def make_thunk(self, **kwargs):
 
-        env = self.env
+        fgraph = self.fgraph
         no_recycling = self.no_recycling
 
-        _f, i1, o1, thunks1, order1 = link.PerformLinker().accept(env,
-                                no_recycling=no_recycling).make_all(**kwargs)
+        _f, i1, o1, thunks1, order1 = (
+                link.PerformLinker(schedule=self.schedule).accept(fgraph,
+                                no_recycling=no_recycling).make_all(**kwargs))
         kwargs.pop('input_storage', None)
-        _f, i2, o2, thunks2, order2 = OpWiseCLinker().accept(env,
-                                no_recycling=no_recycling).make_all(**kwargs)
+        _f, i2, o2, thunks2, order2 = (
+                OpWiseCLinker(schedule=self.schedule).accept(fgraph,
+                                no_recycling=no_recycling).make_all(**kwargs))
 
         def f():
             for input1, input2 in izip(i1, i2):

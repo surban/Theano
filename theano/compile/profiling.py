@@ -38,12 +38,14 @@ AddConfigVar('profiling.time_thunks',
 def _atexit_print_fn():
     """Print ProfileStat objects in _atexit_print_list to _atexit_print_file
     """
+    printed = 0
     for ps in _atexit_print_list:
         if ps.fct_callcount or ps.compile_time > 0:
             ps.summary(file=_atexit_print_file)
+            printed += 1
         else:
             print 'Skipping empty Profile'
-    if len(_atexit_print_list) > 1:
+    if printed > 1:
     # Make a global profile
         cum = copy.copy(_atexit_print_list[0])
         cum.message = "Sum of all printed profiles at exit"
@@ -51,14 +53,26 @@ def _atexit_print_fn():
 #        for ps in [ps for ps in _atexit_print_list[1:]
 #                   if not isinstance(ps, ScanProfileStats)]:
             for attr in ["compile_time", "fct_call_time", "fct_callcount",
-                         "vm_call_time", "optimizer_time", "linker_time"]:
+                         "vm_call_time", "optimizer_time", "linker_time",
+                         "validate_time"]:
                 setattr(cum, attr, getattr(cum, attr) + getattr(ps, attr))
+
+            #merge dictonary
             for attr in ["apply_time", "apply_callcount",
                          "apply_cimpl", "outputs_size"]:
                 cum_attr = getattr(cum, attr)
                 for key, val in getattr(ps, attr).iteritems():
                     assert key not in cum_attr
                     cum_attr[key] = val
+
+            if cum.optimizer_profile and ps.optimizer_profile:
+                merge = cum.optimizer_profile[0].merge_profile(
+                    cum.optimizer_profile[1],
+                    ps.optimizer_profile[1])
+                cum.optimizer_profile = (cum.optimizer_profile[0], merge)
+            else:
+                cum.optimizer_profile = None
+
         cum.summary(file=_atexit_print_file)
 
 
@@ -118,10 +132,18 @@ class ProfileStats(object):
     optimizer_time = 0.0
     # time spent optimizing graph (FunctionMaker.__init__)
 
+    validate_time = 0.0
+    # time spent in fgraph.validate
+    # This is a subset of optimizer_time that is dominated by toposort()
+    # when the destorymap feature is included.
+
     linker_time = 0.0
     # time spent linking graph (FunctionMaker.create)
 
     line_width = 140
+
+    optimizer_profile = None
+    # None or tuple (the optimizer, the profile it returned)
 
     # param is called flag_time_thunks because most other attributes with time
     # in the name are times *of* something, rather than configuration flags.
@@ -146,6 +168,51 @@ class ProfileStats(object):
         if atexit_print:
             global _atexit_print_list
             _atexit_print_list.append(self)
+
+    def class_time(self):
+        """dict op -> total time on thunks"""
+        # timing is stored by node, we compute timing by class on demand
+        rval = {}
+        for node, t in self.apply_time.items():
+            typ = type(node.op)
+            rval.setdefault(typ, 0)
+            rval[typ] += t
+        return rval
+
+    def class_callcount(self):
+        """dict op -> total number of thunk calls"""
+        # timing is stored by node, we compute timing by class on demand
+        rval = {}
+        for node, count in self.apply_callcount.items():
+            typ = type(node.op)
+            rval.setdefault(typ, 0)
+            rval[typ] += count
+        return rval
+
+    def class_nodes(self):
+        """dict op -> total number of nodes"""
+        # timing is stored by node, we compute timing by class on demand
+        rval = {}
+        for node, count in self.apply_callcount.items():
+            typ = type(node.op)
+            rval.setdefault(typ, 0)
+            rval[typ] += 1
+        return rval
+
+    def class_impl(self):
+        """dict op -> total number of nodes"""
+        # timing is stored by node, we compute timing by class on demand
+        rval = {}
+        for node in self.apply_callcount:
+            typ = type(node.op)
+            if self.apply_cimpl[node]:
+                impl = 'C '
+            else:
+                impl = 'Py'
+            rval.setdefault(typ, impl)
+            if rval[typ] != impl and len(rval[typ]) == 2:
+                rval[typ] += impl
+        return rval
 
     def op_time(self):
         """dict op -> total time on thunks"""
@@ -210,6 +277,95 @@ class ProfileStats(object):
                ' <cumulative %%> <self seconds> <cumulative seconds>'
                ' <time per call> %s <nb_call> <nb apply> <Op name>' % (
                 flops_msg))
+
+    def summary_class(self, file=sys.stderr, N=None):
+        if self.apply_time:
+            local_time = sum(self.apply_time.values())
+        else:
+            local_time = 0
+        if local_time == 0:
+            print >> file, ('ProfileMode.summary_class: total time 0'
+                    ' (did you forget to enable counters?)')
+            return
+        class_time = self.class_time()
+        class_call = self.class_callcount()
+        class_apply = self.class_nodes()
+#        class_flops = self.class_flops()
+        class_impl = self.class_impl()
+        if N is None:
+            N = len(self.class_time)
+        otimes = [(t * 100 / local_time,
+                    t,
+                    clas,
+                    class_impl.get(clas, '  '),
+                    class_call.get(clas, 0),
+                    class_apply.get(clas, 0))
+                for clas, t in class_time.items()]
+        otimes.sort()
+        otimes.reverse()
+        tot = 0
+        print >> file, 'Class'
+        print >> file, '---'
+        #print >> file, '<% time> <cumulative %%> <apply time>,'
+        #print >>file, '<cumulative seconds> <time per call> <nb_call>'
+        #print >>file, '<Class name>'
+        hs = []
+        # formatting string
+        es = []
+
+        hs += ['<% time>']
+        es += ['  %4.1f%% ']
+
+        hs += ['<sum %>']
+        es += [' %5.1f%% ']
+
+        hs += ['<apply time>']
+        es += ['   %7.3fs ']
+
+        hs += ['<time per call>']
+        es += ['     %8.2es ']
+
+        hs += ['<type>']
+        es += ['   %2s ']
+
+        hs += ['<#call>']
+        es += ['  %4d  ']
+
+        hs += ['<#apply>']
+        es += ['  %4d  ']
+
+        upto_length = numpy.sum([len(x) for x in hs]) + len(hs)
+        maxlen = self.line_width - upto_length
+        hs += ['<Class name>']
+        es += ['%s']
+        header_str = ' '.join(hs)
+        format_str = ' '.join(es)
+
+        print >> file, header_str
+
+        for f, t, a, impl, nb_call, nb_apply in otimes[:N]:
+            if nb_call == 0:
+                assert t == 0
+                continue
+            tot += t
+            ftot = tot * 100 / local_time
+            print >> file, format_str % (f, ftot, t, t / nb_call,
+                                         impl, nb_call,
+                                         nb_apply, str(a)[:maxlen])
+            # While this carries over less information, it is arranged such
+            # that it way more readeable that the previous output of the
+            # profiler
+            #if op_flops:
+            #    print >>file, '   %4.1f%%  %5.1f%%  %5.3fs  %5.3fs  %.2es %s %7.1f %5d %2d %s' % (
+            #            f, ftot, t, tot, t/nb_call, impl, op_flops.get(a,-1), nb_call, nb_apply, a)
+            #else:
+            #    print >>file, '   %4.1f%%  %5.1f%%  %5.3fs  %5.3fs  %.2es %s %5d %2d %s' % (
+            #            f, ftot, t, tot, t/nb_call, impl, nb_call, nb_apply, a)
+        print >>file, '   ... (remaining %i Classes account for %6.2f%%(%.2fs) of the runtime)'\
+                % (max(0, len(otimes) - N),
+                  sum(f for f, t, a, ci, nb_call, nb_op in otimes[N:]),
+                  sum(t for f, t, a, ci, nb_call, nb_op in otimes[N:]))
+        print >> file, ''
 
     def summary_ops(self, file=sys.stderr, N=None):
         if self.apply_time:
@@ -350,7 +506,7 @@ class ProfileStats(object):
                 t * 100 / local_time,
                 t,
                 a,
-                a.env.toposort().index(a),
+                a.fgraph.toposort().index(a),
                 self.apply_callcount[a])
             for a, t in self.apply_time.items()]
         atimes.sort()
@@ -390,21 +546,30 @@ class ProfileStats(object):
                         local_time, 100*local_time / self.fct_call_time)
         print >> file, '  Total compile time: %es' % self.compile_time
         print >> file, '    Theano Optimizer time: %es' % self.optimizer_time
+        print >> file, '       Theano validate time: %es' % self.validate_time
         print >> file, ('    Theano Linker time (includes C,'
                         ' CUDA code generation/compiling): %es' %
                         self.linker_time)
         print >> file, ''
+
+        # The validation time is a subset of optimizer_time
+        assert self.validate_time < self.optimizer_time
 
     def summary(self, file=sys.stderr, n_ops_to_print=20,
                 n_applies_to_print=20):
         self.summary_function(file)
         local_time = sum(self.apply_time.values())
         if local_time > 0:
+            self.summary_class(file, n_ops_to_print)
             self.summary_ops(file, n_ops_to_print)
             self.summary_nodes(file, n_applies_to_print)
-        else:
+        elif self.fct_callcount > 0:
             print >> file, ("  No node time accumulated "
                             "(hint: try config profiling.time_thunks=1)")
+        if self.optimizer_profile:
+            print "Optimizer Profile"
+            print "-----------------"
+            self.optimizer_profile[0].print_profile(file, self.optimizer_profile[1])
 
 
 if 0: # old code still to be ported from ProfileMode
@@ -506,7 +671,7 @@ if 0: # old code still to be ported from ProfileMode
         print "List of apply that don't have float64 as input but have float64 in outputs. Usefull to know if we forgot some cast when using floatX=float32 or gpu code."
         print '<Apply> <Apply position> <fct name> <inputs type> <outputs type>'
         for fct in fct_call.keys():
-            for idx, node in enumerate(fct.maker.env.toposort()):
+            for idx, node in enumerate(fct.maker.fgraph.toposort()):
                 if any(hasattr(i, 'dtype') and i.dtype == 'float64' for i in node.outputs) and not any(hasattr(i, 'dtype') and i.dtype == 'float64' for i in node.inputs):
                     print str(node), idx, fct.name, str([getattr(i,'dtype',None) for i in node.inputs]),str([getattr(i,'dtype',None) for i in node.outputs])
 
@@ -537,17 +702,17 @@ if 0: # old code still to be ported from ProfileMode
                         print fct.name, i.name, i.type, i
 
         if outputs_size:
-            fct_memory={}#env->dict(node->(outputs size))
+            fct_memory={}#fgraph->dict(node->(outputs size))
             var_mem = {}
             for node,val in outputs_size.items():
-                fct_memory.setdefault(node.env,{})
-                fct_memory[node.env][node]=val
+                fct_memory.setdefault(node.fgraph,{})
+                fct_memory[node.fgraph][node]=val
                 for out,v in zip(node.outputs,val):
                     var_mem[out]=v
             print
             print "Profile of Theano functions memory:"
-            for env,nodes_mem in fct_memory.iteritems():
-                print "Theano fct:", [fct for fct in fct_call.keys() if fct.maker.env is env][0].name
+            for fgraph, nodes_mem in fct_memory.iteritems():
+                print "Theano fct:", [fct for fct in fct_call.keys() if fct.maker.fgraph is fgraph][0].name
                 size_sum=sum([sum(val) for key,val in nodes_mem.iteritems()])
                 print "    Max without gc, inplace and view (KB)",size_sum/1024
 
@@ -561,12 +726,12 @@ if 0: # old code still to be ported from ProfileMode
                 items.sort(key=lambda a: a[1])
                 items.reverse()
 
-                order = env.toposort()
+                order = fgraph.toposort()
                 computed, last_user = gc_helper(order)
                 for node in order:
                     post_thunk_old_storage.append([ input_idx
                                                     for input_idx,input in enumerate(node.inputs)
-                                                    if (input in computed) and (input not in env.outputs) and node == last_user[input]])
+                                                    if (input in computed) and (input not in fgraph.outputs) and node == last_user[input]])
                 for node,val in items[:n_apply_to_print]:
                     dmap = getattr(node.op,'destroy_map',None)
                     vmap = getattr(node.op,'view_map',None)
@@ -622,7 +787,7 @@ if 0: # old code still to be ported from ProfileMode
         def get_scalar_ops(s):
             if isinstance(s, theano.scalar.Composite):
                 l = []
-                for node in s.env.toposort():
+                for node in s.fgraph.toposort():
                     l+=get_scalar_ops(node.op)
                 return l
             else: return [s]
@@ -659,7 +824,7 @@ if 0: # old code still to be ported from ProfileMode
 
         #tip 3
         if not config.lib.amdlibm and any([exp_float32_op(a.op) and a.inputs[0].dtype=='float32' for i,a in apply_time]):
-            print "  - With the default gcc libm, exp in float32 is slower then in float64! Try Theano flags floatX=float64 or install amdlibm and set the theano flags lib.amdlibm=True"
+            print "  - With the default gcc libm, exp in float32 is slower than in float64! Try Theano flags floatX=float64 or install amdlibm and set the theano flags lib.amdlibm=True"
 
         #tip 4
         for a, t in apply_time.iteritems():

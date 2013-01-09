@@ -14,15 +14,11 @@ implementations.
 
 To learn more, check out:
 
-- Joseph Turian's n00b walk through ( :wiki:`UserBasic` )
-
-- an introduction to extending theano ( :wiki:`UserAdvanced` )
-
-- Terminology Glossary (:wiki:`glossary`)
-
-- Index of Howto documents (:wiki:`IndexHowto`)
-
 - Op List (:doc:`oplist`)
+
+The markup language used in the docstrings is ReStructured Text,
+which may be rendered with Sphinx. A rendered version is
+maintained at http://www.deeplearning.net/software/theano/library/
 
 """
 
@@ -54,9 +50,9 @@ import gof
 from gof import \
      CLinker, OpWiseCLinker, DualLinker, Linker, LocalLinker, PerformLinker, \
      Container, \
-     InconsistencyError, Env, \
-     Apply, Variable, Constant, Value, \
-     Op, \
+     InconsistencyError, FunctionGraph, \
+     Apply, Variable, Constant, \
+     Op, OpenMPOp,\
      opt, \
      toolbox, \
      Type, Generic, generic, \
@@ -78,7 +74,12 @@ from compile import \
 from misc.safe_asarray import _asarray
 
 import theano.tests
-test = theano.tests.TheanoNoseTester().test
+if hasattr(theano.tests, "TheanoNoseTester"):
+    test = theano.tests.TheanoNoseTester().test
+else:
+    def test():
+        raise ImportError("The nose module is not installed."
+                          " It is needed for Theano tests.")
 
 FancyModule = Module
 
@@ -87,7 +88,7 @@ from printing import \
 import scan_module
 from scan_module import scan, map, reduce, foldl, foldr, clone
 
-from updates import Updates
+from updates import Updates, OrderedUpdates
 
 import tensor
 import scalar
@@ -160,3 +161,22 @@ def dot(l, r):
         raise NotImplementedError("Dot failed for the following reasons:",
                                   (e0, e1))
     return rval
+
+
+def get_constant_value(v):
+    """return the constant scalar(0-D) value underlying variable `v`
+
+    If v is the output of dimshuffles, fills, allocs, rebroadcasts, cast
+    this function digs through them.
+
+    If theano.sparse is also there, we will look over CSM op.
+
+    If `v` is not some view of constant data, then raise a TypeError.
+    """
+    if hasattr(theano, 'sparse') and isinstance(v.type,
+                                                theano.sparse.SparseType):
+        if v.owner is not None and isinstance(v.owner.op,
+                                                 theano.sparse.CSM):
+            data = v.owner.inputs[0]
+            return tensor.get_constant_value(data)
+    return tensor.get_constant_value(v)

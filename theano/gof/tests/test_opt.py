@@ -3,7 +3,7 @@ from theano.gof.type import Type
 from theano.gof.graph import Variable, Apply, Constant
 from theano.gof.op import Op
 from theano.gof.opt import *
-from theano.gof.env import Env
+from theano.gof.fg import FunctionGraph as Env
 from theano.gof.toolbox import *
 
 
@@ -403,7 +403,7 @@ class TestEquilibrium(object):
                  PatternSub((op4, 'x', 'y'), (op1, 'x', 'y')),
                  PatternSub((op3, (op2, 'x', 'y')), (op4, 'x', 'y'))
                  ],
-                max_use_ratio = 1. / len(g.nodes)) # each opt can only be applied once
+                max_use_ratio = 1. / len(g.apply_nodes)) # each opt can only be applied once
             opt.optimize(g)
         finally:
             _logger.setLevel(oldlevel)

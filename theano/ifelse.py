@@ -4,8 +4,8 @@ linkers). It resembles the if clause of any programming language, that
 has a `then` and `else` branch, and executes either one or the other
 according to the condition provided.
 
-This op contrast the already existent `switch` op, that will evaluate both
-branches of the clause and afterwards pick (according to the condition)
+This op differs from the already existent `switch` op, that evaluates both
+branches of the clause and afterwards picks (according to the condition)
 which value to report. Note also that `switch` is an elemwise operation (so
 it picks each entry of a matrix according to the condition) while `ifelse`
 is a global operation with a scalar condition.
@@ -60,7 +60,7 @@ class IfElse(PureOp):
 
     :note:
         Other Linkers then CVM and VM are INCOMPATIBLE with this Op, and
-        will ingnore its lazy characteristic, computing both the True and
+        will ignore its lazy characteristic, computing both the True and
         False branch before picking one.
 
     """
@@ -212,7 +212,14 @@ class IfElse(PureOp):
                                        for t in ts])
         if_false = ([ins[0]] + [theano.tensor.zeros_like(f)
                                 for f in fs] + grads)
-        return ([None] +
+
+        condition = ins[0]
+        # condition does affect the elements of the output so it is connected.
+        # For the sake of making the gradient convenient we assume that
+        # condition + epsilon always triggers the same branch as condition
+        condition_grad = condition.zeros_like().astype(theano.config.floatX)
+
+        return ([condition_grad] +
                 if_true_op.make_node(*if_true).outputs +
                 if_false_op.make_node(*if_false).outputs)
 
@@ -340,7 +347,7 @@ def ifelse(condition, then_branch, else_branch, name=None):
 
             if then_branch_elem.type != else_branch_elem.type:
                 # If the types still don't match, there is a problem.
-                raise ValueError(
+                raise TypeError(
                         'The two branches should have identical types, but '
                         'they are %s and %s respectively. This error could be '
                         'raised if for example you provided a one element '
@@ -536,11 +543,11 @@ def cond_merge_ifs_false(node):
 
 class CondMerge(gof.Optimizer):
     """ Graph Optimizer that merges different cond ops """
-    def add_requirements(self, env):
-        env.extend(gof.toolbox.ReplaceValidate())
+    def add_requirements(self, fgraph):
+        fgraph.add_feature(gof.toolbox.ReplaceValidate())
 
-    def apply(self, env):
-        nodelist = list(env.toposort())
+    def apply(self, fgraph):
+        nodelist = list(fgraph.toposort())
         cond_nodes = filter(lambda s: isinstance(s.op, IfElse), nodelist)
         if len(cond_nodes) < 2:
             return False
@@ -581,7 +588,7 @@ class CondMerge(gof.Optimizer):
                 else:
                     old_outs += proposal.outputs
                 pairs = zip(old_outs, new_outs)
-                env.replace_all_validate(pairs, reason='cond_merge')
+                fgraph.replace_all_validate(pairs, reason='cond_merge')
 
 
 @gof.local_optimizer([None])

@@ -25,6 +25,7 @@ from theano.gof.cc import hash_from_code
 
 # we will abuse the lockfile mechanism when reading and writing the registry
 import compilelock
+from compiledir import gcc_version_str
 
 from theano.configparser import AddConfigVar, BoolParam
 
@@ -38,6 +39,17 @@ AddConfigVar('cmodule.warn_no_version',
              "with C code that can't be cached because there is no "
              "c_code_cache_version() function associated to at least one of "
              "those Ops.",
+             BoolParam(False),
+             in_c_key=False)
+
+AddConfigVar('cmodule.remove_gxx_opt',
+             "If True, will remove -O* parameter passed to g++."
+             "This is useful to debug in gdb module compiled by Theano."
+             "The parameter -g is passed by default to g++",
+             BoolParam(False))
+
+AddConfigVar('cmodule.compilation_warning',
+             "If True, will print compilation warning.",
              BoolParam(False))
 
 
@@ -69,6 +81,14 @@ _logger.setLevel(logging.WARNING)
 
 METH_VARARGS = "METH_VARARGS"
 METH_NOARGS = "METH_NOARGS"
+
+
+class MissingGXX(Exception):
+    """
+    This error is raised when we try to generate c code,
+    but g++ is not available
+    """
+    pass
 
 
 def debug_counter(name, every=1):
@@ -266,15 +286,21 @@ def last_access_time(path):
     return os.stat(path)[stat.ST_ATIME]
 
 
-def module_name_from_dir(dirname):
+def module_name_from_dir(dirname, err=True):
     """
     Scan the contents of a cache directory and return full path of the
     dynamic lib in it.
     """
     files = os.listdir(dirname)
-    name, = [file for file in files
+    names = [file for file in files
              if file.endswith('.so') or file.endswith('.pyd')]
-    return os.path.join(dirname, name)
+    if len(names) == 0 and not err:
+        return None
+    elif len(names) == 1:
+        return os.path.join(dirname, names[0])
+    else:
+        raise ValueError("More than 1 compiled module in this directory:" +
+                         dirname)
 
 
 def is_same_entry(entry_1, entry_2):
@@ -308,6 +334,7 @@ def get_module_hash(src_code, key):
         2. The version part of the key.
         3. The compiler options defined in `key` (command line parameters and
            libraries to link against).
+        4. The NumPy ABI version.
     """
     # `to_hash` will contain any element such that we know for sure that if
     # it changes, then the module hash should be different.
@@ -341,6 +368,9 @@ def get_module_hash(src_code, key):
                 # This is the md5 hash of the config options. We can stop
                 # here.
                 break
+            elif (key_element.startswith('NPY_ABI_VERSION=0x') or
+                  key_element.startswith('c_compiler_str=')):
+                to_hash.append(key_element)
             else:
                 raise AssertionError(error_msg)
         else:
@@ -628,6 +658,12 @@ class ModuleCache(object):
                                     msg='broken cache directory [EOF]',
                                     level=logging.WARNING)
                             continue
+                        except ValueError:
+                            # This can happen when we have bad config value
+                            # in the cuda.nvcc_compiler.py file.
+                            # We should not hide it here, as this will cause
+                            # an unrelated error to appear.
+                            raise
                         except Exception:
                             unpickle_failure()
                             if delete_if_problem:
@@ -744,6 +780,9 @@ class ModuleCache(object):
                                     "directory to fix this.",
                                     self.entry_from_key[key],
                                     entry)
+                        # Clean up the name space to prevent bug.
+                        if key_data.keys:
+                            del key
                         self.loaded_key_pkl.add(key_pkl)
                     else:
                         too_old_to_use.append(entry)
@@ -751,6 +790,10 @@ class ModuleCache(object):
                 # If the compilation failed, no key.pkl is in that
                 # directory, but a mod.* should be there.
                 # We do nothing here.
+
+            # Clean up the name space to prevent bug.
+            if root_dirs_files:
+                del root, dirs, files
 
             # Remove entries that are not in the filesystem.
             items_copy = list(self.module_hash_to_key_data.iteritems())
@@ -762,6 +805,7 @@ class ModuleCache(object):
                     gone = False
                 except IOError:
                     gone = True
+
                 if gone:
                     # Assert that we did not have one of the deleted files
                     # loaded up and in use.
@@ -778,13 +822,13 @@ class ModuleCache(object):
                     _logger.info("deleting ModuleCache entry %s", entry)
                     key_data.delete_keys_from(self.entry_from_key)
                     del self.module_hash_to_key_data[module_hash]
-                    if key[0]:
+                    if key_data.keys and list(key_data.keys)[0][0]:
                         # this is a versioned entry, so should have been on
                         # disk. Something weird happened to cause this, so we
                         # are responding by printing a warning, removing
                         # evidence that we ever saw this mystery key.
                         pkl_file_to_remove = key_data.key_pkl
-                        if not root.startswith("/tmp"):
+                        if not key_data.key_pkl.startswith("/tmp"):
                             # Under /tmp, file are removed periodically by the
                             # os. So it is normal that this happen from time to
                             # time.
@@ -1249,8 +1293,22 @@ class ModuleCache(object):
                     except IOError:
                         has_key = False
                     if not has_key:
-                        age = time_now - last_access_time(
-                                os.path.join(self.dirname, filename))
+                        # Use the compiled file by default
+                        path = module_name_from_dir(os.path.join(self.dirname,
+                                                                 filename),
+                                                    False)
+                        # If it don't exist, use any file in the directory.
+                        if path is None:
+                            path = os.path.join(self.dirname, filename)
+                            files = os.listdir(path)
+                            if files:
+                                path = os.path.join(path, files[0])
+                            else:
+                                # If the directory is empty skip it.
+                                # They are deleted elsewhere.
+                                continue
+                        age = time_now - last_access_time(path)
+
                         # In normal case, the processus that created this
                         # directory will delete it. However, if this processus
                         # crashes, it will not be cleaned up.
@@ -1383,33 +1441,34 @@ def std_lib_dirs():
     return std_lib_dirs_and_libs()[1]
 
 
-# Using the dummy file descriptors below is a workaround for a crash
-# experienced in an unusual Python 2.4.4 Windows environment with the default
-# None values.
-dummy_in = open(os.devnull)
-dummy_err = open(os.devnull, 'w')
-p = None
-try:
-    p = subprocess.Popen(['g++', '-dumpversion'], stdout=subprocess.PIPE,
-                         stdin=dummy_in.fileno(), stderr=dummy_err.fileno())
-    p.wait()
-    gcc_version_str = p.stdout.readline().strip()
-except OSError:
-    # Typically means gcc cannot be found.
-    gcc_version_str = 'GCC_NOT_FOUND'
-del p
-del dummy_in
-del dummy_err
-
-
 def gcc_version():
     return gcc_version_str
 
 
 class GCC_compiler(object):
     @staticmethod
+    def version_str():
+        return "g++ " + gcc_version_str
+
+    @staticmethod
     def compile_args():
         cxxflags = [flag for flag in config.gcc.cxxflags.split(' ') if flag]
+        #NumPy 1.7 Deprecate the old API. I updated most of the places
+        #to use the new API, but not everywhere. When finished, enable
+        #the following macro to assert that we don't bring new code
+        #that use the old API.
+        #cxxflags.append("-D NPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION")
+        numpy_ver = [int(n) for n in numpy.__version__.split('.')[:2]]
+
+        # numpy 1.7 deprecated the following macro but the didn't
+        # existed in the past
+        if bool(numpy_ver < [1, 7]):
+            cxxflags.append("-D NPY_ARRAY_ENSURECOPY=NPY_ENSURECOPY")
+            cxxflags.append("-D NPY_ARRAY_ALIGNED=NPY_ALIGNED")
+            cxxflags.append("-D NPY_ARRAY_WRITEABLE=NPY_WRITEABLE")
+            cxxflags.append("-D NPY_ARRAY_UPDATE_ALL=NPY_UPDATE_ALL")
+            cxxflags.append("-D NPY_ARRAY_C_CONTIGUOUS=NPY_C_CONTIGUOUS")
+            cxxflags.append("-D NPY_ARRAY_F_CONTIGUOUS=NPY_F_CONTIGUOUS")
         return cxxflags
 
     @staticmethod
@@ -1438,6 +1497,9 @@ class GCC_compiler(object):
         :returns: dynamically-imported python module of the compiled code.
         """
         #TODO: Do not do the dlimport in this function
+        
+        if not theano.config.cxx:
+            raise MissingGXX("g++ not available! We can't compile c code.")
 
         if include_dirs is None:
             include_dirs = []
@@ -1462,8 +1524,6 @@ class GCC_compiler(object):
             preargs.append('-DMS_WIN64')
             # We also add "-m64", in case the installed gcc is 32-bit
             preargs.append('-m64')
-
-        no_opt = False
 
         include_dirs = include_dirs + std_include_dirs()
         libs = std_libs() + libs
@@ -1511,7 +1571,8 @@ class GCC_compiler(object):
 
         _logger.debug('Generating shared lib %s', lib_filename)
         cmd = ['g++', get_gcc_shared_library_arg(), '-g']
-        if no_opt:
+
+        if config.cmodule.remove_gxx_opt:
             cmd.extend(p for p in preargs if not p.startswith('-O'))
         else:
             cmd.extend(preargs)
@@ -1554,6 +1615,9 @@ class GCC_compiler(object):
             # difficult to read.
             raise Exception('Compilation failed (return status=%s): %s' %
                             (status, compile_stderr.replace('\n', '. ')))
+        elif config.cmodule.compilation_warning and compile_stderr:
+            # Print errors just below the command line.
+            print compile_stderr
 
         #touch the __init__ file
         file(os.path.join(location, "__init__.py"), 'w').close()

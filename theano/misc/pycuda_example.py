@@ -28,6 +28,7 @@ from theano.sandbox.cuda import GpuElemwise, CudaNdarrayType, GpuOp
 from theano.sandbox.cuda.basic_ops import (as_cuda_ndarray_variable,
                                            gpu_contiguous)
 from theano.sandbox.cuda.opt import gpu_seqopt
+from theano.tensor.utils import hash_from_dict
 
 import pycuda_init
 if not pycuda_init.pycuda_available:
@@ -116,7 +117,7 @@ class PycudaElemwiseKernelOp(GpuOp):
 
     def __hash__(self):
         return (hash(type(self)) ^ hash(self.scalar_op) ^
-                hash(self.inplace_pattern))
+                hash_from_dict(self.inplace_pattern))
 
     def make_node(self, *inputs):
         _inputs = [gpu_contiguous(as_cuda_ndarray_variable(i)) for i in inputs]
@@ -202,7 +203,7 @@ class PycudaElemwiseSourceModuleOp(GpuOp):
 
     def __hash__(self):
         return (hash(type(self)) ^ hash(self.scalar_op) ^
-                hash(self.inplace_pattern))
+                hash_from_dict(self.inplace_pattern))
 
     def make_node(self, *inputs):
         _inputs = [gpu_contiguous(as_cuda_ndarray_variable(i)) for i in inputs]
@@ -250,7 +251,9 @@ class PycudaElemwiseSourceModuleOp(GpuOp):
         #TODO support broadcast!
         #TODO assert all input have the same shape
         z, = out
-        if z[0] is None or z[0].shape != inputs[0].shape:
+        if (z[0] is None or
+            z[0].shape != inputs[0].shape or
+            not z[0].is_c_contiguous()):
             z[0] = theano.sandbox.cuda.CudaNdarray.zeros(inputs[0].shape)
         if inputs[0].shape != inputs[1].shape:
             raise TypeError("PycudaElemwiseSourceModuleOp:"
@@ -338,7 +341,9 @@ class PycudaElemwiseSourceModuleMakeThunkOp(Op):
 
         def thunk():
             z = outputs[0]
-            if z[0] is None or z[0].shape != inputs[0][0].shape:
+            if (z[0] is None or
+                z[0].shape != inputs[0][0].shape or
+                not z[0].is_c_contiguous()):
                 z[0] = theano.sandbox.cuda.CudaNdarray.zeros(
                     inputs[0][0].shape)
             if inputs[0][0].shape != inputs[1][0].shape:

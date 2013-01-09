@@ -1,10 +1,7 @@
 import StringIO
 import sys
 
-if sys.version_info[:2] >= (2, 5):
-    from collections import defaultdict
-else:
-    from python25 import defaultdict
+from python25 import DefaultOrderedDict
 
 import numpy
 import opt
@@ -29,7 +26,7 @@ class DB(object):
         return self._optimizer_idx
 
     def __init__(self):
-        self.__db__ = defaultdict(set)
+        self.__db__ = DefaultOrderedDict(set)
         self._names = set()
         self.name = None  # will be reset by register
         #(via obj.name by the thing doing the registering)
@@ -141,6 +138,10 @@ class Query(object):
         self.exclude = exclude or set()
         self.subquery = subquery or {}
         self.position_cutoff = position_cutoff
+        if isinstance(self.require, (list, tuple)):
+            self.require = set(self.require)
+        if isinstance(self.exclude, (list, tuple)):
+            self.exclude = set(self.exclude)
 
     #add all opt with this tag
     def including(self, *tags):
@@ -229,7 +230,10 @@ class SequenceDB(DB):
 
         opts = [o for o in opts if self.__position__[o.name] < position_cutoff]
         opts.sort(key=lambda obj: self.__position__[obj.name])
-        return opt.SeqOptimizer(opts, failure_callback=self.failure_callback)
+        ret = opt.SeqOptimizer(opts, failure_callback=self.failure_callback)
+        if hasattr(tags[0], 'name'):
+            ret.name = tags[0].name
+        return ret
 
     def print_summary(self, stream=sys.stdout):
         print >> stream, "SequenceDB (id %i)" % id(self)

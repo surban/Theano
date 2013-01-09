@@ -1,35 +1,17 @@
-import os, sys
+import os
+import sys
 from compilelock import get_lock, release_lock
 from theano import config
 
 # TODO These two lines may be removed in the future, when we are 100% sure
 # noone has an old cutils_ext.so lying around anymore.
-if os.path.exists(os.path.join(config.compiledir,'cutils_ext.so')):
-    os.remove(os.path.join(config.compiledir,'cutils_ext.so'))
+if os.path.exists(os.path.join(config.compiledir, 'cutils_ext.so')):
+    os.remove(os.path.join(config.compiledir, 'cutils_ext.so'))
 
-# Ensure no-one else is currently modifying the content of the compilation
-# directory. This is important to prevent multiple processes from trying to
-# compile the cutils_ext module simultaneously.
-try:
-    # If we load a previously-compiled version, config.compiledir should
-    # be in sys.path.
-    if config.compiledir not in sys.path:
-        sys.path.append(config.compiledir)
-    from cutils_ext.cutils_ext import *
-except ImportError:
-    import cmodule
 
-    get_lock()
-    try:
-        try:
-            # We must retry to import it as some other processs could
-            # have been compiling it between the first failed import
-            # and when we receive the lock
-            from cutils_ext.cutils_ext import *
-        except ImportError:
-            import cmodule
-
-            code = """
+def compile_cutils():
+    """Do just the compilation of cutils_ext"""
+    code = """
         #include <Python.h>
         extern "C"{
         static PyObject *
@@ -66,15 +48,52 @@ except ImportError:
         }
         """
 
-            loc = os.path.join(config.compiledir, 'cutils_ext')
-            if not os.path.exists(loc):
-                os.mkdir(loc)
+    loc = os.path.join(config.compiledir, 'cutils_ext')
+    if not os.path.exists(loc):
+        os.mkdir(loc)
 
-            args = cmodule.GCC_compiler.compile_args()
-            cmodule.GCC_compiler.compile_str('cutils_ext', code, location=loc,
-                                             preargs=args)
-            from cutils_ext.cutils_ext import *
+    args = cmodule.GCC_compiler.compile_args()
+    cmodule.GCC_compiler.compile_str('cutils_ext', code, location=loc,
+                                     preargs=args)
 
-    finally:
-        # Release lock on compilation directory.
-        release_lock()
+try:
+    # See gh issue #728 for why these lines are here. Summary: compiledir
+    # must be at the beginning of the path to avoid conflicts with any other
+    # cutils_ext modules that might exist. An __init__.py file must be created
+    # for the same reason. Note that these 5 lines may seem redundant (they are
+    # repeated in compile_str()) but if another cutils_ext does exist then it
+    # will be imported and compile_str won't get called at all.
+    sys.path.insert(0, config.compiledir)
+    location = os.path.join(config.compiledir, 'cutils_ext')
+    if not os.path.exists(location):
+        os.mkdir(location)
+    if not os.path.exists(os.path.join(location, '__init__.py')):
+        file(os.path.join(location, '__init__.py'), 'w').close()
+
+    try:
+        from cutils_ext.cutils_ext import *
+    except ImportError:
+        import cmodule
+
+        get_lock()
+    # Ensure no-one else is currently modifying the content of the compilation
+    # directory. This is important to prevent multiple processes from trying to
+    # compile the cutils_ext module simultaneously.
+        try:
+            try:
+                # We must retry to import it as some other process could
+                # have been compiling it between the first failed import
+                # and when we receive the lock
+                from cutils_ext.cutils_ext import *
+            except ImportError:
+                import cmodule
+
+                compile_cutils()
+                from cutils_ext.cutils_ext import *
+
+        finally:
+            # Release lock on compilation directory.
+            release_lock()
+finally:
+    if sys.path[0] == config.compiledir:
+        del sys.path[0]

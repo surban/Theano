@@ -127,19 +127,22 @@ import copy
 import logging
 import os
 import sys
+import time
 
 import numpy
 import numpy.distutils
 
 from theano.configparser import config, AddConfigVar, StrParam
 from theano.gof import (utils, Op, view_roots, DestroyHandler,
-        local_optimizer, Optimizer,
-        InconsistencyError, toolbox, SequenceDB, EquilibriumOptimizer, Apply)
+                        local_optimizer, Optimizer,
+                        InconsistencyError, toolbox, SequenceDB,
+                        EquilibriumOptimizer, Apply,
+                        ReplacementDidntRemovedError)
 from theano.printing import pprint, FunctionPrinter, debugprint
 from theano.compile.mode import optdb
 from theano.gof.python25 import all, any
 import theano.scalar
-import basic as T
+from theano.tensor import basic as T
 from theano.tensor.blas_headers import blas_header_text
 from theano.tensor.opt import local_dimshuffle_lift
 
@@ -147,16 +150,23 @@ _logger = logging.getLogger('theano.tensor.blas')
 
 try:
     import scipy.linalg.blas
-    _have_fblas = True
+    have_fblas = True
+    try:
+        fblas = scipy.linalg.blas.fblas
+    except AttributeError:
+        # A change merged in Scipy development version on 2012-12-02 replaced
+        # `scipy.linalg.blas.fblas` with `scipy.linalg.blas`.
+        # See http://github.com/scipy/scipy/pull/358
+        fblas = scipy.linalg.blas
     _blas_gemv_fns = {
-            numpy.dtype('float32'): scipy.linalg.blas.fblas.sgemv,
-            numpy.dtype('float64'): scipy.linalg.blas.fblas.dgemv,
-            numpy.dtype('complex64'): scipy.linalg.blas.fblas.cgemv,
-            numpy.dtype('complex128'): scipy.linalg.blas.fblas.zgemv,
+            numpy.dtype('float32'): fblas.sgemv,
+            numpy.dtype('float64'): fblas.dgemv,
+            numpy.dtype('complex64'): fblas.cgemv,
+            numpy.dtype('complex128'): fblas.zgemv,
             }
 except ImportError, e:
-    _have_fblas = False
-    _logger.warning('Failed to import scipy.linalg.blas.fblas. '
+    have_fblas = False
+    _logger.warning('Failed to import scipy.linalg.blas. '
             'Falling back on slower implementations (%s)', str(e))
 
 
@@ -213,7 +223,7 @@ class Gemv(Op):
 
     def perform(self, node, inputs, out_storage):
         y, alpha, A, x, beta = inputs
-        if _have_fblas and y.shape[0] != 0 and x.shape[0] != 0:
+        if have_fblas and y.shape[0] != 0 and x.shape[0] != 0:
             gemv = _blas_gemv_fns[y.dtype]
 
             if (A.shape[0] != y.shape[0] or A.shape[1] != x.shape[0]):
@@ -243,7 +253,8 @@ class Gemv(Op):
 
 gemv_no_inplace = Gemv(inplace=False)
 gemv_inplace = Gemv(inplace=True)
-
+# For the user interface. Opt will make them inplace later
+gemv = gemv_no_inplace
 
 class Ger(Op):
     """
@@ -320,6 +331,7 @@ def default_blas_ldflags():
         # If we are in a EPD installation, mkl is available
         blas_info = numpy.distutils.__config__.blas_opt_info
         if "EPD" in sys.version:
+            use_unix_epd = True
             if sys.platform == 'win32':
                 return ' '.join(
                     ['-L%s' % os.path.join(sys.prefix, "Scripts")] +
@@ -328,9 +340,37 @@ def default_blas_ldflags():
                     # blas_info['libraries']?
                     ['-l%s' % l for l in ["mk2_core", "mk2_intel_thread",
                                           "mk2_rt"]])
-            return ' '.join(
-                ['-L%s' % os.path.join(sys.prefix, "lib")] +
-                ['-l%s' % l for l in blas_info['libraries']])
+            elif sys.platform == 'darwin':
+                # The env variable is needed to link with mkl
+                new_path = os.path.join(sys.prefix, "lib")
+                v = os.getenv("DYLD_FALLBACK_LIBRARY_PATH", None)
+                if v is not None:
+                    # Explicit version could be replaced by a symbolic
+                    # link called 'Current' created by EPD installer
+                    # This will resolve symbolic links
+                    v = os.path.realpath(v)
+
+                # The python __import__ don't seam to take into account
+                # the new env variable "DYLD_FALLBACK_LIBRARY_PATH"
+                # when we set with os.environ['...'] = X or os.putenv()
+                # So we warn the user and tell him what todo.
+                if v is None or new_path not in v.split(":"):
+                    _logger.warning(
+                        "The environment variable "
+                        "'DYLD_FALLBACK_LIBRARY_PATH' does not contain "
+                        "the '%s' path in its value. This will make "
+                        "Theano use a slow version of BLAS. Update "
+                        "'DYLD_FALLBACK_LIBRARY_PATH' to contain the "
+                        "said value, this will disable this warning."
+                        % new_path)
+
+
+                    use_unix_epd = False
+            if use_unix_epd:
+                return ' '.join(
+                    ['-L%s' % os.path.join(sys.prefix, "lib")] +
+                    ['-l%s' % l for l in blas_info['libraries']])
+
         #if numpy was linked with library that are not installed, we
         #can't reuse them.
         if all(not os.path.exists(dir) for dir in blas_info['library_dirs']):
@@ -342,7 +382,8 @@ def default_blas_ldflags():
                         # we just pass the whole ldflags as the -l
                         # options part.
                         ['-L%s' % l for l in blas_info['library_dirs']] +
-                        ['-l%s' % l for l in blas_info['libraries']])
+                        ['-l%s' % l for l in blas_info['libraries']] +
+                        [])
 #                       ['-I%s' % l for l in blas_info['include_dirs']])
     except KeyError:
         return "-lblas"
@@ -378,6 +419,12 @@ def ldflags(libs=True, flags=False, libs_dir=False, include_dir=False):
                     "ATLAS, make sure to compile it with dynamics library.")
 
     for t in config.blas.ldflags.split():
+        #Remove extra quote.
+        if t.startswith("'") or t.startswith('"'):
+            t = t[1:]
+        if t.endswith("'") or t.endswith('"'):
+            t = t[:-1]
+
         try:
             t0, t1, t2 = t[0:3]
             assert t0 == '-'
@@ -453,16 +500,16 @@ class GemmRelated(Op):
     declare_NS = """
         int unit = 0;
 
-        int type_num = %(_x)s->descr->type_num;
-        int type_size = %(_x)s->descr->elsize; // in bytes
+        int type_num = PyArray_DESCR(%(_x)s)->type_num;
+        int type_size = PyArray_DESCR(%(_x)s)->elsize; // in bytes
 
-        npy_intp* Nx = %(_x)s->dimensions;
-        npy_intp* Ny = %(_y)s->dimensions;
-        npy_intp* Nz = 0; //%(_zout)s->dimensions;
+        npy_intp* Nx = PyArray_DIMS(%(_x)s);
+        npy_intp* Ny = PyArray_DIMS(%(_y)s);
+        npy_intp* Nz = 0; //PyArray_DIMS(%(_zout)s);
 
-        npy_intp* Sx = %(_x)s->strides;
-        npy_intp* Sy = %(_y)s->strides;
-        npy_intp* Sz = 0; //%(_zout)s->strides;
+        npy_intp* Sx = PyArray_STRIDES(%(_x)s);
+        npy_intp* Sy = PyArray_STRIDES(%(_y)s);
+        npy_intp* Sz = 0; //PyArray_STRIDES(%(_zout)s);
 
         //strides for x, y, z in dimensions 0, 1
         int sx_0, sx_1, sy_0, sy_1, sz_0, sz_1;
@@ -471,39 +518,49 @@ class GemmRelated(Op):
     #setup_z_Nz_Sz = None
 
     check_xyz_rank2 = """
-        if (%(_x)s->nd != 2) {
-            PyErr_Format(PyExc_NotImplementedError, "rank(x) != 2. rank(x) is %%d.", %(_x)s->nd); %(fail)s;}
-        if (%(_y)s->nd != 2) {
-            PyErr_Format(PyExc_NotImplementedError, "rank(y) != 2. rank(y) is %%d.", %(_y)s->nd); %(fail)s;}
-        if (%(_zout)s && %(_zout)s->nd != 2) {
-            PyErr_Format(PyExc_NotImplementedError, "rank(z) != 2. rank(z) is %%d.", %(_zout)s->nd); %(fail)s;}
+        if (PyArray_NDIM(%(_x)s) != 2) {
+            PyErr_Format(PyExc_NotImplementedError,
+                         "rank(x) != 2. rank(x) is %%d.",
+                         PyArray_NDIM(%(_x)s));
+            %(fail)s;
+        }
+        if (PyArray_NDIM(%(_y)s) != 2) {
+            PyErr_Format(PyExc_NotImplementedError,
+                         "rank(y) != 2. rank(y) is %%d.", PyArray_NDIM(%(_y)s));
+            %(fail)s;
+        }
+        if (%(_zout)s && PyArray_NDIM(%(_zout)s) != 2) {
+            PyErr_Format(PyExc_NotImplementedError,
+                         "rank(z) != 2. rank(z) is %%d.", PyArray_NDIM(%(_zout)s));
+            %(fail)s;
+        }
         """
     check_xyz_double_or_float = """
-        if ((%(_x)s->descr->type_num != PyArray_DOUBLE)
-            && (%(_x)s->descr->type_num != PyArray_FLOAT))
+        if ((PyArray_DESCR(%(_x)s)->type_num != NPY_DOUBLE)
+            && (PyArray_DESCR(%(_x)s)->type_num != NPY_FLOAT))
         {PyErr_SetString(PyExc_NotImplementedError, "type(x) is not double or float"); %(fail)s;}
 
-        if ((%(_y)s->descr->type_num != PyArray_DOUBLE)
-            && (%(_y)s->descr->type_num != PyArray_FLOAT))
+        if ((PyArray_DESCR(%(_y)s)->type_num != NPY_DOUBLE)
+            && (PyArray_DESCR(%(_y)s)->type_num != NPY_FLOAT))
         {PyErr_SetString(PyExc_NotImplementedError, "type(y) is not double or float"); %(fail)s;}
 
-        if ((%(_zout)s->descr->type_num != PyArray_DOUBLE)
-            && (%(_zout)s->descr->type_num != PyArray_FLOAT))
+        if ((PyArray_DESCR(%(_zout)s)->type_num != NPY_DOUBLE)
+            && (PyArray_DESCR(%(_zout)s)->type_num != NPY_FLOAT))
         {PyErr_SetString(PyExc_NotImplementedError, "type(z) is not double or float"); %(fail)s;}
 
-        if ((%(_x)s->descr->type_num != %(_y)s->descr->type_num)
-            ||(%(_x)s->descr->type_num != %(_zout)s->descr->type_num))
+        if ((PyArray_DESCR(%(_x)s)->type_num != PyArray_DESCR(%(_y)s)->type_num)
+            ||(PyArray_DESCR(%(_x)s)->type_num != PyArray_DESCR(%(_zout)s)->type_num))
         { PyErr_SetString(PyExc_NotImplementedError, "type(x), type(y), type(z) are not all the same"); %(fail)s; }
         """
 
     #it is not necessary that a or b have the same type as x,y,z
     check_ab_double_or_float = """
-        if ((%(_a)s->descr->type_num != PyArray_DOUBLE)
-            && (%(_a)s->descr->type_num != PyArray_FLOAT))
+        if ((PyArray_DESCR(%(_a)s)->type_num != NPY_DOUBLE)
+            && (PyArray_DESCR(%(_a)s)->type_num != NPY_FLOAT))
         {PyErr_SetString(PyExc_NotImplementedError, "type(a) is not double or float"); %(fail)s;}
 
-        if ((%(_b)s->descr->type_num != PyArray_DOUBLE)
-            && (%(_b)s->descr->type_num != PyArray_FLOAT))
+        if ((PyArray_DESCR(%(_b)s)->type_num != NPY_DOUBLE)
+            && (PyArray_DESCR(%(_b)s)->type_num != NPY_FLOAT))
         {PyErr_SetString(PyExc_NotImplementedError, "type(b) is not double or float"); %(fail)s;}
         """
 
@@ -547,7 +604,7 @@ class GemmRelated(Op):
                 %(fail)s
             Py_XDECREF(%(_x)s);
             %(_x)s = _x_copy;
-            Sx = %(_x)s->strides;
+            Sx = PyArray_STRIDES(%(_x)s);
         }
 
         if ((Sy[0] < 1) || (Sy[1] < 1) || (Sy[0] MOD type_size) || (Sy[1] MOD type_size)
@@ -558,7 +615,7 @@ class GemmRelated(Op):
                 %(fail)s
             Py_XDECREF(%(_y)s);
             %(_y)s = _y_copy;
-            Sy = %(_y)s->strides;
+            Sy = PyArray_STRIDES(%(_y)s);
         }
 
         if ((Sz[0] < 1) || (Sz[1] < 1) || (Sz[0] MOD type_size) || (Sz[1] MOD type_size)
@@ -569,7 +626,7 @@ class GemmRelated(Op):
                 %(fail)s
             Py_XDECREF(%(_zout)s);
             %(_zout)s = _z_copy;
-            Sz = %(_zout)s->strides;
+            Sz = PyArray_STRIDES(%(_zout)s);
         }
         """
 
@@ -604,7 +661,7 @@ class GemmRelated(Op):
         """
 
     case_float = """
-            case PyArray_FLOAT:
+            case NPY_FLOAT:
             {
         """
 
@@ -637,7 +694,7 @@ class GemmRelated(Op):
     case_double = """
             }
             break;
-            case PyArray_DOUBLE:
+            case NPY_DOUBLE:
             {
         """
 
@@ -838,25 +895,25 @@ class Gemm(GemmRelated):
             %(_zout)s = %(_z)s;
             Py_INCREF(%(_zout)s);
         }
-        Nz = %(_z)s->dimensions;
-        Sz = %(_z)s->strides;
+        Nz = PyArray_DIMS(%(_z)s);
+        Sz = PyArray_STRIDES(%(_z)s);
         """
 
     setup_z_Nz_Sz_outplace = """
         if ((NULL == %(_zout)s)
-            || (%(_zout)s->dimensions[0] != %(_z)s->dimensions[0])
-            || (%(_zout)s->dimensions[1] != %(_z)s->dimensions[1])
-            || (%(_zout)s->strides[0] <= 0)
-            || (%(_zout)s->strides[1] <= 0)
-            || (%(_zout)s->strides[0] MOD type_size)
-            || (%(_zout)s->strides[1] MOD type_size)
-            || ((%(_zout)s->strides[0] != type_size)
-                && (%(_zout)s->strides[1] != type_size)))
+            || (PyArray_DIMS(%(_zout)s)[0] != PyArray_DIMS(%(_z)s)[0])
+            || (PyArray_DIMS(%(_zout)s)[1] != PyArray_DIMS(%(_z)s)[1])
+            || (PyArray_STRIDES(%(_zout)s)[0] <= 0)
+            || (PyArray_STRIDES(%(_zout)s)[1] <= 0)
+            || (PyArray_STRIDES(%(_zout)s)[0] MOD type_size)
+            || (PyArray_STRIDES(%(_zout)s)[1] MOD type_size)
+            || ((PyArray_STRIDES(%(_zout)s)[0] != type_size)
+                && (PyArray_STRIDES(%(_zout)s)[1] != type_size)))
         {
             Py_XDECREF(%(_zout)s);
             npy_intp dims[2];
-            dims[0] = %(_z)s->dimensions[0];
-            dims[1] = %(_z)s->dimensions[1];
+            dims[0] = PyArray_DIMS(%(_z)s)[0];
+            dims[1] = PyArray_DIMS(%(_z)s)[1];
             %(_zout)s = (PyArrayObject*)PyArray_SimpleNew(2, dims,
                                                           type_num_%(_z)s);
             //fprintf(stderr, "Gemm Allocating %%i %%i\\n", dims[0], dims[1]);
@@ -866,17 +923,17 @@ class Gemm(GemmRelated):
                 %(fail)s
             }
         }
-        Nz = %(_zout)s->dimensions;
-        Sz = %(_zout)s->strides;
+        Nz = PyArray_DIMS(%(_zout)s);
+        Sz = PyArray_STRIDES(%(_zout)s);
 
-        if (%(_zout)s->descr->type_num == PyArray_FLOAT)
+        if (PyArray_DESCR(%(_zout)s)->type_num == NPY_FLOAT)
         {
-            float * zoutdata = (float*)%(_zout)s->data;
+            float * zoutdata = (float*)PyArray_DATA(%(_zout)s);
             int zoi = Sz[0] / sizeof(float);
             int zoj = Sz[1] / sizeof(float);
-            const float * zdata = (float*)%(_z)s->data;
-            int zi = %(_z)s->strides[0]/sizeof(float);
-            int zj = %(_z)s->strides[1]/sizeof(float);
+            const float * zdata = (float*)PyArray_DATA(%(_z)s);
+            int zi = PyArray_STRIDES(%(_z)s)[0]/sizeof(float);
+            int zj = PyArray_STRIDES(%(_z)s)[1]/sizeof(float);
             for (int i = 0; i < Nz[0]; ++i)
             {
                 for (int j = 0; j < Nz[1]; ++j)
@@ -885,14 +942,14 @@ class Gemm(GemmRelated):
                 }
             }
         }
-        else if (%(_zout)s->descr->type_num == PyArray_DOUBLE)
+        else if (PyArray_DESCR(%(_zout)s)->type_num == NPY_DOUBLE)
         {
-            double * zoutdata = (double*) %(_zout)s->data;
+            double * zoutdata = (double*) PyArray_DATA(%(_zout)s);
             int zoi = Sz[0] / sizeof(double);
             int zoj = Sz[1] / sizeof(double);
-            const double * zdata = (double*)%(_z)s->data;
-            int zi = %(_z)s->strides[0]/sizeof(double);
-            int zj = %(_z)s->strides[1]/sizeof(double);
+            const double * zdata = (double*)PyArray_DATA(%(_z)s);
+            int zi = PyArray_STRIDES(%(_z)s)[0]/sizeof(double);
+            int zj = PyArray_STRIDES(%(_z)s)[1]/sizeof(double);
             for (int i = 0; i < Nz[0]; ++i)
             {
                 for (int j = 0; j < Nz[1]; ++j)
@@ -911,22 +968,22 @@ class Gemm(GemmRelated):
 
     case_float_ab_constants = """
         #define REAL float
-        float a = (%(_a)s->descr->type_num == PyArray_FLOAT)
-        ? (REAL)(((float*)%(_a)s->data)[0])
-        : (REAL)(((double*)%(_a)s->data)[0]);
-        float b = (%(_b)s->descr->type_num == PyArray_FLOAT) ?
-        (REAL)(((float*)%(_b)s->data)[0])
-        : (REAL)(((double*)%(_b)s->data)[0]);
+        float a = (PyArray_DESCR(%(_a)s)->type_num == NPY_FLOAT)
+        ? (REAL)(((float*)PyArray_DATA(%(_a)s))[0])
+        : (REAL)(((double*)PyArray_DATA(%(_a)s))[0]);
+        float b = (PyArray_DESCR(%(_b)s)->type_num == NPY_FLOAT) ?
+        (REAL)(((float*)PyArray_DATA(%(_b)s))[0])
+        : (REAL)(((double*)PyArray_DATA(%(_b)s))[0]);
         #undef REAL
         """
     case_double_ab_constants = """
         #define REAL double
-        double a = (%(_a)s->descr->type_num == PyArray_FLOAT)
-        ? (REAL)(((float*)%(_a)s->data)[0])
-        : (REAL)(((double*)%(_a)s->data)[0]);
-        double b = (%(_b)s->descr->type_num == PyArray_FLOAT) ?
-        (REAL)(((float*)%(_b)s->data)[0])
-        : (REAL)(((double*)%(_b)s->data)[0]);
+        double a = (PyArray_DESCR(%(_a)s)->type_num == NPY_FLOAT)
+        ? (REAL)(((float*)PyArray_DATA(%(_a)s))[0])
+        : (REAL)(((double*)PyArray_DATA(%(_a)s))[0]);
+        double b = (PyArray_DESCR(%(_b)s)->type_num == NPY_FLOAT) ?
+        (REAL)(((float*)PyArray_DATA(%(_b)s))[0])
+        : (REAL)(((double*)PyArray_DATA(%(_b)s))[0]);
         #undef REAL
         """
 
@@ -952,6 +1009,8 @@ class Gemm(GemmRelated):
 
 gemm_inplace = Gemm(inplace=True)
 gemm_no_inplace = Gemm(inplace=False)
+# For the user interface. Theano optimization will make them inplace
+gemm = gemm_no_inplace
 pprint.assign(gemm_inplace, FunctionPrinter('gemm_inplace'))
 pprint.assign(gemm_no_inplace, FunctionPrinter('gemm_no_inplace'))
 
@@ -1016,7 +1075,7 @@ def _beta_L_plus_alpha_M(beta, L, alpha, M, recurse_flip=True):
         Ml, Mr = M.owner.inputs
         rval = [gemm_no_inplace(L, alpha, Ml, Mr, beta)]
         #print 'GEMM 0', rval, beta, L, alpha, M
-        return rval
+        return rval, M
 
     # it also might be the case that there is a dimshuffle between the +
     # and the dot22. local_dot_to_dot22 in particular will put in such things.
@@ -1029,7 +1088,7 @@ def _beta_L_plus_alpha_M(beta, L, alpha, M, recurse_flip=True):
                 g = gemm_no_inplace(L.dimshuffle(0, 'x'),
                         alpha, MMl, MMr, beta)
                 rval = [g.dimshuffle(0)]
-                return rval
+                return rval, MM
         if tuple(M.owner.op.new_order) == (1,):
             # it is making a row MM into a vector
             if MM.owner and MM.owner.op == _dot22:
@@ -1037,7 +1096,7 @@ def _beta_L_plus_alpha_M(beta, L, alpha, M, recurse_flip=True):
                 g = gemm_no_inplace(L.dimshuffle('x', 0),
                         alpha, MMl, MMr, beta)
                 rval = [g.dimshuffle(1)]
-                return rval
+                return rval, MM
         if tuple(M.owner.op.new_order) == ():
             # it is making a row MM into a vector
             if MM.owner and MM.owner.op == _dot22:
@@ -1045,7 +1104,7 @@ def _beta_L_plus_alpha_M(beta, L, alpha, M, recurse_flip=True):
                 g = gemm_no_inplace(L.dimshuffle('x', 'x'),
                         alpha, MMl, MMr, beta)
                 rval = [g.dimshuffle()]
-                return rval
+                return rval, MM
 
     # this is False'd out because of inadequate testing.
     # TODO see ticket #237
@@ -1079,7 +1138,7 @@ def _beta_L_plus_alpha_M(beta, L, alpha, M, recurse_flip=True):
     if recurse_flip:
         return _beta_L_plus_alpha_M(alpha, M, beta, L, recurse_flip=False)
     else:
-        return False
+        return False, False
 
 
 def _gemm_canonicalize(r, scale, rval, maxclients):
@@ -1244,7 +1303,8 @@ def _gemm_from_factored_list(lst):
 
             #print 'TRYING', (s_i, M_i, s_j, M_j)
 
-            gemm_of_sM_list = _beta_L_plus_alpha_M(s_i, M_i, s_j, M_j)
+            gemm_of_sM_list, old_dot22 = _beta_L_plus_alpha_M(s_i, M_i,
+                                                              s_j, M_j)
             #print 'GOT IT', gemm_of_sM_list
             if gemm_of_sM_list:
                 def item_to_var(t):
@@ -1267,7 +1327,7 @@ def _gemm_from_factored_list(lst):
                 else:
                     rval = add_inputs
                 #print "RETURNING GEMM THIGN", rval
-                return rval
+                return rval, old_dot22
 
 
 def _gemm_from_node2(node):
@@ -1280,11 +1340,16 @@ def _gemm_from_node2(node):
 
     """
     lst = []
+    t0 = time.time()
     _gemm_canonicalize(node.outputs[0], 1.0, lst, 0)
+    t1 = time.time()
+
     #print "GEMM CANON", lst
     if len(lst) > 1:
         lst = _factor_canonicalized(lst)
+        t2 = time.time()
         rval = _gemm_from_factored_list(lst)
+        t3 = time.time()
 
         # It can happen that _factor_canonicalized and
         # _gemm_from_factored_list return a node with an incorrect
@@ -1295,43 +1360,98 @@ def _gemm_from_node2(node):
         # http://groups.google.com/group/theano-dev/browse_thread/thread/a3096c82856e3ad5,
         # but never made it into a trac ticket.
 
-        if rval and (rval[0].type == node.outputs[0].type):
-            return rval
+        if rval and (rval[0][0].type == node.outputs[0].type):
+            return rval, t1 - t0, t2 - t1, t3 - t2
+
+    return None, t1 - t0, 0, 0
 
 
 class GemmOptimizer(Optimizer):
     """Graph optimizer for inserting Gemm operations"""
     def __init__(self):
         Optimizer.__init__(self)
+        self.warned = False
 
-    def add_requirements(self, env):
-        env.extend(toolbox.ReplaceValidate())
-        env.extend(DestroyHandler())
+    def add_requirements(self, fgraph):
+        fgraph.attach_feature(toolbox.ReplaceValidate())
+        fgraph.attach_feature(DestroyHandler())
 
-    def apply(self, env):
+    def apply(self, fgraph):
         did_something = True
+        nb_iter = 0
+        nb_replacement = 0
+        nb_replacement_didn_t_remove = 0
+        nb_inconsistency_make = 0
+        nb_inconsistency_replace = 0
+        time_canonicalize = 0
+        time_factor_can = 0
+        time_factor_list = 0
+        time_toposort = 0
         while did_something:
-            nodelist = list(env.toposort())
+            t0 = time.time()
+            nodelist = list(fgraph.toposort())
+            time_toposort += time.time() - t0
             did_something = False
             nodelist.reverse()
             for node in nodelist:
+                if not (isinstance(node.op, T.Elemwise) and
+                        isinstance(node.op.scalar_op,
+                                   (theano.scalar.Add, theano.scalar.Sub,
+                                    theano.scalar.Neg, theano.scalar.Mul))):
+                    continue
+                if not node in fgraph.apply_nodes:
+                    # This mean that we already removed this node from
+                    # the graph
+                    continue
                 try:
-                    new_outputs = _gemm_from_node2(node)
+                    new_outputs, time1, time2, time3 = _gemm_from_node2(node)
+                    time_canonicalize += time1
+                    time_factor_can += time2
+                    time_factor_list += time3
                 except InconsistencyError, e:
+                    nb_inconsistency_make += 1
                     continue
                 if new_outputs:
+                    new_outputs, old_dot22 = new_outputs
                     assert len(new_outputs) == len(node.outputs)
                     try:
-                        env.replace_all_validate(
-                                zip(node.outputs, new_outputs),
-                                reason='GemmOptimizer'
+                        fgraph.replace_all_validate_remove(
+                            zip(node.outputs, new_outputs),
+                            [old_dot22],
+                            reason='GemmOptimizer',
+                            #For now we disable the warning as we know case
+                            #that we need to fix.
+                            warn=False,  # warn=not self.warned
                         )
                         did_something = True
-                        break
+                        nb_replacement += 1
                     except InconsistencyError, e:
                         # TODO: retry other applications of gemm (see comment
                         # in _gemm_from_node)
-                        pass
+                        nb_inconsistency_replace += 1
+                    except ReplacementDidntRemovedError, e:
+                        nb_replacement_didn_t_remove += 1
+                        self.warned = True
+            nb_iter += 1
+        return (self, nb_iter, nb_replacement, nb_replacement_didn_t_remove,
+                nb_inconsistency_make, nb_inconsistency_replace,
+                time_canonicalize, time_factor_can,
+                time_factor_list, time_toposort)
+
+    @staticmethod
+    def print_profile(stream, prof, level=0):
+        blanc = ('    ' * level)
+        #1946.912556s - ('gemm_optimizer', 'GemmOptimizer', 1)
+        print >> stream, blanc, "GemmOptimizer"
+        print >> stream, blanc, " nb_iter", prof[1]
+        print >> stream, blanc, " nb_replacement", prof[2]
+        print >> stream, blanc, " nb_replacement_didn_t_remove", prof[3]
+        print >> stream, blanc, " nb_inconsistency_make", prof[4]
+        print >> stream, blanc, " nb_inconsistency_replace", prof[5]
+        print >> stream, blanc, " time_canonicalize", prof[6]
+        print >> stream, blanc, " time_factor_can", prof[7]
+        print >> stream, blanc, " time_factor_list", prof[8]
+        print >> stream, blanc, " time_toposort", prof[9]
 
 
 class Dot22(GemmRelated):
@@ -1366,13 +1486,13 @@ class Dot22(GemmRelated):
 
     setup_z_Nz_Sz = """
         if ((NULL == %(_zout)s)
-            || (%(_zout)s->dimensions[0] != %(_x)s->dimensions[0])
-            || (%(_zout)s->dimensions[1] != %(_y)s->dimensions[1]))
+            || (PyArray_DIMS(%(_zout)s)[0] != PyArray_DIMS(%(_x)s)[0])
+            || (PyArray_DIMS(%(_zout)s)[1] != PyArray_DIMS(%(_y)s)[1]))
         {
             if (NULL != %(_zout)s) Py_XDECREF(%(_zout)s);
             npy_intp dims[2];
-            dims[0] = %(_x)s->dimensions[0];
-            dims[1] = %(_y)s->dimensions[1];
+            dims[0] = PyArray_DIMS(%(_x)s)[0];
+            dims[1] = PyArray_DIMS(%(_y)s)[1];
             %(_zout)s = (PyArrayObject*)PyArray_SimpleNew(2, dims,
                             type_num_%(_x)s);
             //fprintf(stderr, "Dot Allocating %%i %%i\\n", dims[0], dims[1]);
@@ -1382,8 +1502,8 @@ class Dot22(GemmRelated):
                 %(fail)s
             }
         }
-        Nz = %(_zout)s->dimensions;
-        Sz = %(_zout)s->strides;
+        Nz = PyArray_DIMS(%(_zout)s);
+        Sz = PyArray_STRIDES(%(_zout)s);
 
         """
     check_ab_double_or_float = ""
@@ -1537,19 +1657,19 @@ def local_dot22_to_ger_or_gemv(node):
             # TODO: Theano doesn't have a sdot, but gemv is better than _dot22
             xv = x.dimshuffle(1)
             zeros = T.zeros([1], x.dtype)
-            rval = gemv_no_inplace(zeros, one, y.T, xv, one)
+            rval = gemv_no_inplace(zeros, one, y.T, xv, zero)
             return [rval.dimshuffle('x', 0)]
         if xb[0] and not yb[0] and not yb[1]:
             # x is vector, y is matrix so try gemv
             xv = x.dimshuffle(1)
             zeros = T.zeros([y.shape[1]], x.dtype)
-            rval = gemv_no_inplace(zeros, one, y.T, xv, one)
+            rval = gemv_no_inplace(zeros, one, y.T, xv, zero)
             return [rval.dimshuffle('x', 0)]
         if not xb[0] and not xb[1] and yb[1]:
             # x is matrix, y is vector, try gemv
             yv = y.dimshuffle(0)
             zeros = T.zeros([x.shape[0]], dtype=x.dtype)
-            rval = gemv_no_inplace(zeros, one, x, yv, one)
+            rval = gemv_no_inplace(zeros, one, x, yv, zero)
             return [rval.dimshuffle(0, 'x')]
 
 
@@ -1640,26 +1760,26 @@ class Dot22Scalar(GemmRelated):
     setup_z_Nz_Sz = Dot22.setup_z_Nz_Sz
 
     check_ab_double_or_float = """
-        if ((%(_a)s->descr->type_num != PyArray_DOUBLE)
-            && (%(_a)s->descr->type_num != PyArray_FLOAT))
+        if ((PyArray_DESCR(%(_a)s)->type_num != NPY_DOUBLE)
+            && (PyArray_DESCR(%(_a)s)->type_num != NPY_FLOAT))
         {PyErr_SetString(PyExc_NotImplementedError,
                          "type(a) is not double or float"); %(fail)s;}
 
         """
     case_float_ab_constants = """
         #define REAL float
-        float a = (%(_a)s->descr->type_num == PyArray_FLOAT)
-        ? (REAL)(((float*)%(_a)s->data)[0])
-        : (REAL)(((double*)%(_a)s->data)[0]);
+        float a = (PyArray_DESCR(%(_a)s)->type_num == NPY_FLOAT)
+        ? (REAL)(((float*)PyArray_DATA(%(_a)s))[0])
+        : (REAL)(((double*)PyArray_DATA(%(_a)s))[0]);
         #undef REAL
         float b = 0.0;
         """
 
     case_double_ab_constants = """
         #define REAL double
-        double a = (%(_a)s->descr->type_num == PyArray_FLOAT)
-        ? (REAL)(((float*)%(_a)s->data)[0])
-        : (REAL)(((double*)%(_a)s->data)[0]);
+        double a = (PyArray_DESCR(%(_a)s)->type_num == NPY_FLOAT)
+        ? (REAL)(((float*)PyArray_DATA(%(_a)s))[0])
+        : (REAL)(((double*)PyArray_DATA(%(_a)s))[0]);
         #undef REAL
         double b = 0.0;
         """

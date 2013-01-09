@@ -1,19 +1,28 @@
 
-"""WRITEME"""
+"""
+fg.py: fg stands for FunctionGraph
+Contains the FunctionGraph class and exception
+types that it can raise
+"""
 import sys
-from copy import copy
 import graph
 import utils
 import toolbox
+from python25 import all
 from theano import config
-
+import warnings
+NullType = None
+import theano
+from python25 import OrderedDict
+from theano.misc.ordered_set import OrderedSet
 
 class InconsistencyError(Exception):
     """
-    This exception should be thrown by listeners to Env when the
+    This exception should be thrown by listeners to FunctionGraph when the
     graph's state is invalid.
     """
     pass
+
 
 class MissingInputError(Exception):
     """
@@ -22,74 +31,47 @@ class MissingInputError(Exception):
     pass
 
 
-
-class Env(utils.object2):
+class FunctionGraph(utils.object2):
     """ WRITEME
-    An Env represents a subgraph bound by a set of input variables and a
-    set of output variables. The inputs list should contain all the inputs
-    on which the outputs depend. Variables of type Value or Constant are
+    A FunctionGraph represents a subgraph bound by a set of input variables and a
+    set of output variables, ie a subgraph that specifies a theano function.
+    The inputs list should contain all the inputs
+    on which the outputs depend. Variables of type Constant are
     not counted as inputs.
 
-    The Env supports the replace operation which allows to replace a
+    The FunctionGraph supports the replace operation which allows to replace a
     variable in the subgraph by another, e.g. replace (x + x).out by (2
     * x).out. This is the basis for optimization in theano.
 
-    It can also be "extended" using env.extend(some_object). See the
-    toolbox and ext modules for common extensions.
+    This class is also reponsible for verifying that a graph is valid
+    (ie, all the dtypes and broadcast patterns are compatible with the
+    way the the Variables are used) and for annotating the Variables with
+    a .clients field that specifies which Apply nodes use the variable.
+    The .clients field combined with the .owner field and the Apply nodes'
+    .inputs field allows the graph to be traversed in both directions.
 
-    Features added with the`extend` function can handle the following events:
+    It can also be extended with new features using
+    FunctionGraph.attach_feature(<toolbox.Feature instance>).
+    See toolbox.Feature for event types and documentation.
+    Extra features allow the FunctionGraph to verify new properties of
+    a graph as it is optimized.
+    # TODO: are there other things features can do to the fgraph?
 
-    - feature.on_attach(env)
-        Called by extend. The feature has great freedom in what
-        it can do with the env: it may, for example, add methods
-        to it dynicamically.
-
-    - feature.on_detach(env)
-        Called by remove_feature(feature).  Should remove any dynamically-added
-        functionality that it installed into the env.
-
-    - feature.on_import(env, node)*
-        Called whenever a node is imported into env, which is
-        just before the node is actually connected to the graph.
-
-    - feature.on_prune(env, node)*
-        Called whenever a node is pruned (removed) from the env,
-        after it is disconnected from the graph.
-
-    - feature.on_change_input(env, node, i, r, new_r, [reason=None])*
-        Called whenever node.inputs[i] is changed from r to new_r.
-        At the moment the callback is done, the change has already
-        taken place.
-
-    - feature.orderings(env)
-        Called by toposort. It should return a dictionary of
-        {node: predecessors} where predecessors is a list of
-        nodes that should be computed before the key node.
-
-        * If you raise an exception in the functions marked with an
-          asterisk, the state of the graph might be inconsistent.
-
-    - feature.on_setup_node(env, node):
-        WRITEME
-
-    - feature.on_setup_variable(env, variable):
-        WRITEME
+    Historically, the FunctionGraph was called an Env. Keep this in mind
+    while reading out-of-date documentation, e-mail support threads, etc.
 
     """
 
-    ### Special ###
-    # TODO: document which things that features can do to the env
-
     def __init__(self, inputs, outputs, features=None):
         """
-        Create an Env which operates on the subgraph bound by the inputs and
+        Create an FunctionGraph which operates on the subgraph bound by the inputs and
         outputs sets.
 
         This class keeps a pointer to the inputs and outputs, and also modifies
         them.
 
-        #TODO: document what variables are[not] set in the env when a feature
-        is added via the constructor.  How constructed is the env?
+        #TODO: document what variables are[not] set in the FunctionGraph when a feature
+        is added via the constructor.  How constructed is the FunctionGraph?
 
         """
 
@@ -100,18 +82,18 @@ class Env(utils.object2):
         # so I probably am) this should be a set.
         self._features = []
 
-        # All nodes in the subgraph defined by inputs and outputs are cached in nodes
-        self.nodes = set()
+        # All apply nodes in the subgraph defined by inputs and outputs are cached in this field
+        self.apply_nodes = set()
 
-        # Ditto for variables
+        # Ditto for variable nodes
         self.variables = set()
 
         self.inputs = list(inputs)
         self.outputs = outputs
 
         for f in features:
-            self.extend(f)
-        self.extend(toolbox.ReplaceValidate())
+            self.attach_feature(f)
+        self.attach_feature(toolbox.ReplaceValidate())
 
         for input in self.inputs:
             if input.owner is not None:
@@ -128,44 +110,57 @@ class Env(utils.object2):
 
         self.node_locks = {}
         self.variable_locks = {}
+        self.profile = None
 
 
     ### Setup a Variable ###
 
     def __setup_r__(self, r):
-        # sets up r so it belongs to this env
-        if hasattr(r, 'env') and r.env is not None and r.env is not self:
-            raise Exception("%s is already owned by another env" % r)
-        r.env = self
+        # sets up r so it belongs to this fgraph
+        if hasattr(r, 'fgraph') and r.fgraph is not None and r.fgraph is not self:
+            raise Exception("%s is already owned by another fgraph" % r)
+        r.fgraph = self
         r.clients = []
         #self.execute_callbacks('on_setup_variable', r)
 
     def __setup_node__(self, node):
-        # sets up node so it belongs to this env
-        if hasattr(node, 'env') and node.env is not self:
-            raise Exception("%s is already owned by another env" % node)
-        node.env = self
+        # sets up node so it belongs to this fgraph
+        if hasattr(node, 'fgraph') and node.fgraph is not self:
+            raise Exception("%s is already owned by another fgraph" % node)
+        if (hasattr(node.op, 'view_map') and
+            not all([isinstance(view, (list, tuple))
+                     for view in node.op.view_map.values()])):
+            raise Exception("Op '%s' have a bad view map '%s',"
+                            " the values must be tuples or lists." % (
+                                str(node.op), str(node.op.view_map)))
+        if (hasattr(node.op, 'destroy_map') and
+            not all([isinstance(destroy, (list, tuple))
+                     for destroy in node.op.destroy_map.values()])):
+            raise Exception("Op '%s' have a bad destroy map '%s',"
+                            " the values must be tuples or lists." % (
+                                str(node.op), str(node.op.destroy_map)))
+        node.fgraph = self
         node.deps = {}
         #self.execute_callbacks('on_setup_node', node)
 
     def disown(self):
         """ WRITEME
-        Cleans up all of this Env's nodes and variables so they are not
-        associated with this Env anymore.
+        Cleans up all of this FunctionGraph's nodes and variables so they are not
+        associated with this FunctionGraph anymore.
 
-        The Env should not be used anymore after disown is called.
+        The FunctionGraph should not be used anymore after disown is called.
 
-        This may not clean everything this Env's features set in the
+        This may not clean everything this FunctionGraph's features set in the
         nodes and variables. If there are no features, this should set
         them back to what they were originally.
         """
-        for node in self.nodes:
-            del node.env
-            del node.deps
+        for apply_node in self.apply_nodes:
+            del apply_node.fgraph
+            del apply_node.deps
         for variable in self.variables:
-            del variable.env
+            del variable.fgraph
             del variable.clients
-        self.nodes = set()
+        self.apply_nodes = set()
         self.variables = set()
         self.inputs = None
         self.outputs = None
@@ -219,20 +214,27 @@ class Env(utils.object2):
     ### import ###
 
     def __import_r__(self, variables):
+        global NullType
+        if NullType is None:
+            from null_type import NullType
         # Imports the owners of the variables
-        r_owner_done = set(self.nodes)
-        for node in [r.owner for r in variables if r.owner is not None]:
-            if node not in r_owner_done:
-                r_owner_done.add(node)
-                self.__import__(node)
+        r_owner_done = set(self.apply_nodes)
+        for apply_node in [r.owner for r in variables if r.owner is not None]:
+            if apply_node not in r_owner_done:
+                r_owner_done.add(apply_node)
+                self.__import__(apply_node)
         for r in variables:
-            if r.owner is None and not isinstance(r, graph.Value) and r not in self.inputs:
+            if r.owner is None and not isinstance(r, graph.Constant) and r not in self.inputs:
+                if isinstance(r.type,NullType):
+                    raise TypeError("Computation graph contains a NaN. "+r.type.why_null)
                 raise MissingInputError("Undeclared input", r)
-            if not getattr(r, 'env', None) is self:
+            if not getattr(r, 'fgraph', None) is self:
                 self.__setup_r__(r)
             self.variables.add(r)
 
-    def __import__(self, node, check = True):
+    def __import__(self, apply_node, check = True):
+        node = apply_node
+
         # We import the nodes in topological order. We only are interested
         # in new nodes, so we use all variables we know of as if they were the input set.
         # (the functions in the graph module only use the input set to
@@ -241,12 +243,12 @@ class Env(utils.object2):
 
         if check:
             for node in new_nodes:
-                if hasattr(node, 'env') and node.env is not self:
-                    raise Exception("%s is already owned by another env" % node)
+                if hasattr(node, 'fgraph') and node.fgraph is not self:
+                    raise Exception("%s is already owned by another fgraph" % node)
                 for r in node.inputs:
-                    if hasattr(r, 'env') and r.env is not self:
-                        raise Exception("%s is already owned by another env" % r)
-                    if r.owner is None and not isinstance(r, graph.Value) and r not in self.inputs:
+                    if hasattr(r, 'fgraph') and r.fgraph is not self:
+                        raise Exception("%s is already owned by another fgraph" % r)
+                    if r.owner is None and not isinstance(r, graph.Constant) and r not in self.inputs:
 
                         #Verbose error message
                         #Show a complete chain of variables from the missing input to an output
@@ -314,9 +316,9 @@ class Env(utils.object2):
                             r)
 
         for node in new_nodes:
-            assert node not in self.nodes
+            assert node not in self.apply_nodes
             self.__setup_node__(node)
-            self.nodes.add(node)
+            self.apply_nodes.add(node)
             for output in node.outputs:
                 self.__setup_r__(output)
                 self.variables.add(output)
@@ -325,7 +327,7 @@ class Env(utils.object2):
                     self.__setup_r__(input)
                     self.variables.add(input)
                 self.__add_clients__(input, [(node, i)])
-            assert node.env is self
+            assert node.fgraph is self
             self.execute_callbacks('on_import', node)
 
 
@@ -339,10 +341,11 @@ class Env(utils.object2):
             if not r.clients and r in self.variables:
                 self.variables.remove(r)
 
-    def __prune__(self, node):
-        if node not in self.nodes:
-            raise Exception("%s does not belong to this Env and cannot be pruned." % node)
-        assert node.env is self
+    def __prune__(self, apply_node):
+        node = apply_node
+        if node not in self.apply_nodes:
+            raise Exception("%s does not belong to this FunctionGraph and cannot be pruned." % node)
+        assert node.fgraph is self
         # If node's outputs have no clients, removes it from the graph
         # and recursively tries to prune its inputs. If at least one
         # of the op's outputs is an output to the graph or has a client
@@ -351,7 +354,7 @@ class Env(utils.object2):
             # Cannot prune an op which is an output or used somewhere
             if self.clients(output) or output in self.outputs: #output in self.outputs or self.clients(output):
                 return
-        self.nodes.remove(node)
+        self.apply_nodes.remove(node)
         self.variables.difference_update(node.outputs)
         self.execute_callbacks('on_prune', node)
 
@@ -371,7 +374,7 @@ class Env(utils.object2):
         current value of node.inputs[i] which we want to replace.
 
         For each feature that has a 'on_change_input' method, calls:
-          feature.on_change_input(env, node, i, old_r, new_r, [reason])
+          feature.on_change_input(function_graph, node, i, old_r, new_r, [reason])
         """
         # TODO: ERROR HANDLING FOR LISTENERS (should it complete the change or revert it?)
         if node == 'output':
@@ -382,9 +385,9 @@ class Env(utils.object2):
                         r, new_r)
             self.outputs[i] = new_r
         else:
-            if node.env is not self:
+            if node.fgraph is not self:
                 raise Exception("Cannot operate on %s because it does not"
-                        " belong to this Env" % node)
+                        " belong to this FunctionGraph" % node)
             r = node.inputs[i]
             if not r.type == new_r.type:
                 raise TypeError("The type of the replacement must be the"
@@ -411,11 +414,11 @@ class Env(utils.object2):
 
     def replace(self, r, new_r, reason=None):
         """ WRITEME
-        This is the main interface to manipulate the subgraph in Env.
+        This is the main interface to manipulate the subgraph in FunctionGraph.
         For every node that uses r as input, makes it use new_r instead.
         """
-        if r.env is not self:
-            raise Exception("Cannot replace %s because it does not belong to this Env" % r, str(reason))
+        if r.fgraph is not self:
+            raise Exception("Cannot replace %s because it does not belong to this FunctionGraph" % r, str(reason))
         if not r.type == new_r.type:
             raise TypeError("The type of the replacement must be the same as the type of the original Variable.", r, new_r, r.type, new_r.type, str(reason))
         if r not in self.variables:
@@ -438,32 +441,47 @@ class Env(utils.object2):
             self.replace(r, new_r, reason=reason)
 
 
-    ### features ###
 
-    # XXX: This is terribly named. The "extend" method of a list
-    # takes a sequence, and since this is a kind of container you
-    # would expect it to do similarly.
     def extend(self, feature):
-        """WRITEME
-        Adds a feature to this env. The feature may define one
-        or more of the following methods:
+        warnings.warn("FunctionGraph.extend is deprecatd. It has been "
+                "renamed to FunctionGraph.attach_feature")
+        return self.attach_feature(feature)
 
+    def attach_feature(self, feature):
         """
+        Adds a gof.toolbox.Feature to this function_graph
+        and triggers its on_attach callback
+        """
+
+        # Filter out literally identical features
         if feature in self._features:
             return # the feature is already present
+
+        # Filter out functionally identical features.
+        # Features may use their on_attach method to raise
+        # toolbox.AlreadyThere if they detect that some
+        # installed feature does the same thing already
         attach = getattr(feature, 'on_attach', None)
         if attach is not None:
             try:
                 attach(self)
             except toolbox.AlreadyThere:
                 return
+
+        #it would be nice if we could require a specific class instead of
+        #a "workalike" so we could do actual error checking
+        #if not isinstance(feature, toolbox.Feature):
+        #    raise TypeError("Expected gof.toolbox.Feature instance, got "+\
+        #            str(type(feature)))
+
+        # Add the feature
         self._features.append(feature)
 
     def remove_feature(self, feature):
         """WRITEME
         Removes the feature from the graph.
 
-        Calls feature.on_detach(env) if an on_detach method is defined.
+        Calls feature.on_detach(function_graph) if an on_detach method is defined.
         """
         try:
             self._features.remove(feature)
@@ -486,6 +504,9 @@ class Env(utils.object2):
             try:
                 fn = getattr(feature, name)
             except AttributeError:
+                # this is safe because there is no work done inside the
+                # try; the AttributeError reall must come from feature.${name}
+                # not existing
                 continue
 
             #####HORRIBLE OPTIONAL ARGUMENT HACK
@@ -524,19 +545,22 @@ class Env(utils.object2):
             an 'orderings' method.
 
         If a feature has an 'orderings' method, it will be called with
-        this env as sole argument. It should return a dictionary of
+        this FunctionGraph as sole argument. It should return a dictionary of
         {node: predecessors} where predecessors is a list of nodes
         that should be computed before the key node.
         """
-        if len(self.nodes) < 2:
+        if len(self.apply_nodes) < 2:
             # optimization
             # when there are 0 or 1 nodes, no sorting is necessary
             # This special case happens a lot because the OpWiseCLinker produces
             # 1-element graphs.
-            return list(self.nodes)
-        env = self
+            return list(self.apply_nodes)
+        fg = self
+
         ords = self.orderings()
-        order = graph.io_toposort(env.inputs, env.outputs, ords)
+
+        order = graph.io_toposort(fg.inputs, fg.outputs, ords)
+
         return order
 
     def orderings(self):
@@ -546,48 +570,67 @@ class Env(utils.object2):
 
         This is used primarily by the destroy_handler feature to ensure that all
         clients of any destroyed inputs have already computed their outputs.
+
+        :note: This only calls the orderings() fct on all features. It does not
+               take care of computing dependencies by itself.
+
         """
-        ords = {}
+        ords =  OrderedDict()
+        assert isinstance(self._features, list)
         for feature in self._features:
             if hasattr(feature, 'orderings'):
-                for node, prereqs in feature.orderings(self).items():
+                orderings = feature.orderings(self)
+                if not isinstance(orderings, OrderedDict):
+                    raise TypeError("Non-deterministic return value from " \
+                            +str(feature.orderings) \
+                            +". Nondeterministic object is "+str(orderings))
+                for node, prereqs in orderings.items():
+                    if not isinstance(prereqs, (list, OrderedSet)):
+                        raise TypeError("prereqs must be a type with a "
+                                "deterministic iteration order, or toposort "
+                                " will be non-deterministic.")
                     ords.setdefault(node, []).extend(prereqs)
         # eliminate duplicate prereqs
         for (node,prereqs) in ords.items():
-            ords[node] = list(set(prereqs))
+            ords[node] = list(OrderedSet(prereqs))
         return ords
 
     def nclients(self, r):
         """WRITEME Same as len(self.clients(r))."""
         return len(self.clients(r))
 
-#     def edge(self, r):
-#         return r in self.inputs or r in self.orphans
+    def nodes_getter(self):
+        warnings.warn("FunctionGraph.nodes is deprecated, it has been renamed 'apply_nodes'",
+                stacklevel=2)
+        return self.apply_nodes
 
-#     def follow(self, r):
-#         node = r.owner
-#         if self.edge(r):
-#             return None
-#         else:
-#             if node is None:
-#                 raise Exception("what the fuck")
-#             return node.inputs
+    def nodes_setter(self, value):
+        warnings.warn("FunctionGraph.nodes is deprecated, it has been renamed 'apply_nodes'",
+                stacklevel=2)
+        self.apply_nodes = value
+
+    def nodes_deleter(self):
+        warnings.warn("FunctionGraph.nodes is deprecated, it has been renamed 'apply_nodes'",
+                stacklevel=2)
+        del self.apply_nodes
+
+    nodes = property(nodes_getter, nodes_setter, nodes_deleter)
 
     def check_integrity(self):
         """WRITEME
         Call this for a diagnosis if things go awry.
         """
         nodes = graph.ops(self.inputs, self.outputs)
-        if self.nodes != nodes:
-            missing = nodes.difference(self.nodes)
-            excess = self.nodes.difference(nodes)
+        if self.apply_nodes != nodes:
+            missing = nodes.difference(self.apply_nodes)
+            excess = self.apply_nodes.difference(nodes)
             raise Exception("The nodes are inappropriately cached. missing, in excess: ", missing, excess)
         for node in nodes:
-            if node.env is not self:
-                raise Exception("Node should belong to the env.", node)
+            if node.fgraph is not self:
+                raise Exception("Node should belong to the FunctionGraph.", node)
             for i, variable in enumerate(node.inputs):
-                if variable.env is not self:
-                    raise Exception("Input of node should belong to the env.", variable, (node, i))
+                if variable.fgraph is not self:
+                    raise Exception("Input of node should belong to the FunctionGraph.", variable, (node, i))
                 if (node, i) not in variable.clients:
                     raise Exception("Inconsistent clients list.", (node, i), variable.clients)
         variables = set(graph.variables(self.inputs, self.outputs))
@@ -596,17 +639,17 @@ class Env(utils.object2):
             excess = self.variables.difference(variables)
             raise Exception("The variables are inappropriately cached. missing, in excess: ", missing, excess)
         for variable in variables:
-            if variable.owner is None and variable not in self.inputs and not isinstance(variable, graph.Value):
+            if variable.owner is None and variable not in self.inputs and not isinstance(variable, graph.Constant):
                 raise Exception("Undeclared input.", variable)
-            if variable.env is not self:
-                raise Exception("Variable should belong to the env.", variable)
+            if variable.fgraph is not self:
+                raise Exception("Variable should belong to the FunctionGraph.", variable)
             for node, i in variable.clients:
                 if node == 'output':
                     if self.outputs[i] is not variable:
                         raise Exception("Inconsistent clients list.", variable, self.outputs[i])
                     continue
                 if node not in nodes:
-                    raise Exception("Client not in env.", variable, (node, i))
+                    raise Exception("Client not in FunctionGraph.", variable, (node, i))
                 if node.inputs[i] is not variable:
                     raise Exception("Inconsistent clients list.", variable, node.inputs[i])
 
@@ -627,9 +670,9 @@ class Env(utils.object2):
         """WRITEME"""
         equiv = graph.clone_get_equiv(self.inputs, self.outputs)
         self.check_integrity()
-        e = Env([equiv[i] for i in self.inputs],
+        e = FunctionGraph([equiv[i] for i in self.inputs],
                 [equiv[o] for o in self.outputs])
         e.check_integrity()
         for feature in self._features:
-            e.extend(feature)
+            e.attach_feature(feature)
         return e, equiv

@@ -1,7 +1,6 @@
-from pkg_resources import parse_version as V
-
 import numpy
 import numpy.linalg
+from numpy.testing import assert_array_almost_equal
 
 import theano
 from theano import tensor, function
@@ -16,7 +15,7 @@ from theano.sandbox.linalg.ops import (cholesky,
                                        CholeskyGrad,
                                        matrix_inverse,
                                        pinv,
-                                       #solve,
+                                       Solve,
                                        diag,
                                        ExtractDiag,
                                        extract_diag,
@@ -28,8 +27,9 @@ from theano.sandbox.linalg.ops import (cholesky,
                                        matrix_dot,
                                        spectral_radius_bound,
                                        imported_scipy,
+                                       Eig,
                                        )
-
+from theano.sandbox.linalg import eig, eigh
 from nose.plugins.skip import SkipTest
 
 
@@ -95,8 +95,8 @@ def test_cholesky_and_cholesky_grad_shape():
         f_chol = theano.function([x], l.shape)
         g = tensor.grad(l.sum(), x)
         f_cholgrad = theano.function([x], g.shape)
-        topo_chol = f_chol.maker.env.toposort()
-        topo_cholgrad = f_cholgrad.maker.env.toposort()
+        topo_chol = f_chol.maker.fgraph.toposort()
+        topo_cholgrad = f_cholgrad.maker.fgraph.toposort()
         if config.mode != 'FAST_COMPILE':
             assert sum([node.op.__class__ == Cholesky
                         for node in topo_chol]) == 0
@@ -285,7 +285,7 @@ def test_alloc_diag():
 
     # Test infer_shape
     f = theano.function([x], g.shape)
-    topo = f.maker.env.toposort()
+    topo = f.maker.fgraph.toposort()
     if config.mode != 'FAST_COMPILE':
         assert sum([node.op.__class__ == AllocDiag for node in topo]) == 0
     for shp in [5, 0, 1]:
@@ -333,6 +333,7 @@ def test_diag():
     assert ok
 
 
+# not testing the view=True case since it is not used anywhere.
 def test_extract_diag():
     rng = numpy.random.RandomState(utt.fetch_seed())
     x = theano.tensor.matrix()
@@ -357,7 +358,7 @@ def test_extract_diag():
 
     # Test infer_shape
     f = theano.function([x], g.shape)
-    topo = f.maker.env.toposort()
+    topo = f.maker.fgraph.toposort()
     if config.mode != 'FAST_COMPILE':
         assert sum([node.op.__class__ == ExtractDiag for node in topo]) == 0
     for shp in [(2, 3), (3, 2), (3, 3)]:
@@ -371,7 +372,10 @@ def test_extract_diag_grad():
     tensor.verify_grad(extract_diag, [x], rng=rng)
 
 
-# not testing the view=True case since it is not used anywhere.
+def test_extract_diag_empty():
+    c = theano.tensor.constant(numpy.array([[], []], 'int32'))
+    extract_diag(c).eval()
+
 
 def test_trace():
     rng = numpy.random.RandomState(utt.fetch_seed())
@@ -438,3 +442,92 @@ def test_spectral_radius_bound():
     except ValueError:
         ok = True
     assert ok
+
+
+class test_Solve(utt.InferShapeTester):
+    def setUp(self):
+        super(test_Solve, self).setUp()
+        self.op_class = Solve
+        self.op = Solve()
+
+    def test_infer_shape(self):
+        if not imported_scipy:
+            raise SkipTest("Scipy needed for the Cholesky op.")
+        rng = numpy.random.RandomState(utt.fetch_seed())
+        A = theano.tensor.matrix()
+        b = theano.tensor.matrix()
+        self._compile_and_check([A, b],  # theano.function inputs
+                                [self.op(A, b)],  # theano.function outputs
+                                # A must be square
+                                [numpy.asarray(rng.rand(5, 5),
+                                               dtype=config.floatX),
+                                 numpy.asarray(rng.rand(5, 1),
+                                               dtype=config.floatX)],
+                                self.op_class)
+        rng = numpy.random.RandomState(utt.fetch_seed())
+        A = theano.tensor.matrix()
+        b = theano.tensor.vector()
+        self._compile_and_check([A, b],  # theano.function inputs
+                                [self.op(A, b)],  # theano.function outputs
+                                # A must be square
+                                [numpy.asarray(rng.rand(5, 5),
+                                               dtype=config.floatX),
+                                 numpy.asarray(rng.rand(5),
+                                               dtype=config.floatX)],
+                                self.op_class)
+
+
+class test_Eig(utt.InferShapeTester):
+    op_class = Eig
+    op = eig
+    dtype = 'float64'
+
+    def setUp(self):
+        super(test_Eig, self).setUp()
+        self.rng = numpy.random.RandomState(utt.fetch_seed())
+        self.A = theano.tensor.matrix(dtype=self.dtype)
+        X = numpy.asarray(self.rng.rand(5, 5),
+                          dtype=self.dtype)
+        self.S = X.dot(X.T)
+
+    def test_infer_shape(self):
+        A = self.A
+        S = self.S
+        self._compile_and_check([A],  # theano.function inputs
+                                self.op(A),  # theano.function outputs
+                                # S must be square
+                                [S],
+                                self.op_class)
+
+    def test_eval(self):
+        import math
+        A = theano.tensor.matrix(dtype=self.dtype)
+        self.assertEquals([e.eval({A: [[1]]}) for e in self.op(A)],
+                          [[1.0], [[1.0]]])
+        x = [[0, 1], [1, 0]]
+        w, v = [e.eval({A: x}) for e in self.op(A)]
+        assert_array_almost_equal(numpy.dot(x, v), w * v)
+
+
+class test_Eigh(test_Eig):
+    op = staticmethod(eigh)
+
+    def test_uplo(self):
+        S = self.S
+        a = theano.tensor.matrix(dtype=self.dtype)
+        wu, vu = [out.eval({a: S}) for out in self.op(a, 'U')]
+        wl, vl = [out.eval({a: S}) for out in self.op(a, 'L')]
+        assert_array_almost_equal(wu, wl)
+        assert_array_almost_equal(vu * numpy.sign(vu[0, :]),
+                                  vl * numpy.sign(vl[0, :]))
+
+    def test_grad(self):
+        S = self.S
+        utt.verify_grad(lambda x: self.op(x)[0], [S], rng=self.rng)
+        utt.verify_grad(lambda x: self.op(x)[1], [S], rng=self.rng)
+        utt.verify_grad(lambda x: self.op(x, 'U')[0], [S], rng=self.rng)
+        utt.verify_grad(lambda x: self.op(x, 'U')[1], [S], rng=self.rng)
+
+
+class test_Eigh_float32(test_Eigh):
+    dtype = 'float32'

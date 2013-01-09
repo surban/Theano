@@ -18,12 +18,13 @@ import logging
 from itertools import izip
 
 import numpy
+import warnings
 
 import theano
 from theano.compile.pfunc import rebuild_collect_shared
 from theano import gof
 from theano import tensor, scalar
-from theano.gof.python25 import all
+from theano.gof.python25 import all, OrderedDict
 from theano.tensor.basic import get_constant_value
 
 
@@ -33,7 +34,7 @@ from theano.tensor.basic import get_constant_value
 _logger = logging.getLogger('theano.scan_utils')
 
 
-def safe_new(x, tag=''):
+def safe_new(x, tag='', dtype=None):
     """
     Internal function that constructs a new variable from x with the same
     type, but with a different name (old name + tag). This function is used
@@ -46,12 +47,18 @@ def safe_new(x, tag=''):
     else:
         nw_name = None
     if isinstance(x, theano.Constant):
-        return x.clone()
+        if dtype and x.dtype != dtype:
+            return x.clone().astype(dtype)
+        else:
+            return x.clone()
     # Note, as_tensor_variable will convert the Scalar into a
     # TensorScalar that will require a ScalarFromTensor op,
     # making the pushout optimization fail
     elif isinstance(x, scalar.ScalarVariable):
-        nw_x = x.type()
+        if dtype:
+            nw_x = scalar.Scalar(dtype=dtype)()
+        else:
+            nw_x = x.type()
         nw_x.name = nw_name
         return nw_x
     else:
@@ -74,6 +81,10 @@ def safe_new(x, tag=''):
         except AttributeError:
             # This means `x` has no test value.
             pass
+
+    if dtype and nw_x.dtype != dtype:
+        nw_x = nw_x.astype(dtype)
+
     return nw_x
 
 
@@ -151,6 +162,12 @@ def clone(output,
     :type replace: dict
     :param replace: dictionary describing which subgraphs should be
                     replaced by what
+
+    :type copy_inputs: bool
+    :param copy_inputs: If True, use the same inputs (and shared variables)
+        as the original graph. If False, clone them. Note that cloned
+        shared variables still use the same underlying storage, so they
+        will always have the same value.
     """
 
     inps, outs, other_stuff = rebuild_collect_shared(output,
@@ -165,10 +182,13 @@ def clone(output,
 
 def get_updates_and_outputs(ls):
     """
-    This function tries to recognize the updates dictionary, the
+    This function tries to recognize the updates OrderedDict, the
     list of outputs and the stopping condition returned by the
     lambda expression and arrange them in a predefined order
 
+    WRITEME: what is the type of ls? how is it formatted?
+            if it's not in the predefined order already, how does
+            this function know how to put it in that order?
 
     """
     def is_outputs(elem):
@@ -181,6 +201,11 @@ def get_updates_and_outputs(ls):
 
     def is_updates(elem):
         if isinstance(elem, dict):
+            # Make sure the updates will be applied in a deterministic order
+            if not isinstance(elem, gof.python25.OrderedDict):
+                warnings.warn("Expected OrderedDict or OrderedUpdates, got "\
+                        + str(type(elem)) + ". This can make your script non-"
+                        "deterministic.")
             return True
         # Dictionaries can be given as lists of tuples
         if (isinstance(elem, (list, tuple)) and
@@ -224,12 +249,12 @@ def get_updates_and_outputs(ls):
                 'variables (or `theano.scan_module.until` objects for '
                 'conditions). In particular if you need to use constant '
                 'values, you can use `tensor.constant` to turn them into '
-                'Theano variables.')
+                 'Theano variables.')
 
     if is_outputs(ls):
-        return None, _list(ls), {}
+        return None, _list(ls), OrderedDict()
     if is_updates(ls):
-        return None, [], dict(ls)
+        return None, [], OrderedDict(ls)
     error_msg = ('Scan cannot parse the return value of your lambda '
                  'expression, which is: %s' % (ls,))
     if not isinstance(ls, (list, tuple)):
@@ -242,16 +267,16 @@ def get_updates_and_outputs(ls):
     if len(ls) == 2:
         if is_outputs(ls[0]):
             if is_updates(ls[1]):
-                return (None, _list(ls[0]), dict(ls[1]))
+                return (None, _list(ls[0]), OrderedDict(ls[1]))
             elif is_condition(ls[1]):
-                return (ls[1].condition, _list(ls[0]), {})
+                return (ls[1].condition, _list(ls[0]), OrderedDict())
             else:
                 raise ValueError(error_msg)
         elif is_updates(ls[0]):
             if is_outputs(ls[1]):
                 raise ValueError(deprecation_msg)
             elif is_condition(ls[1]):
-                return (ls[1].condition, [], dict(ls[0]))
+                return (ls[1].condition, [], OrderedDict(ls[0]))
             else:
                 raise ValueError(error_msg)
         else:
@@ -260,7 +285,7 @@ def get_updates_and_outputs(ls):
         if is_outputs(ls[0]):
             if is_updates(ls[1]):
                 if is_condition(ls[2]):
-                    return (ls[2].condition, _list(ls[0]), dict(ls[1]))
+                    return (ls[2].condition, _list(ls[0]), OrderedDict(ls[1]))
                 else:
                     raise ValueError(error_msg)
             else:
@@ -361,7 +386,7 @@ def equal_computations(xs, ys, in_xs=None, in_ys=None):
             elif (isinstance(dx, tensor.Constant) and
                   isinstance(dy, tensor.Constant)):
                 if not (numpy.all(dx.data == dy.data) and
-                        dx.dtype == dy.dtype and
+                        dx.type.dtype == dy.type.dtype and
                         dx.data.shape == dy.data.shape):
                     return False
                 else:
@@ -385,7 +410,7 @@ def equal_computations(xs, ys, in_xs=None, in_ys=None):
                         if (isinstance(dx, tensor.Constant) and
                             isinstance(dy, tensor.Constant)):
                             if not (numpy.all(dx.data == dy.data) and
-                                dx.dtype == dy.dtype and
+                                dx.type.dtype == dy.type.dtype and
                                 dx.data.shape == dy.data.shape):
                                 return False
                             else:
@@ -411,14 +436,14 @@ def infer_shape(outs, inputs, input_shapes):
     '''
     # We use a ShapeFeature because it has all the necessary logic
     # inside.  We don't use the full ShapeFeature interface, but we
-    # let it initialize itself with an empty env, otherwise we will
+    # let it initialize itself with an empty fgraph, otherwise we will
     # need to do it manually
     for inp, inp_shp in izip(inputs, input_shapes):
         if inp_shp is not None and len(inp_shp) != inp.ndim:
             assert len(inp_shp) == inp.ndim
 
     shape_feature = tensor.opt.ShapeFeature()
-    shape_feature.on_attach(theano.gof.Env([], []))
+    shape_feature.on_attach(theano.gof.FunctionGraph([], []))
 
     # Initialize shape_of with the input shapes
     for inp, inp_shp in izip(inputs, input_shapes):
@@ -441,10 +466,10 @@ def infer_shape(outs, inputs, input_shapes):
                 if not inp in shape_feature.shape_of:
                     local_traverse(inp)
 
-            # shape_feature.on_import does not actually use an env
+            # shape_feature.on_import does not actually use an fgraph
             # It will call infer_shape and set_shape appropriately
-            dummy_env = None
-            shape_feature.on_import(dummy_env, out.owner)
+            dummy_fgraph = None
+            shape_feature.on_import(dummy_fgraph, out.owner)
 
     ret = []
     for o in outs:
@@ -592,7 +617,6 @@ def compress_outs(op, not_required, inputs):
     info['n_nit_sot'] = 0
     info['truncate_gradient'] = op.info['truncate_gradient']
     info['name'] = op.info['name']
-    info['inplace'] = op.info['inplace']
     info['gpu'] = op.info['gpu']
     info['mode'] = op.info['mode']
     info['as_while'] = op.info['as_while']
@@ -857,9 +881,10 @@ class scan_args(object):
         q += n_shared_outs
 
         self.other_info = dict()
-        for k in ('truncate_gradient', 'name', 'mode', 'inplace',
+        for k in ('truncate_gradient', 'name', 'mode', 'destroy_map',
                   'gpu', 'as_while', 'profile'):
-            self.other_info[k] = info[k]
+            if k in info:
+                self.other_info[k] = info[k]
 
     inner_inputs = property(lambda self: (self.inner_in_seqs +
                                           sum(self.inner_in_mit_mot, []) +
@@ -924,3 +949,34 @@ class scan_args(object):
                          'mit_sot_in_slices')):
                 getattr(res, attr).extend(getattr(other, attr))
         return res
+
+
+def forced_replace(out, x, y):
+    """
+    :param out: Theano Variable
+    :param x: Theano Variable
+    :param y: Theano Variable
+
+    This function checks all internal values of the graph that computes the
+    variable ``out`` for occurances of values identical with ``x``. If such
+    occurances are encountered then they are replaced with variable ``y``.
+    For example:
+        out := sigmoid(wu)*(1-sigmoid(wu))
+        x := sigmoid(wu)
+        forced_replace(out, x, y) := y*(1-y)
+    """
+    if out is None:
+        return None
+
+    def traverse(graph, x):
+        if equal_computations([graph], [x]):
+            return [graph]
+        elif not graph.owner:
+            return []
+        else:
+            rval = []
+            for inp in graph.owner.inputs:
+                rval += traverse(inp, x)
+            return rval
+    to_replace = traverse(out, x)
+    return clone(out, replace=dict((v, y) for v in to_replace))

@@ -22,7 +22,7 @@ class T_module(unittest.TestCase):
         class Blah(Module):
             def __init__(self, stepsize):
                 super(Blah, self).__init__()
-                self.stepsize = T.value(stepsize)
+                self.stepsize = T.constant(stepsize)
                 x = T.dscalar()
 
                 self.step = Method([x], x - self.stepsize)
@@ -128,7 +128,7 @@ class T_module(unittest.TestCase):
                     assert i[0]==j
 
         local_test(lambda:T.dscalar(),lambda:T.dscalar())
-        local_test(lambda:T.value(1),lambda:T.value(2))
+        local_test(lambda:T.constant(1),lambda:T.constant(2))
         local_test(lambda:T.constant(1),lambda:T.constant(2))
 
     def test_list_assign(self):
@@ -146,12 +146,11 @@ class T_module(unittest.TestCase):
 
             #assign 4 and 5 to the two variables' containers in m
             m.l = [4, 5]
-            print 'm.f', m.f()
+            m.f()
             assert numpy.all(5 == m.f())
             assert numpy.all(4 == m.g())
 
         local_test(lambda:T.dscalar(),lambda:T.dscalar())
-        local_test(lambda:T.value(1),lambda:T.value(2))
 
     def test_tuple_assign(self):
         """Test that list members can be assigned tuple-wise"""
@@ -170,7 +169,6 @@ class T_module(unittest.TestCase):
             assert 4 == m.g()
 
         local_test(lambda:T.dscalar(),lambda:T.dscalar())
-        local_test(lambda:T.value(1),lambda:T.value(2))
 
     def test_dict_assign(self):
         """Test that list members can be assigned dict-wise"""
@@ -189,10 +187,8 @@ class T_module(unittest.TestCase):
             assert 5 == m.f()
             assert 4 == m.g()
 
-        print 'dscalar test'
+        #print 'dscalar test'
         local_test(lambda:T.dscalar(),lambda:T.dscalar())
-        print 'value test'
-        local_test(lambda:T.value(1),lambda:T.value(2))
 
 
     def test_method_in_list_or_dict(self):
@@ -425,7 +421,7 @@ class T_module(unittest.TestCase):
         m = M.make()
         m.y = 77
         assert m.f(23) == 100
-        assert m.x == None
+        assert m.x is None
         m.x = 1000
         assert m.g(23) == 977
         assert m.y == 77
@@ -451,16 +447,6 @@ class T_module(unittest.TestCase):
 
         assert numpy.all(m.f(xval) == [1, 2.5])
         assert numpy.all(xval == [-1, -1.5])
-
-    def test_member_value(self):
-        """Test that module Members of Value work correctly. As Variable?"""
-        M = Module()
-        x = T.dscalar()
-        M.y = T.value(40)
-        M.f = Method([x], x + 2 * M.y)
-        m = M.make()
-        m.y = 80
-        assert m.f(20) == 180
 
     def test_member_constant(self):
         """Test that module Members of Constant work correctly.
@@ -494,9 +480,9 @@ class T_module(unittest.TestCase):
         M.a = [1,2,3]
         M.make()
         m = M.make()
-        print m.a
-        print m.a[0], type(m.a[0]), m.a[0] == 1
-        print list(m.a)
+        #print m.a
+        #print m.a[0], type(m.a[0]), m.a[0] == 1
+        #print list(m.a)
         assert list(m.a) == [1,2,3]
         assert m.a is not M.a
         try:
@@ -545,7 +531,8 @@ def test_multiple_references():
             self.sub_module = sub_module
 
         def _instance_initialize(self, obj):
-            print 'Initializing A'
+            pass
+            #print 'Initializing A'
 
 
     class B(theano.Module):
@@ -555,7 +542,8 @@ def test_multiple_references():
             self.sub_module = sub_module
 
         def _instance_initialize(self, obj):
-            print 'Initializing B'
+            pass
+            #print 'Initializing B'
 
 
     class C(theano.Module):
@@ -565,11 +553,11 @@ def test_multiple_references():
             self.value = theano.tensor.scalar()
 
         def _instance_initialize(self, obj):
-            print 'Initializing C'
+            #print 'Initializing C'
             obj.value = 0
 
         def _instance_set(self, obj, value):
-            print 'Setting C'
+            #print 'Setting C'
             obj.value = value
 
 
@@ -584,7 +572,7 @@ def test_multiple_references():
             self.bug = theano.tensor.scalar()
 
         def _instance_initialize(self, obj):
-            print 'Initializing D'
+            #print 'Initializing D'
             obj.c.set(1)
 
 

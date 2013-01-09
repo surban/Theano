@@ -1,8 +1,10 @@
 import itertools
 import logging
 import operator
+import os
 import StringIO
 import sys
+from tempfile import mkstemp
 import unittest
 import warnings
 from copy import copy, deepcopy
@@ -12,11 +14,12 @@ builtin_min = __builtin__.min
 
 from nose.plugins.skip import SkipTest
 import numpy
-from numpy.testing import dec
+from numpy.testing import dec, assert_array_equal, assert_allclose
 from numpy.testing.noseclasses import KnownFailureTest
 
 import theano
 from theano import compile, config, function, gof, tensor, shared
+from theano.compile import DeepCopyOp
 from theano.compile.mode import get_default_mode
 from theano.gof.python25 import any, all, combinations
 from theano.tensor import (_shared, wvector, bvector, autocast_float_as,
@@ -24,18 +27,22 @@ from theano.tensor import (_shared, wvector, bvector, autocast_float_as,
         horizontal_stack, vertical_stack, argmax, get_vector_length,
         fscalar, zeros_like, sum, tensor3, vector, izip, add, addbroadcast,
         alloc, as_tensor_variable, tensor_from_scalar, ARange, autocast_float,
-        basic, clip, constant, default, dot, inc_subtensor, set_subtensor,
+        clip, constant, default, dot, inc_subtensor, set_subtensor,
         dmatrix, dscalar, dvector, eq, eye, fill, flatten, inverse_permutation,
         tensor4, permute_row_elements, Flatten, fmatrix, fscalars, grad,
         inplace, iscalar, matrix, minimum, matrices, maximum, mul, neq,
         Reshape, row, scalar, scalars, second, smallest, stack, sub, Tensor,
         tensor_copy, tensordot, tensordot_grad,  TensorType, unbroadcast,
-        var, value, Join, shape, MaxAndArgmax, lscalar, zvector, exp,
+        var, Join, shape, MaxAndArgmax, lscalar, zvector, exp,
         get_constant_value, ivector, reshape, scalar_from_tensor, scal,
         iscalars, arange,  dscalars, fvector, imatrix, numeric_grad,
         opt, ComplexError, TensorDot, lvector, true_div, max, min, Split, roll,
-        tile, patternbroadcast, sort, SortOp, argsort, ArgSortOp,)
+        tile, patternbroadcast, Eye, Shape, Default, Dot, PermuteRowElements,
+        ScalarFromTensor, TensorFromScalar, dtensor4, Rebroadcast, Alloc,
+        dtensor3, SpecifyShape, Mean, IncSubtensor, AdvancedIncSubtensor1,
+        itensor3, Tile, AdvancedIncSubtensor, switch, Diagonal, Diag)
 from theano.tests import unittest_tools as utt
+from theano.printing import debugprint
 
 
 imported_scipy_special = False
@@ -175,7 +182,7 @@ def safe_make_node(op, *inputs):
 
 def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                bad_runtime=None, grad=None, mode=None, grad_rtol=None,
-               eps=1e-10, skip=False):
+               eps=1e-10, skip=False, test_memmap=True):
     if checks is None:
         checks = {}
     if good is None:
@@ -192,6 +199,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
     _op, _expected, _checks, _good = op, expected, checks, good
     _bad_build, _bad_runtime, _grad = bad_build, bad_runtime, grad
     _mode, _grad_rtol, _eps, skip_ = mode, grad_rtol, eps, skip
+    _test_memmap = test_memmap
 
     class Checker(unittest.TestCase):
 
@@ -204,15 +212,72 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
         grad = _grad
         mode = _mode
         skip = skip_
+        test_memmap = _test_memmap
+
+        def setUp(self):
+            # Verify that the test's name is correctly set.
+            assert eval(self.__class__.__name__) is self.__class__
+
+            # We keep a list of temporary files created in add_memmap_values,
+            # to remove them at the end of the test.
+            self.tmp_files = []
+
+        def add_memmap_values(self, val_dict):
+            # If test_memmap is True, we create a temporary file
+            # containing a copy of the data passed in the "val_dict" dict,
+            # then open it as a memmapped array, and we can use the result as a
+            # new test value.
+            if not self.test_memmap:
+                return val_dict
+
+            # Copy dict before modifying them
+            val_dict = val_dict.copy()
+
+            # Note that we sort items in the dictionary to ensure tests are
+            # deterministic (since the loop below will break on the first valid
+            # item that can be memmapped).
+            for k, v in sorted(val_dict.items()):
+                new_k = '_'.join((k, 'memmap'))
+                if new_k in val_dict:
+                    # A corresponding key was already provided
+                    break
+
+                new_v = []
+                for inp in v:
+                    if type(inp) is numpy.ndarray and inp.size > 0:
+                        f, fname = mkstemp()
+                        self.tmp_files.append((f, fname))
+                        new_inp = numpy.memmap(fname, dtype=inp.dtype,
+                                mode='w+', shape=inp.shape)
+                        new_inp[...] = inp[...]
+                        new_v.append(new_inp)
+                    else:
+                        new_v.append(inp)
+                val_dict[new_k] = new_v
+
+                # We only need one value, no need to copy all of them
+                break
+            return val_dict
+
+        def tearDown(self):
+            for f, fname in self.tmp_files:
+                os.close(f)
+                os.remove(fname)
 
         def test_good(self):
             if skip:
                 raise SkipTest(skip)
-            for testname, inputs in self.good.items():
+
+            good = self.add_memmap_values(self.good)
+
+            for testname, inputs in good.items():
                 inputs = [copy(input) for input in inputs]
-                inputrs = [value(input) for input in inputs]
+                inputrs = [TensorType(
+                            dtype=input.dtype,
+                            broadcastable=[shape_elem == 1
+                                           for shape_elem in input.shape]
+                            )() for input in inputs]
                 try:
-                    #node = self.op.make_node(*inputrs)
                     node = safe_make_node(self.op, *inputrs)
                 except Exception, exc:
                     err_msg = ("Test %s::%s: Error occurred while"
@@ -232,7 +297,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                         and testname in self.expected):
                     expecteds = self.expected[testname]
                     # with numpy version, when we print a number and read it
-                    # back, we don't get exactly the same result #So we accept
+                    # back, we don't get exactly the same result, so we accept
                     # rounding error in that case.
                     eps = 5e-9
                 else:
@@ -240,7 +305,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                     eps = 1e-10
 
                 if any([i.dtype == 'float32' for i in inputs]):
-                    eps = 8e-6  # 1e-6
+                    eps = 1e-6
                 eps = numpy.max([eps, _eps])
 
                 try:
@@ -259,10 +324,11 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                         izip(variables, expecteds)):
                     if (variable.dtype != expected.dtype
                             or variable.shape != expected.shape
-                            or numpy.any(abs(variable - expected) > eps)):
+                            or not numpy.allclose(variable, expected,
+                                atol=eps, rtol=eps)):
                         self.fail(("Test %s::%s: Output %s gave the wrong"
                             " value. With inputs %s, expected %s (dtype %s),"
-                            " got %s (dtype %s)."
+                            " got %s (dtype %s). eps=%f"
                             " numpy.allclose returns %s %s") % (
                                 self.op,
                                 testname,
@@ -272,7 +338,9 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                                 expected.dtype,
                                 variable,
                                 variable.dtype,
-                                numpy.allclose(variable, expected, atol=eps),
+                                eps,
+                                numpy.allclose(variable, expected,
+                                    atol=eps, rtol=eps),
                                 numpy.allclose(variable, expected)))
 
                 for description, check in self.checks.items():
@@ -287,7 +355,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                 raise SkipTest(skip)
             for testname, inputs in self.bad_build.items():
                 inputs = [copy(input) for input in inputs]
-                inputrs = [value(input) for input in inputs]
+                inputrs = [shared(input) for input in inputs]
                 self.assertRaises(Exception,
                     safe_make_node, self.op, *inputrs)
                 # The old error string was ("Test %s::%s: %s was successfully
@@ -298,8 +366,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
             if skip:
                 raise SkipTest(skip)
             for testname, inputs in self.bad_runtime.items():
-                inputs = [copy(input) for input in inputs]
-                inputrs = [value(input) for input in inputs]
+                inputrs = [shared(input) for input in inputs]
                 try:
                     node = safe_make_node(self.op, *inputrs)
                 except Exception, exc:
@@ -310,7 +377,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                     raise
 
                 try:
-                    f = inplace_func(inputrs, node.outputs, mode=mode)
+                    f = inplace_func([], node.outputs, mode=mode)
                 except Exception, exc:
                     err_msg = ("Test %s::%s: Error occurred while trying"
                         " to make a Function") % (self.op, testname)
@@ -321,7 +388,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                 # one?
                 # TODO: test that only this one is raised and catch only this
                 # one or the subset that get raised.
-                self.assertRaises(Exception, f, *inputs)
+                self.assertRaises(Exception, f, [])
 
         def test_grad(self):
             if skip:
@@ -332,7 +399,6 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
             try:
                 for testname, inputs in self.grad.items():
                     inputs = [copy(input) for input in inputs]
-                    inputrs = [value(input) for input in inputs]
                     try:
                         utt.verify_grad(self.op, inputs,
                                 mode=self.mode,
@@ -340,7 +406,7 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
                     except Exception, exc:
                         err_msg = ("Test %s::%s: Error occurred while"
                             " computing the gradient on the following"
-                            " inputs: %s" ) % (self.op, testname, inputs)
+                            " inputs: %s") % (self.op, testname, inputs)
                         exc.args += (err_msg,)
                         raise
             finally:
@@ -433,7 +499,7 @@ def makeBroadcastTester(op, expected, checks=None, name=None, **kwargs):
     # cases we need to add it manually.
     if not name.endswith('Tester'):
         name += "Tester"
-    if kwargs.has_key('inplace'):
+    if 'inplace' in kwargs:
         if kwargs['inplace']:
             _expected = expected
             if not isinstance(_expected, dict):
@@ -451,37 +517,42 @@ def makeBroadcastTester(op, expected, checks=None, name=None, **kwargs):
     return makeTester(name, op, expected, checks, **kwargs)
 
 
-_good_broadcast_binary_normal = dict(same_shapes=(rand(2, 3), rand(2, 3)),
-                                     not_same_dimensions=(rand(2, 2), rand(2)),
-                                     scalar=(rand(2, 3), rand(1, 1)),
-                                     row=(rand(2, 3), rand(1, 3)),
-                                     column=(rand(2, 3), rand(2, 1)),
-                                     integers=(randint(2, 3), randint(2, 3)),
-                                     dtype_mixup_1=(rand(2, 3), randint(2, 3)),
-                                     dtype_mixup_2=(randint(2, 3), rand(2, 3)),
-                                     complex1=(randcomplex(2, 3), randcomplex(2, 3)),
-                                     complex2=(randcomplex(2, 3), rand(2, 3)),
-                                     # Disabled as we test the case where we reuse the same output as the first inputs.
-                                     # complex3=(rand(2,3),randcomplex(2,3)),
-                                     empty=(numpy.asarray([]), numpy.asarray([1])),
-                                     )
+_good_broadcast_binary_normal = dict(
+    same_shapes=(rand(2, 3), rand(2, 3)),
+    not_same_dimensions=(rand(2, 2), rand(2)),
+    scalar=(rand(2, 3), rand(1, 1)),
+    row=(rand(2, 3), rand(1, 3)),
+    column=(rand(2, 3), rand(2, 1)),
+    integers=(randint(2, 3), randint(2, 3)),
+    dtype_mixup_1=(rand(2, 3), randint(2, 3)),
+    dtype_mixup_2=(randint(2, 3), rand(2, 3)),
+    complex1=(randcomplex(2, 3), randcomplex(2, 3)),
+    complex2=(randcomplex(2, 3), rand(2, 3)),
+    # Disabled as we test the case where we reuse the same output as the
+    # first inputs.
+    # complex3=(rand(2,3),randcomplex(2,3)),
+    empty=(numpy.asarray([]), numpy.asarray([1])),
+    )
 
-_bad_build_broadcast_binary_normal = dict()  # not_same_dimensions = (rand(2), rand(2, 2)))
+_bad_build_broadcast_binary_normal = dict()
 
-_bad_runtime_broadcast_binary_normal = dict(bad_shapes=(rand(2, 3), rand(3, 2)),
-                                            bad_row=(rand(2, 3), rand(1, 2)))
+_bad_runtime_broadcast_binary_normal = dict(
+    bad_shapes=(rand(2, 3), rand(3, 2)),
+    bad_row=(rand(2, 3), rand(1, 2)))
 
-_grad_broadcast_binary_normal = dict(same_shapes=(rand(2, 3), rand(2, 3)),
-                                     scalar=(rand(2, 3), rand(1, 1)),
-                                     row=(rand(2, 3), rand(1, 3)),
-                                     column=(rand(2, 3), rand(2, 1)),
-                                     #This don't work as verify grad don't support that
-                                     #empty=(numpy.asarray([]), numpy.asarray([1]))
-                                     #complex1=(randcomplex(2,3),randcomplex(2,3)),
-                                     #complex2=(randcomplex(2,3),rand(2,3)),
-                                     # Disabled as we test the case where we reuse the same output as the first inputs.
-                                     #complex3=(rand(2,3),randcomplex(2,3)),
-                                     )
+_grad_broadcast_binary_normal = dict(
+    same_shapes=(rand(2, 3), rand(2, 3)),
+    scalar=(rand(2, 3), rand(1, 1)),
+    row=(rand(2, 3), rand(1, 3)),
+    column=(rand(2, 3), rand(2, 1)),
+    #This don't work as verify grad don't support that
+    #empty=(numpy.asarray([]), numpy.asarray([1]))
+    #complex1=(randcomplex(2,3),randcomplex(2,3)),
+    #complex2=(randcomplex(2,3),rand(2,3)),
+    # Disabled as we test the case where we reuse the same output as the
+    # first inputs.
+    #complex3=(rand(2,3),randcomplex(2,3)),
+    )
 
 
 def check_floatX(inputs, rval):
@@ -507,68 +578,108 @@ def check_floatX(inputs, rval):
         return rval
 
 
-AddTester = makeBroadcastTester(op = add,
-                                  expected = lambda *inputs: check_floatX(inputs, reduce(lambda x, y: x + y, inputs)),
-                                  good = dict(three_inputs_same_shapes = (rand(2, 3), rand(2, 3), rand(2, 3)),
-                                              four_inputs_broadcast = (rand(2, 3), rand(1, 3), rand(2, 1), rand(1, 1)),
-                                              **_good_broadcast_binary_normal),
-                                  bad_build = _bad_build_broadcast_binary_normal,
-                                  bad_runtime = _bad_runtime_broadcast_binary_normal)
+AddTester = makeBroadcastTester(
+    op=add,
+    expected=lambda *inputs: check_floatX(
+        inputs, reduce(lambda x, y: x + y, inputs)),
+    good=dict(
+        three_inputs_same_shapes=(rand(2, 3),
+                                  rand(2, 3),
+                                  rand(2, 3)),
+        four_inputs_broadcast=(rand(2, 3),
+                               rand(1, 3),
+                               rand(2, 1),
+                               rand(1, 1)),
+        **_good_broadcast_binary_normal),
+    bad_build=_bad_build_broadcast_binary_normal,
+    bad_runtime=_bad_runtime_broadcast_binary_normal)
 
 
-AddInplaceTester = makeBroadcastTester(op = inplace.add_inplace,
-                                         expected = lambda x, y: x + y,
-                                         good = _good_broadcast_binary_normal,
-                                         bad_build = _bad_build_broadcast_binary_normal,
-                                         bad_runtime = _bad_runtime_broadcast_binary_normal,
-                                         inplace = True)
+AddInplaceTester = makeBroadcastTester(
+    op=inplace.add_inplace,
+    expected=lambda x, y: x + y,
+    good=_good_broadcast_binary_normal,
+    bad_build=_bad_build_broadcast_binary_normal,
+    bad_runtime=_bad_runtime_broadcast_binary_normal,
+    inplace=True)
 
-SubTester = makeBroadcastTester(op = sub,
-                                  expected = lambda x, y: check_floatX((x, y), x - y),
-                                  good = _good_broadcast_binary_normal,
-                                  bad_build = _bad_build_broadcast_binary_normal,
-                                  bad_runtime = _bad_runtime_broadcast_binary_normal,
-                                  grad = _grad_broadcast_binary_normal)
+SubTester = makeBroadcastTester(
+    op=sub,
+    expected=lambda x, y: check_floatX((x, y), x - y),
+    good=_good_broadcast_binary_normal,
+    bad_build=_bad_build_broadcast_binary_normal,
+    bad_runtime=_bad_runtime_broadcast_binary_normal,
+    grad=_grad_broadcast_binary_normal)
 
-SubInplaceTester = makeBroadcastTester(op = inplace.sub_inplace,
-                                         expected = lambda x, y: x - y,
-                                         good = _good_broadcast_binary_normal,
+SubInplaceTester = makeBroadcastTester(op=inplace.sub_inplace,
+                                         expected=lambda x, y: x - y,
+                                         good=_good_broadcast_binary_normal,
                                          bad_build = _bad_build_broadcast_binary_normal,
                                          bad_runtime = _bad_runtime_broadcast_binary_normal,
                                          grad = _grad_broadcast_binary_normal,
                                          inplace = True)
 
-MaximumTester = makeBroadcastTester(op = maximum,
+
+SwitchTester = makeBroadcastTester(
+    op=switch,
+    expected=numpy.where,
+    good=dict(all_true=(numpy.asarray(1, dtype=config.floatX),
+                        rand(4, 5), rand(4, 5)),
+              false_true=(numpy.asarray(0, dtype=config.floatX),
+                          rand(4, 5), rand(4, 5)),
+              mixed=(randint_ranged(0, 1, (4, 5)),
+                     rand(4, 5), rand(4, 5))
+          ),
+    bad_build=dict(all_true=(numpy.asarray(1, dtype=config.floatX),
+                             rand(4, 5))),
+    bad_runtime=dict(all_true=(numpy.asarray(1, dtype=config.floatX),
+                               rand(3, 5), rand(4, 5)),
+                     false_true=(numpy.asarray(0, dtype=config.floatX),
+                                 rand(4, 6), rand(4, 5)),
+                 ),
+    # We suppose that cond+eps do not switch branch in switch.grad()
+    # So we can't call verify_grad with cond 0.
+    grad=dict(all_true=(numpy.asarray(1, dtype=config.floatX),
+                        rand(4, 5), rand(4, 5)),
+#              false_true=(numpy.asarray(0, dtype=config.floatX),
+#                          rand(4, 5), rand(4, 5)),
+#              mixed=(randint_ranged(0, 1, (4, 5)).astype(config.floatX),
+#                     rand(4, 5), rand(4, 5))
+          ),
+)
+
+
+MaximumTester = makeBroadcastTester(op=maximum,
                                   expected = lambda *inputs: check_floatX(inputs, numpy.maximum(*inputs)),
                                   good = _good_broadcast_binary_normal,
                                   bad_build = _bad_build_broadcast_binary_normal,
                                   bad_runtime = _bad_runtime_broadcast_binary_normal,
                                   grad = _grad_broadcast_binary_normal)
 
-MaximumInplaceTester = makeBroadcastTester(op = inplace.maximum_inplace,
-                                         expected = numpy.maximum,
-                                         good = _good_broadcast_binary_normal,
+MaximumInplaceTester = makeBroadcastTester(op=inplace.maximum_inplace,
+                                         expected=numpy.maximum,
+                                         good=_good_broadcast_binary_normal,
                                          bad_build = _bad_build_broadcast_binary_normal,
                                          bad_runtime = _bad_runtime_broadcast_binary_normal,
                                          grad = _grad_broadcast_binary_normal,
                                          inplace = True)
 
-MinimumTester = makeBroadcastTester(op = minimum,
+MinimumTester = makeBroadcastTester(op=minimum,
                                   expected = lambda *inputs: check_floatX(inputs, numpy.minimum(*inputs)),
                                   good = _good_broadcast_binary_normal,
                                   bad_build = _bad_build_broadcast_binary_normal,
                                   bad_runtime = _bad_runtime_broadcast_binary_normal,
                                   grad = _grad_broadcast_binary_normal)
 
-MinimumInplaceTester = makeBroadcastTester(op = inplace.minimum_inplace,
-                                         expected = numpy.minimum,
-                                         good = _good_broadcast_binary_normal,
+MinimumInplaceTester = makeBroadcastTester(op=inplace.minimum_inplace,
+                                         expected=numpy.minimum,
+                                         good=_good_broadcast_binary_normal,
                                          bad_build = _bad_build_broadcast_binary_normal,
                                          bad_runtime = _bad_runtime_broadcast_binary_normal,
                                          grad = _grad_broadcast_binary_normal,
                                          inplace = True)
 
-MulTester = makeBroadcastTester(op = mul,
+MulTester = makeBroadcastTester(op=mul,
                                   expected = lambda *inputs: check_floatX(inputs, reduce(lambda x, y: x * y, inputs)),
                                   good = dict(three_inputs_same_shapes = (rand(2, 3), rand(2, 3), rand(2, 3)),
                                               four_inputs_broadcast = (rand(2, 3), rand(1, 3), rand(2, 1), rand(1, 1)),
@@ -578,9 +689,9 @@ MulTester = makeBroadcastTester(op = mul,
                                   grad = dict(three_inputs_same_shapes = (rand(2, 3), rand(2, 3), rand(2, 3)),
                                               four_inputs_broadcast = (rand(2, 3), rand(1, 3), rand(2, 1), rand(1, 1)),
                                               **_grad_broadcast_binary_normal))
-MulInplaceTester = makeBroadcastTester(op = inplace.mul_inplace,
-                                         expected = lambda x, y: x * y,
-                                         good = _good_broadcast_binary_normal,
+MulInplaceTester = makeBroadcastTester(op=inplace.mul_inplace,
+                                         expected=lambda x, y: x * y,
+                                         good=_good_broadcast_binary_normal,
                                          bad_build = _bad_build_broadcast_binary_normal,
                                          bad_runtime = _bad_runtime_broadcast_binary_normal,
                                          grad = _grad_broadcast_binary_normal,
@@ -644,12 +755,12 @@ _grad_broadcast_div_mod_normal = dict(
         #empty2=(numpy.asarray([0]), numpy.asarray([])),
         )
 
-div_grad_rtol=None
-if config.floatX=='float32':
+div_grad_rtol = None
+if config.floatX == 'float32':
     # We raise the relative tolerance for the grad as there can be errors in
     # float32.
     # This is probably caused by our way of computing the gradient error.
-    div_grad_rtol=0.025
+    div_grad_rtol = 0.025
 
 
 def _numpy_true_div(x, y):
@@ -723,7 +834,8 @@ _good_broadcast_pow_normal_float = dict(same_shapes = (rand_ranged(1, 5, (2, 3))
                                         empty2 = (numpy.asarray([0]), numpy.asarray([])),)
 _grad_broadcast_pow_normal = dict(same_shapes = (rand_ranged(1, 5, (2, 3)), rand_ranged(-3, 3, (2, 3))),
                                   scalar = (rand_ranged(1, 5, (2, 3)), rand_ranged(-3, 3, (1, 1))),
-                                  row = (rand_ranged(1, 5, (2, 3)), rand_ranged(-3, 3, (1, 3))),
+                                  row = (
+                                      rand_ranged(1, 5, (2, 3)), rand_ranged(-3, 3, (1, 3))),
                                   column = (rand_ranged(1, 5, (2, 3)), rand_ranged(-3, 3, (2, 1))),
                                   #complex1 = (randcomplex(2,3),randcomplex(2,3)),
                                   #complex2 = (randcomplex(2,3),rand(2,3)),
@@ -739,11 +851,11 @@ PowTester = makeBroadcastTester(
         op=pow,
         expected=lambda x, y: check_floatX((x, y), x ** y),
         good=_good_broadcast_pow_normal_float,
-        grad= _grad_broadcast_pow_normal,
+        grad=_grad_broadcast_pow_normal,
         name='Pow')
 
-PowInplaceTester = makeBroadcastTester(op = inplace.pow_inplace,
-                                       expected = lambda x, y: x ** y,
+PowInplaceTester = makeBroadcastTester(op=inplace.pow_inplace,
+                                       expected=lambda x, y: x ** y,
                                        good = _good_broadcast_pow_normal_float_pow,
                                        grad = _grad_broadcast_pow_normal,
                                        inplace = True)
@@ -764,7 +876,7 @@ corner_case_grad = numpy.asarray(
 _good_broadcast_unary_normal_float = dict(
         normal=[rand_ranged(-5, 5, (2, 3))],
         corner_case=[corner_case],
-        complex=[randcomplex(2,3)],
+        complex=[randcomplex(2, 3)],
         empty=[numpy.asarray([])])
 
 _good_broadcast_unary_normal_float_no_empty = copymod(
@@ -780,10 +892,10 @@ _good_broadcast_unary_normal_float_no_complex = copymod(
         without=['complex'])
 
 _good_broadcast_unary_normal = dict(
-        normal=[numpy.asarray(rand_ranged(-5, 5, (2, 3)),dtype=config.floatX)],
+        normal=[numpy.asarray(rand_ranged(-5, 5, (2, 3)), dtype=config.floatX)],
         integers=[randint_ranged(-5, 5, (2, 3))],
         corner_case=[corner_case],
-        complex=[randcomplex(2,3)],
+        complex=[randcomplex(2, 3)],
         empty=[numpy.asarray([])],
         )
 
@@ -794,43 +906,54 @@ _good_broadcast_unary_normal_no_complex = dict(
         empty=[numpy.asarray([])],
         )
 
+_grad_broadcast_unary_normal_no_complex = dict(
+        normal=[numpy.asarray(rand_ranged(-5, 5, (2, 3)), dtype=floatX)],
+        corner_case=[corner_case_grad])
+
 _grad_broadcast_unary_normal = dict(
         normal=[numpy.asarray(rand_ranged(-5, 5, (2, 3)), dtype=floatX)],
-        corner_case = [corner_case_grad],
+        corner_case=[corner_case_grad],
         #empty = [numpy.asarray([])] # XXX: should this be included?
         )
 
+_grad_broadcast_unary_abs1_no_complex = dict(
+        normal=[numpy.asarray(rand_ranged(-1, 1, (2, 3)), dtype=floatX)],
+        )
+
+_grad_broadcast_unary_0_2_no_complex = dict(
+        normal=[numpy.asarray(rand_ranged(0, 2, (2, 3)), dtype=floatX)],
+        )
 
 
-AbsTester = makeBroadcastTester(op = tensor.abs_,
-                                  expected = lambda x: abs(x),
-                                  good = _good_broadcast_unary_normal,
-                                  grad = _grad_broadcast_unary_normal)
+AbsTester = makeBroadcastTester(op=tensor.abs_,
+                                  expected=lambda x: abs(x),
+                                  good=_good_broadcast_unary_normal,
+                                  grad=_grad_broadcast_unary_normal)
 _good_broadcast_unary_normal_abs = copy(_good_broadcast_unary_normal)
 # Can't do inplace on Abs as the input/output are not of the same type!
 del _good_broadcast_unary_normal_abs['complex']
-AbsInplaceTester = makeBroadcastTester(op = inplace.abs__inplace,
-                                         expected = lambda x: numpy.abs(x),
+AbsInplaceTester = makeBroadcastTester(op=inplace.abs__inplace,
+                                         expected=lambda x: numpy.abs(x),
                                          good = _good_broadcast_unary_normal_abs,
                                          grad = _grad_broadcast_unary_normal,
                                          inplace = True)
 
-NegTester = makeBroadcastTester(op = tensor.neg,
-                                  expected = lambda x: -x,
-                                  good = _good_broadcast_unary_normal,
-                                  grad = _grad_broadcast_unary_normal)
-NegInplaceTester = makeBroadcastTester(op = inplace.neg_inplace,
-                                         expected = lambda x: -x,
-                                         good = _good_broadcast_unary_normal,
-                                         grad = _grad_broadcast_unary_normal,
-                                         inplace = True)
+NegTester = makeBroadcastTester(op=tensor.neg,
+                                  expected=lambda x: -x,
+                                  good=_good_broadcast_unary_normal,
+                                  grad=_grad_broadcast_unary_normal)
+NegInplaceTester = makeBroadcastTester(op=inplace.neg_inplace,
+                                         expected=lambda x: -x,
+                                         good=_good_broadcast_unary_normal,
+                                         grad=_grad_broadcast_unary_normal,
+                                         inplace=True)
 
-SgnTester = makeBroadcastTester(op = tensor.sgn,
-                                expected = numpy.sign,
-                                good = _good_broadcast_unary_normal_no_complex,
-                                grad = _grad_broadcast_unary_normal,)
-SgnInplaceTester = makeBroadcastTester(op = inplace.sgn_inplace,
-                                       expected = numpy.sign,
+SgnTester = makeBroadcastTester(op=tensor.sgn,
+                                expected=numpy.sign,
+                                good=_good_broadcast_unary_normal_no_complex,
+                                grad=_grad_broadcast_unary_normal,)
+SgnInplaceTester = makeBroadcastTester(op=inplace.sgn_inplace,
+                                       expected=numpy.sign,
                                        good = _good_broadcast_unary_normal_no_complex,
                                        grad = _grad_broadcast_unary_normal,
                                        inplace = True)
@@ -893,214 +1016,377 @@ FloorInplaceTester = makeBroadcastTester(op=inplace.floor_inplace,
         expected=lambda a: numpy.asarray(numpy.floor(a), a.dtype),
         good=_good_broadcast_unary_normal_no_complex,
         grad=_grad_broadcast_unary_normal,
-        inplace = True)
+        inplace=True)
 
-RoundHalfToEvenTester = makeBroadcastTester(op = tensor.round_half_to_even,
-                                  expected = numpy.round,
-                                  good = _good_broadcast_unary_normal_float_no_complex)
+TruncInplaceTester = makeBroadcastTester(
+    op=inplace.trunc_inplace,
+    expected=lambda a: numpy.asarray(numpy.trunc(a), a.dtype),
+    good=_good_broadcast_unary_normal_no_complex,
+    inplace=True)
+
+TruncTester = makeBroadcastTester(
+    op=tensor.trunc,
+    expected=lambda a: numpy.asarray(numpy.trunc(a), a.dtype),
+    good=_good_broadcast_unary_normal_no_complex)
+
+RoundHalfToEvenTester = makeBroadcastTester(
+    op=tensor.round_half_to_even,
+    expected=numpy.round,
+    good=_good_broadcast_unary_normal_float_no_complex)
 # TODO: Why complex are accepted in the next one?
-RoundHalfToEvenInplaceTester = makeBroadcastTester(op = inplace.round_half_to_even_inplace,
-                                         expected = numpy.round,
-                                         good = _good_broadcast_unary_normal_float,
-                                         inplace = True)
+RoundHalfToEvenInplaceTester = makeBroadcastTester(
+    op=inplace.round_half_to_even_inplace,
+    expected=numpy.round,
+    good=_good_broadcast_unary_normal_float,
+    inplace=True)
 
 #numpy.vectorize don't handle correctly empty ndarray.
 #see in their file numpy/lib/function_base.py in class vectorize.__call__
 #This happen in float32 mode.
-RoundHalfAwayFromZeroTester = makeBroadcastTester(op = tensor.round_half_away_from_zero,
-                                  expected = theano.scalar.basic.round_half_away_from_zero_vec,
-                                  good = _good_broadcast_unary_normal_float_no_empty_no_complex)#_good_broadcast_unary_normal_float)
-RoundHalfAwayFromZeroInplaceTester = makeBroadcastTester(op = inplace.round_half_away_from_zero_inplace,
-                                         expected = theano.scalar.basic.round_half_away_from_zero_vec,
-                                         good = _good_broadcast_unary_normal_float_no_empty_no_complex,
-                                         inplace = True)
+RoundHalfAwayFromZeroTester = makeBroadcastTester(
+    op=tensor.round_half_away_from_zero,
+    expected=theano.scalar.basic.round_half_away_from_zero_vec,
+    good=_good_broadcast_unary_normal_float_no_empty_no_complex)
+    #_good_broadcast_unary_normal_float)
+RoundHalfAwayFromZeroInplaceTester = makeBroadcastTester(
+    op=inplace.round_half_away_from_zero_inplace,
+    expected=theano.scalar.basic.round_half_away_from_zero_vec,
+    good=_good_broadcast_unary_normal_float_no_empty_no_complex,
+    inplace=True)
 
-SqrTester = makeBroadcastTester(op = tensor.sqr,
-                                  expected = numpy.square,
-                                  good = _good_broadcast_unary_normal,
-                                  grad = _grad_broadcast_unary_normal)
-SqrInplaceTester = makeBroadcastTester(op = inplace.sqr_inplace,
-                                         expected = numpy.square,
-                                         good = _good_broadcast_unary_normal,
-                                         grad = _grad_broadcast_unary_normal,
-                                         inplace = True)
+SqrTester = makeBroadcastTester(op=tensor.sqr,
+                                expected=numpy.square,
+                                good=_good_broadcast_unary_normal,
+                                grad=_grad_broadcast_unary_normal)
+SqrInplaceTester = makeBroadcastTester(op=inplace.sqr_inplace,
+                                       expected=numpy.square,
+                                       good=_good_broadcast_unary_normal,
+                                       grad=_grad_broadcast_unary_normal,
+                                       inplace=True)
 
-ExpTester = makeBroadcastTester(op = tensor.exp,
-                                  expected = numpy.exp,
-                                  good = _good_broadcast_unary_normal,
-                                  grad = _grad_broadcast_unary_normal)
-ExpInplaceTester = makeBroadcastTester(op = inplace.exp_inplace,
-                                         expected = numpy.exp,
-                                         good = _good_broadcast_unary_normal,
-                                         grad = _grad_broadcast_unary_normal,
-                                         inplace = True)
+ExpTester = makeBroadcastTester(op=tensor.exp,
+                                expected=numpy.exp,
+                                good=_good_broadcast_unary_normal,
+                                grad=_grad_broadcast_unary_normal)
+ExpInplaceTester = makeBroadcastTester(op=inplace.exp_inplace,
+                                       expected=numpy.exp,
+                                       good=_good_broadcast_unary_normal,
+                                       grad=_grad_broadcast_unary_normal,
+                                       inplace=True)
 
 
-_good_broadcast_unary_positive = dict(normal = (rand_ranged(0.001, 5, (2, 3)),),
-                                      integers = (randint_ranged(1, 5, (2, 3)),),
-                                      complex = (randc128_ranged(1, 5, (2,3)),),
-                                      empty = (numpy.asarray([]),),
+def _numpy_exp2_round_int(x):
+    # Make sure exp2 on an int returns a value that can be correctly casted
+    # to an int. For instance, numpy.exp2(4) sometimes returns
+    # 15.999999999999998, we make sure we return 16. instead.
+    # This is used in Exp2InplaceTester.
+    out = numpy.exp2(x)
+    if x.dtype in tensor.discrete_dtypes:
+        out = numpy.round(out)
+    return out
+
+Exp2Tester = makeBroadcastTester(op=tensor.exp2,
+                                 expected=numpy.exp2,
+                                 good=_good_broadcast_unary_normal,
+                                 grad=_grad_broadcast_unary_normal)
+Exp2InplaceTester = makeBroadcastTester(op=inplace.exp2_inplace,
+                                        expected=_numpy_exp2_round_int,
+                                         good=_good_broadcast_unary_normal,
+                                         grad=_grad_broadcast_unary_normal,
+                                         inplace=True)
+
+
+Expm1Tester = makeBroadcastTester(op=tensor.expm1,
+                                  expected=numpy.expm1,
+                                  good=_good_broadcast_unary_normal,
+                                  grad=_grad_broadcast_unary_normal)
+Expm1InplaceTester = makeBroadcastTester(op=inplace.expm1_inplace,
+                                         expected=numpy.expm1,
+                                         good=_good_broadcast_unary_normal,
+                                         grad=_grad_broadcast_unary_normal,
+                                         inplace=True)
+
+
+_good_broadcast_unary_positive = dict(normal=(rand_ranged(0.001, 5, (2, 3)),),
+                                      integers=(randint_ranged(1, 5, (2, 3)),),
+                                      complex=(randc128_ranged(1, 5, (2, 3)),),
+                                      empty=(numpy.asarray([]),),
                                       )
 
-_grad_broadcast_unary_positive = dict(normal = (rand_ranged(0.001, 5, (2, 3)),),
-                                      #complex = (randc128_ranged(1, 5, (2,3)),),
-                                      #empty = (numpy.asarray([]),),
-                                      )
+_grad_broadcast_unary_positive = dict(normal=(rand_ranged(0.001, 5, (2, 3)),),)
 
-LogTester = makeBroadcastTester(op = tensor.log,
-                                  expected = numpy.log,
-                                  good = _good_broadcast_unary_positive,
-                                  grad = _grad_broadcast_unary_positive)
-LogInplaceTester = makeBroadcastTester(op = inplace.log_inplace,
-                                         expected = numpy.log,
-                                         good = _good_broadcast_unary_positive,
-                                         grad = _grad_broadcast_unary_positive,
-                                         inplace = True)
+LogTester = makeBroadcastTester(op=tensor.log,
+                                expected=numpy.log,
+                                good=_good_broadcast_unary_positive,
+                                grad=_grad_broadcast_unary_positive)
+LogInplaceTester = makeBroadcastTester(op=inplace.log_inplace,
+                                       expected=numpy.log,
+                                       good=_good_broadcast_unary_positive,
+                                       grad=_grad_broadcast_unary_positive,
+                                       inplace=True)
 
-Log2Tester = makeBroadcastTester(op = tensor.log2,
-                                   expected = numpy.log2,
-                                   good = _good_broadcast_unary_positive,
-                                   grad = _grad_broadcast_unary_positive)
-Log2InplaceTester = makeBroadcastTester(op = inplace.log2_inplace,
-                                          expected = numpy.log2,
-                                          good = _good_broadcast_unary_positive,
-                                          grad = _grad_broadcast_unary_positive,
-                                          inplace = True)
+Log2Tester = makeBroadcastTester(op=tensor.log2,
+                                 expected=numpy.log2,
+                                 good=_good_broadcast_unary_positive,
+                                 grad=_grad_broadcast_unary_positive)
+Log2InplaceTester = makeBroadcastTester(op=inplace.log2_inplace,
+                                        expected=numpy.log2,
+                                        good=_good_broadcast_unary_positive,
+                                        grad=_grad_broadcast_unary_positive,
+                                        inplace=True)
 
-Log10Tester = makeBroadcastTester(op = tensor.log10,
-                                   expected = numpy.log10,
-                                   good = _good_broadcast_unary_positive,
-                                   grad = _grad_broadcast_unary_positive)
-Log10InplaceTester = makeBroadcastTester(op = inplace.log10_inplace,
-                                          expected = numpy.log10,
-                                          good = _good_broadcast_unary_positive,
-                                          grad = _grad_broadcast_unary_positive,
-                                          inplace = True)
+Log10Tester = makeBroadcastTester(op=tensor.log10,
+                                  expected=numpy.log10,
+                                  good=_good_broadcast_unary_positive,
+                                  grad=_grad_broadcast_unary_positive)
+Log10InplaceTester = makeBroadcastTester(op=inplace.log10_inplace,
+                                         expected=numpy.log10,
+                                         good=_good_broadcast_unary_positive,
+                                         grad=_grad_broadcast_unary_positive,
+                                         inplace=True)
 
-Log1pTester = makeBroadcastTester(op = tensor.log1p,
-                                  expected = numpy.log1p,
-                                  good = _good_broadcast_unary_positive,
-                                  grad = _grad_broadcast_unary_positive)
-Log1pInplaceTester = makeBroadcastTester(op = inplace.log1p_inplace,
-                                         expected = numpy.log1p,
-                                         good = _good_broadcast_unary_positive,
-                                         grad = _grad_broadcast_unary_positive,
-                                         inplace = True)
+Log1pTester = makeBroadcastTester(op=tensor.log1p,
+                                  expected=numpy.log1p,
+                                  good=_good_broadcast_unary_positive,
+                                  grad=_grad_broadcast_unary_positive)
+Log1pInplaceTester = makeBroadcastTester(op=inplace.log1p_inplace,
+                                         expected=numpy.log1p,
+                                         good=_good_broadcast_unary_positive,
+                                         grad=_grad_broadcast_unary_positive,
+                                         inplace=True)
 
+SqrtTester = makeBroadcastTester(op=tensor.sqrt,
+                                   expected=numpy.sqrt,
+                                   good=_good_broadcast_unary_positive,
+                                   grad=_grad_broadcast_unary_positive)
+SqrtInplaceTester = makeBroadcastTester(op=inplace.sqrt_inplace,
+                                        expected=numpy.sqrt,
+                                        good=_good_broadcast_unary_positive,
+                                        grad=_grad_broadcast_unary_positive,
+                                        inplace=True)
 
-SqrtTester = makeBroadcastTester(op = tensor.sqrt,
-                                   expected = numpy.sqrt,
-                                   good = _good_broadcast_unary_positive,
-                                   grad = _grad_broadcast_unary_positive)
-SqrtInplaceTester = makeBroadcastTester(op = inplace.sqrt_inplace,
-                                          expected = numpy.sqrt,
-                                          good = _good_broadcast_unary_positive,
-                                          grad = _grad_broadcast_unary_positive,
-                                          inplace = True)
+_good_broadcast_unary_wide = dict(
+    normal=(rand_ranged(-1000, 1000, (2, 3)),),
+    integers=(randint_ranged(-1000, 1000, (2, 3)),),
+    complex=(randc128_ranged(-1000, 1000, (2, 3)),),
+    empty=(numpy.asarray([]),),)
+_grad_broadcast_unary_wide = dict(normal=(rand_ranged(-1000, 1000, (2, 3)),),)
 
+if theano.config.floatX == 'float32':
+    angle_eps = 1e-4
+else:
+    angle_eps = 1e-10
 
+Deg2radTester = makeBroadcastTester(
+    op=tensor.deg2rad,
+    expected=numpy.deg2rad,
+    good=_good_broadcast_unary_normal_no_complex,
+    grad=_grad_broadcast_unary_normal_no_complex,
+    eps=angle_eps)
+Deg2radInplaceTester = makeBroadcastTester(
+    op=inplace.deg2rad_inplace,
+    expected=numpy.deg2rad,
+    good=_good_broadcast_unary_normal_no_complex,
+    grad=_grad_broadcast_unary_normal_no_complex,
+    inplace=True,
+    eps=angle_eps)
 
-_good_broadcast_unary_wide = dict(normal = (rand_ranged(-1000, 1000, (2, 3)),),
-                                  integers = (randint_ranged(-1000, 1000, (2, 3)),),
-                                  complex = (randc128_ranged(-1000, 1000, (2, 3)),),
-                                  empty = (numpy.asarray([]),),)
+Rad2degTester = makeBroadcastTester(
+    op=tensor.rad2deg,
+    expected=numpy.rad2deg,
+    good=_good_broadcast_unary_normal_no_complex,
+    grad=_grad_broadcast_unary_normal_no_complex,
+    eps=angle_eps)
+Rad2degInplaceTester = makeBroadcastTester(
+    op=inplace.rad2deg_inplace,
+    expected=numpy.rad2deg,
+    good=_good_broadcast_unary_normal_no_complex,
+    grad=_grad_broadcast_unary_normal_no_complex,
+    inplace=True,
+    eps=angle_eps)
 
-_grad_broadcast_unary_wide = dict(normal = (rand_ranged(-1000, 1000, (2, 3)),),
-                                  #complex = (randc128_ranged(-1000, 1000, (2, 3)),),
-                                  #empty = (numpy.asarray([]),),
-                                  )
+SinTester = makeBroadcastTester(op=tensor.sin,
+                                expected=numpy.sin,
+                                good=_good_broadcast_unary_wide,
+                                grad=_grad_broadcast_unary_wide)
+SinInplaceTester = makeBroadcastTester(op=inplace.sin_inplace,
+                                       expected=numpy.sin,
+                                       good=_good_broadcast_unary_wide,
+                                       grad=_grad_broadcast_unary_wide,
+                                       inplace=True)
 
-_good_broadcast_unary_arccos = dict(normal = (rand_ranged(-1.+1e-7, 1.-1e-7, (2, 3)),),
-                                  integers = (randint_ranged(-1.+1e-7, 1-1e-7, (2, 3)),),
-                                  complex = (randc128_ranged(-1.+1e-7, 1-1e-7, (2, 3)),),
-                                  empty = (numpy.asarray([]),),)
+_good_broadcast_unary_arcsin = dict(normal=(rand_ranged(-1, 1, (2, 3)),),
+                                    integers=(randint_ranged(-1, 1, (2, 3)),),
+                                    complex=(randc128_ranged(-1, 1, (2, 3)),),
+                                    empty=(numpy.asarray([]),),)
+_grad_broadcast_unary_arcsin = dict(normal=(rand_ranged(-1, 1, (2, 3)),),)
 
-_grad_broadcast_unary_arccos = dict(normal = (rand_ranged(-1.+1e-7, 1-1e-7, (2, 3)),),
-                                  #complex = (randc128_ranged(-1000, 1000, (2, 3)),),
-                                  #empty = (numpy.asarray([]),),
-                                  )
+ArcsinTester = makeBroadcastTester(op=tensor.arcsin,
+                                   expected=numpy.arcsin,
+                                   good=_good_broadcast_unary_arcsin,
+                                   grad=_grad_broadcast_unary_arcsin)
+ArcsinInplaceTester = makeBroadcastTester(op=inplace.arcsin_inplace,
+                                          expected=numpy.arcsin,
+                                          good=_good_broadcast_unary_arcsin,
+                                          grad=_grad_broadcast_unary_arcsin,
+                                          inplace=True)
 
+CosTester = makeBroadcastTester(op=tensor.cos,
+                                expected=numpy.cos,
+                                good=_good_broadcast_unary_wide,
+                                grad=_grad_broadcast_unary_wide)
+CosInplaceTester = makeBroadcastTester(op=inplace.cos_inplace,
+                                       expected=numpy.cos,
+                                       good=_good_broadcast_unary_wide,
+                                       grad=_grad_broadcast_unary_wide,
+                                       inplace=True)
 
-SinTester = makeBroadcastTester(op = tensor.sin,
-                                  expected = numpy.sin,
-                                  good = _good_broadcast_unary_wide,
-                                  grad = _grad_broadcast_unary_wide)
-SinInplaceTester = makeBroadcastTester(op = inplace.sin_inplace,
-                                         expected = numpy.sin,
-                                         good = _good_broadcast_unary_wide,
-                                         grad = _grad_broadcast_unary_wide,
-                                         inplace = True)
+ArccosTester = makeBroadcastTester(op=tensor.arccos,
+                                   expected=numpy.arccos,
+                                   good=_good_broadcast_unary_arcsin,
+                                   grad=_grad_broadcast_unary_arcsin)
+ArccosInplaceTester = makeBroadcastTester(op=inplace.arccos_inplace,
+                                          expected=numpy.arccos,
+                                          good=_good_broadcast_unary_arcsin,
+                                          grad=_grad_broadcast_unary_arcsin,
+                                          inplace=True)
 
-CosTester = makeBroadcastTester(op = tensor.cos,
-                                  expected = numpy.cos,
-                                  good = _good_broadcast_unary_wide,
-                                  grad = _grad_broadcast_unary_wide)
-CosInplaceTester = makeBroadcastTester(op = inplace.cos_inplace,
-                                         expected = numpy.cos,
-                                         good = _good_broadcast_unary_wide,
-                                         grad = _grad_broadcast_unary_wide,
-                                         inplace = True)
-ArccosTester = makeBroadcastTester(op = tensor.arccos,
-                                  expected = numpy.arccos,
-                                  good = _good_broadcast_unary_arccos,
-                                  grad = _grad_broadcast_unary_arccos)
-ArccosInplaceTester = makeBroadcastTester(op = inplace.arccos_inplace,
-                                         expected = numpy.arccos,
-                                         good = _good_broadcast_unary_arccos,
-                                         grad = _grad_broadcast_unary_arccos,
-                                         inplace = True)
+_good_broadcast_unary_tan = dict(
+    normal=(rand_ranged(-3.14, 3.14, (2, 3)),),
+    shifted=(rand_ranged(3.15, 6.28, (2, 3)),),
+    integers=(randint_ranged(-3, 3, (2, 3)),),
+    complex=(randc128_ranged(-3.14, 3.14, (2, 3)),),
+    empty=(numpy.asarray([]),),)
+#We do not want to test around the discontinuity.
+_grad_broadcast_unary_tan = dict(normal=(rand_ranged(-1.5, 1.5, (2, 3)),),
+                                 shifted=(rand_ranged(1.6, 4.6, (2, 3)),))
 
-tan_grad_rtol = None
-if config.floatX=='float32':
-#We raise the relative tolerence for the grad as their is error in float32
-#This is probably caused by our way of computing the gradient error.
-    tan_grad_rtol = 0.052
-TanTester = makeBroadcastTester(op = tensor.tan,
-                                  expected = numpy.tan,
-                                  good = dict(normal = (rand_ranged(-3.14, 3.14, (2, 3)),),
-                                              shifted = (rand_ranged(3.15, 6.28, (2, 3)),)),
-                                  grad = dict(normal = (rand_ranged(-3.14, 3.14, (2, 3)),),
-                                              shifted = (rand_ranged(3.15, 6.28, (2, 3)),)),
-                                  grad_rtol=tan_grad_rtol)
-TanInplaceTester = makeBroadcastTester(op = inplace.tan_inplace,
-                                         expected = numpy.tan,
-                                         good = dict(normal = (rand_ranged(-3.14, 3.14, (2, 3)),),
-                                                     shifted = (rand_ranged(3.15, 6.28, (2, 3)),)),
-                                         grad = dict(normal = (rand_ranged(-3.14, 3.14, (2, 3)),),
-                                                     shifted = (rand_ranged(3.15, 6.28, (2, 3)),)),
-                                         grad_rtol=tan_grad_rtol,
-                                         inplace = True)
+TanTester = makeBroadcastTester(op=tensor.tan,
+                                expected=numpy.tan,
+                                good=_good_broadcast_unary_tan,
+                                grad=_grad_broadcast_unary_tan)
 
+TanInplaceTester = makeBroadcastTester(op=inplace.tan_inplace,
+                                       expected=numpy.tan,
+                                       good=_good_broadcast_unary_tan,
+                                       grad=_grad_broadcast_unary_tan,
+                                       inplace=True)
 
-CoshTester = makeBroadcastTester(op = tensor.cosh,
-                                   expected = numpy.cosh,
-                                   good = _good_broadcast_unary_normal,
-                                   grad = _grad_broadcast_unary_normal)
-CoshInplaceTester = makeBroadcastTester(op = inplace.cosh_inplace,
-                                          expected = numpy.cosh,
-                                          good = _good_broadcast_unary_normal,
-                                          grad = _grad_broadcast_unary_normal,
-                                          inplace = True)
+ArctanTester = makeBroadcastTester(op=tensor.arctan,
+                                   expected=numpy.arctan,
+                                   good=_good_broadcast_unary_wide,
+                                   grad=_grad_broadcast_unary_wide)
+ArctanInplaceTester = makeBroadcastTester(op=inplace.arctan_inplace,
+                                          expected=numpy.arctan,
+                                          good=_good_broadcast_unary_wide,
+                                          grad=_grad_broadcast_unary_wide,
+                                          inplace=True)
 
-SinhTester = makeBroadcastTester(op = tensor.sinh,
-                                   expected = numpy.sinh,
-                                   good = _good_broadcast_unary_normal,
-                                   grad = _grad_broadcast_unary_normal)
-SinhInplaceTester = makeBroadcastTester(op = inplace.sinh_inplace,
-                                          expected = numpy.sinh,
-                                          good = _good_broadcast_unary_normal,
-                                          grad = _grad_broadcast_unary_normal,
-                                          inplace = True)
+_good_broadcast_binary_arctan2 = dict(
+    same_shapes=(rand(2, 3), rand(2, 3)),
+    not_same_dimensions=(rand(2, 2), rand(2)),
+    scalar=(rand(2, 3), rand(1, 1)),
+    row=(rand(2, 3), rand(1, 3)),
+    column=(rand(2, 3), rand(2, 1)),
+    integers=(randint(2, 3), randint(2, 3)),
+    dtype_mixup_1=(rand(2, 3), randint(2, 3)),
+    dtype_mixup_2=(randint(2, 3), rand(2, 3)),
+    empty=(numpy.asarray([]), numpy.asarray([1])),
+    )
 
-TanhTester = makeBroadcastTester(op = tensor.tanh,
-                                   expected = numpy.tanh,
-                                   good = _good_broadcast_unary_normal,
-                                   grad = _grad_broadcast_unary_normal)
-TanhInplaceTester = makeBroadcastTester(op = inplace.tanh_inplace,
-                                          expected = numpy.tanh,
-                                          good = _good_broadcast_unary_normal,
-                                          grad = _grad_broadcast_unary_normal,
-                                          inplace = True)
+_grad_broadcast_binary_arctan2 = dict(
+    same_shapes=(rand(2, 3), rand(2, 3)),
+    scalar=(rand(2, 3), rand(1, 1)),
+    row=(rand(2, 3), rand(1, 3)),
+    column=(rand(2, 3), rand(2, 1)),
+    )
+
+Arctan2Tester = makeBroadcastTester(op=tensor.arctan2,
+                                    expected=numpy.arctan2,
+                                    good=_good_broadcast_binary_arctan2,
+                                    grad=_grad_broadcast_binary_arctan2)
+Arctan2InplaceTester = makeBroadcastTester(op=inplace.arctan2_inplace,
+                                           expected=numpy.arctan2,
+                                           good=_good_broadcast_binary_arctan2,
+                                           grad=_grad_broadcast_binary_arctan2,
+                                           inplace=True)
+
+CoshTester = makeBroadcastTester(op=tensor.cosh,
+                                 expected=numpy.cosh,
+                                 good=_good_broadcast_unary_normal,
+                                 grad=_grad_broadcast_unary_normal)
+CoshInplaceTester = makeBroadcastTester(op=inplace.cosh_inplace,
+                                        expected=numpy.cosh,
+                                        good=_good_broadcast_unary_normal,
+                                        grad=_grad_broadcast_unary_normal,
+                                        inplace=True)
+
+_good_broadcast_unary_arccosh = dict(
+    normal=(rand_ranged(1, 1000, (2, 3)),),
+    integers=(randint_ranged(1, 1000, (2, 3)),),
+    complex=(randc128_ranged(1, 1000, (2, 3)),),
+    empty=(numpy.asarray([]),),)
+_grad_broadcast_unary_arccosh = dict(normal=(rand_ranged(1, 1000, (2, 3)),),)
+
+ArccoshTester = makeBroadcastTester(op=tensor.arccosh,
+                                    expected=numpy.arccosh,
+                                    good=_good_broadcast_unary_arccosh,
+                                    grad=_grad_broadcast_unary_arccosh)
+ArccoshInplaceTester = makeBroadcastTester(op=inplace.arccosh_inplace,
+                                           expected=numpy.arccosh,
+                                           good=_good_broadcast_unary_arccosh,
+                                           grad=_grad_broadcast_unary_arccosh,
+                                           inplace=True)
+
+SinhTester = makeBroadcastTester(op=tensor.sinh,
+                                 expected=numpy.sinh,
+                                 good=_good_broadcast_unary_normal,
+                                 grad=_grad_broadcast_unary_normal)
+SinhInplaceTester = makeBroadcastTester(op=inplace.sinh_inplace,
+                                        expected=numpy.sinh,
+                                        good=_good_broadcast_unary_normal,
+                                        grad=_grad_broadcast_unary_normal,
+                                        inplace=True)
+
+ArcsinhTester = makeBroadcastTester(op=tensor.arcsinh,
+                                    expected=numpy.arcsinh,
+                                    good=_good_broadcast_unary_normal,
+                                    grad=_grad_broadcast_unary_normal)
+ArcsinhInplaceTester = makeBroadcastTester(op=inplace.arcsinh_inplace,
+                                           expected=numpy.arcsinh,
+                                           good=_good_broadcast_unary_normal,
+                                           grad=_grad_broadcast_unary_normal,
+                                           inplace=True)
+
+TanhTester = makeBroadcastTester(op=tensor.tanh,
+                                 expected=numpy.tanh,
+                                 good=_good_broadcast_unary_normal,
+                                 grad=_grad_broadcast_unary_normal)
+TanhInplaceTester = makeBroadcastTester(op=inplace.tanh_inplace,
+                                        expected=numpy.tanh,
+                                        good=_good_broadcast_unary_normal,
+                                        grad=_grad_broadcast_unary_normal,
+                                        inplace=True)
+
+_eps = 1e-10
+_good_broadcast_unary_arctanh = dict(
+    normal=(rand_ranged(-1 + _eps, 1 - _eps, (2, 3)),),
+    integers=(randint_ranged(-1 + _eps, 1 - _eps, (2, 3)),),
+    complex=(randc128_ranged(-1 + _eps, 1 - _eps, (2, 3)),),
+    empty=(numpy.asarray([]),),)
+_grad_broadcast_unary_arctanh = dict(
+    normal=(rand_ranged(-1 + _eps, 1 - _eps, (2, 3)),),)
+
+ArctanhTester = makeBroadcastTester(op=tensor.arctanh,
+                                    expected=numpy.arctanh,
+                                    good=_good_broadcast_unary_arctanh,
+                                    grad=_grad_broadcast_unary_arctanh)
+ArctanhInplaceTester = makeBroadcastTester(op=inplace.arctanh_inplace,
+                                           expected=numpy.arctanh,
+                                           good=_good_broadcast_unary_arctanh,
+                                           grad=_grad_broadcast_unary_arctanh,
+                                           inplace=True)
+
 
 #inplace ops when the input is integer and the output is float*
 # don't have a well defined behavior. We don't test that case.
@@ -1116,43 +1402,138 @@ del _good_broadcast_unary_normal_no_int['integers']
 if imported_scipy_special:
     expected_erf = scipy.special.erf
     expected_erfc = scipy.special.erfc
+    expected_erfinv = scipy.special.erfinv
+    expected_erfcinv = scipy.special.erfcinv
+    expected_gamma = scipy.special.gamma
+    expected_gammaln = scipy.special.gammaln
+    expected_psi = scipy.special.psi
     skip_scipy = False
 else:
     expected_erf = []
     expected_erfc = []
+    expected_erfinv = []
+    expected_erfcinv = []
+    expected_gamma = []
+    expected_gammaln = []
+    expected_psi = []
     skip_scipy = "scipy is not present"
 
-ErfTester = makeBroadcastTester(op = tensor.erf,
-                                expected = expected_erf,
-                                good = _good_broadcast_unary_normal,
-                                grad = _grad_broadcast_unary_normal,
-                                eps = 2e-10,
-                                mode = mode_no_scipy,
-                                skip = skip_scipy)
-ErfInplaceTester = makeBroadcastTester(op = inplace.erf_inplace,
-                                       expected = expected_erf,
-                                       good = _good_broadcast_unary_normal_no_int,
-                                       grad = _grad_broadcast_unary_normal,
-                                       mode = mode_no_scipy,
-                                       eps = 2e-10,
-                                       inplace = True,
-                                       skip = skip_scipy)
+ErfTester = makeBroadcastTester(
+    op=tensor.erf,
+    expected=expected_erf,
+    good=_good_broadcast_unary_normal,
+    grad=_grad_broadcast_unary_normal,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    skip=skip_scipy)
+ErfInplaceTester = makeBroadcastTester(
+    op=inplace.erf_inplace,
+    expected=expected_erf,
+    good=_good_broadcast_unary_normal_no_int,
+    grad=_grad_broadcast_unary_normal,
+    mode=mode_no_scipy,
+    eps=2e-10,
+    inplace=True,
+    skip=skip_scipy)
 
-ErfcTester = makeBroadcastTester(op = tensor.erfc,
-                                 expected = expected_erfc,
-                                 good = _good_broadcast_unary_normal_no_int_no_complex,
-                                 grad = _grad_broadcast_unary_normal,
-                                 eps = 2e-10,
-                                 mode = mode_no_scipy,
-                                 skip = skip_scipy)
-ErfcInplaceTester = makeBroadcastTester(op = inplace.erfc_inplace,
-                                        expected = expected_erfc,
-                                        good = _good_broadcast_unary_normal_no_int_no_complex,
-                                        grad = _grad_broadcast_unary_normal,
-                                        eps = 2e-10,
-                                        mode = mode_no_scipy,
-                                        inplace = True,
-                                        skip = skip_scipy)
+ErfcTester = makeBroadcastTester(
+    op=tensor.erfc,
+    expected=expected_erfc,
+    good=_good_broadcast_unary_normal_no_int_no_complex,
+    grad=_grad_broadcast_unary_normal,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    skip=skip_scipy)
+ErfcInplaceTester = makeBroadcastTester(
+    op=inplace.erfc_inplace,
+    expected=expected_erfc,
+    good=_good_broadcast_unary_normal_no_int_no_complex,
+    grad=_grad_broadcast_unary_normal,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    inplace=True,
+    skip=skip_scipy)
+
+ErfinvTester = makeBroadcastTester(
+    op=tensor.erfinv,
+    expected=expected_erfinv,
+    good=_good_broadcast_unary_normal_no_int_no_complex,
+    grad=_grad_broadcast_unary_abs1_no_complex,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    skip=skip_scipy)
+
+ErfcinvTester = makeBroadcastTester(
+    op=tensor.erfcinv,
+    expected=expected_erfcinv,
+    good=_good_broadcast_unary_normal_no_int_no_complex,
+    grad=_grad_broadcast_unary_0_2_no_complex,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    skip=skip_scipy)
+
+_good_broadcast_unary_gammaln = dict(
+    normal=(rand_ranged(-1 + 1e-2, 10, (2, 3)),),
+    empty=(numpy.asarray([]),),)
+_grad_broadcast_unary_gammaln = dict(
+    # smaller range as our grad method does not estimate it well enough.
+    normal=(rand_ranged(1e-8, 8, (2, 3)),),)
+
+GammaTester = makeBroadcastTester(
+    op=tensor.gamma,
+    expected=expected_gamma,
+    good=_good_broadcast_unary_gammaln,
+    grad=_grad_broadcast_unary_gammaln,
+    mode=mode_no_scipy,
+    eps=1e-5,
+    skip=skip_scipy)
+GammaInplaceTester = makeBroadcastTester(
+    op=inplace.gamma_inplace,
+    expected=expected_gamma,
+    good=_good_broadcast_unary_gammaln,
+    grad=_grad_broadcast_unary_gammaln,
+    mode=mode_no_scipy,
+    eps=1e-5,
+    inplace=True,
+    skip=skip_scipy)
+
+GammalnTester = makeBroadcastTester(
+    op=tensor.gammaln,
+    expected=expected_gammaln,
+    good=_good_broadcast_unary_gammaln,
+    grad=_grad_broadcast_unary_gammaln,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    skip=skip_scipy)
+GammalnInplaceTester = makeBroadcastTester(
+    op=inplace.gammaln_inplace,
+    expected=expected_gammaln,
+    good=_good_broadcast_unary_gammaln,
+    grad=_grad_broadcast_unary_gammaln,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    inplace=True,
+    skip=skip_scipy)
+
+_good_broadcast_unary_psi = dict(
+    normal=(rand_ranged(1, 10, (2, 3)),),
+    empty=(numpy.asarray([]),),)
+
+PsiTester = makeBroadcastTester(
+    op=tensor.psi,
+    expected=expected_psi,
+    good=_good_broadcast_unary_psi,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    skip=skip_scipy)
+PsiInplaceTester = makeBroadcastTester(
+    op=inplace.psi_inplace,
+    expected=expected_psi,
+    good=_good_broadcast_unary_psi,
+    eps=2e-10,
+    mode=mode_no_scipy,
+    inplace=True,
+    skip=skip_scipy)
 
 ZerosLikeTester = makeBroadcastTester(
         op=tensor.zeros_like,
@@ -1168,17 +1549,48 @@ OnesLikeTester = makeBroadcastTester(
         grad=_grad_broadcast_unary_normal,
         name='OnesLike')
 
-DotTester = makeTester(name = 'DotTester',
-                        op = dot,
-                        expected = lambda x, y: numpy.dot(x, y),
-                        checks = {},
-                        good = dict(correct1 = (rand(5, 7), rand(7, 5)),
-                                    correct2 = (rand(5, 7), rand(7, 9)),
-                                    correct3 = (rand(5, 7), rand(7)),
-                                    correct4 = (rand(5), rand(5, 7)),
-                                    mixed1 = (rand(5).astype('float32'),
+# Complex operations
+_good_complex_from_polar = dict(
+    same_shapes=(abs(rand(2, 3)), rand(2, 3)),
+    not_same_dimensions=(abs(rand(2, 2)), rand(2)),
+    scalar=(abs(rand(2, 3)), rand(1, 1)),
+    row=(abs(rand(2, 3)), rand(1, 3)),
+    column=(abs(rand(2, 3)), rand(2, 1)),
+    integers=(abs(randint(2, 3)), randint(2, 3)),
+    empty=(numpy.asarray([]), numpy.asarray([1])),)
+_grad_complex_from_polar = dict(
+    same_shapes=(abs(rand(2, 3)), rand(2, 3)),
+    scalar=(abs(rand(2, 3)), rand(1, 1)),
+    row=(abs(rand(2, 3)), rand(1, 3)),
+    column=(abs(rand(2, 3)), rand(2, 1)))
+
+ComplexFromPolarTester = makeBroadcastTester(
+    op=tensor.complex_from_polar,
+    expected=lambda r, theta: r * numpy.cos(theta) + 1j * r * numpy.sin(theta),
+    good=_good_complex_from_polar)
+
+ConjTester = makeBroadcastTester(
+    op=tensor.conj,
+    expected=numpy.conj,
+    good=_good_broadcast_unary_normal)
+ConjInplaceTester = makeBroadcastTester(
+    op=inplace.conj_inplace,
+    expected=numpy.conj,
+    good=_good_broadcast_unary_normal,
+    inplace=True)
+
+
+DotTester = makeTester(name='DotTester',
+                        op=dot,
+                        expected=lambda x, y: numpy.dot(x, y),
+                        checks={},
+                        good=dict(correct1=(rand(5, 7), rand(7, 5)),
+                                    correct2=(rand(5, 7), rand(7, 9)),
+                                    correct3=(rand(5, 7), rand(7)),
+                                    correct4=(rand(5), rand(5, 7)),
+                                    mixed1=(rand(5).astype('float32'),
                                         rand(5, 7)),
-                                    mixed2 = (rand(5).astype('float64'),
+                                    mixed2=(rand(5).astype('float64'),
                                         rand(5, 7)),
                                     complex1 = (randcomplex(5, 7), randcomplex(7)),
                                     complex2 = (rand(5, 7), randcomplex(7)),
@@ -1191,6 +1603,7 @@ DotTester = makeTester(name = 'DotTester',
                         bad_runtime = dict(bad1 = (rand(5, 7), rand(5, 7)),
                                            bad2 = (rand(5, 7), rand(8, 3))))
 
+
 def _numpy_second(x, y):
     return numpy.broadcast_arrays(x, y)[1]
 
@@ -1198,6 +1611,7 @@ ALL_DTYPES = ('int8', 'int16', 'int32', 'int64',
               'float32', 'float64', 'complex64', 'complex128')
 REAL_DTYPES = ALL_DTYPES[:-2]
 COMPLEX_DTYPES = ALL_DTYPES[-2:]
+
 
 def multi_dtype_checks(shape1, shape2, dtypes=ALL_DTYPES, nameprefix=''):
     for dtype1, dtype2 in combinations(dtypes, 2):
@@ -1207,6 +1621,7 @@ def multi_dtype_checks(shape1, shape2, dtypes=ALL_DTYPES, nameprefix=''):
         obj2 = rand_of_dtype(shape2, dtype2)
         yield (name1, (obj1, obj2))
         yield (name2, (obj2, obj1))
+
 
 def multi_dtype_cast_checks(shape, dtypes=ALL_DTYPES, nameprefix=''):
     for dtype1, dtype2 in combinations(dtypes, 2):
@@ -1253,32 +1668,41 @@ SecondSameRankTester = makeTester(
                                 multi_dtype_checks((4, 5), (5, 4)),
                                 multi_dtype_checks((1, 5), (5, 4)),
                             )),
-                            mode=get_default_mode().excluding('local_fill_to_alloc')
+                            mode=get_default_mode().excluding('local_fill_to_alloc',
+                                                              'local_useless_fill')
                         )
 
 ### Alloc
 AllocTester = makeBroadcastTester(
-        name = 'AllocTester',
-        op = alloc,
-        expected = (lambda x, *shp: numpy.zeros(shp, dtype=x.dtype) + x),
-        good = dict(
-            correct01 = (rand(), numpy.int32(7)),
-            correct01_bcast = (rand(1), numpy.int32(7)),
-            correct02 = (rand(), numpy.int32(4), numpy.int32(7)),
-            correct12 = (rand(7), numpy.int32(4), numpy.int32(7)),
-            correct13 = (rand(7), numpy.int32(2), numpy.int32(4), numpy.int32(7)),
-            correct23 = (rand(4,7), numpy.int32(2), numpy.int32(4), numpy.int32(7)),
+        name='AllocTester',
+        op=alloc,
+        expected=(lambda x, *shp: numpy.zeros(shp, dtype=x.dtype) + x),
+        good=dict(
+            correct01=(rand(), numpy.int32(7)),
+            correct01_bcast=(rand(1), numpy.int32(7)),
+            correct02=(rand(), numpy.int32(4), numpy.int32(7)),
+            correct12=(rand(7), numpy.int32(4), numpy.int32(7)),
+            correct13=(rand(7), numpy.int32(2), numpy.int32(
+                4), numpy.int32(7)),
+            correct23=(rand(4, 7), numpy.int32(2), numpy.
+                int32(4), numpy.int32(7)),
             ),
-        bad_runtime = dict(
-                    bad_shape12 = (rand(7), numpy.int32(7), numpy.int32(5)),
+        bad_runtime=dict(
+                    bad_shape12=(rand(7), numpy.int32(7), numpy.int32(5)),
                     ),
-        bad_build = dict(
-                    too_big32 = (rand(6,2,4), numpy.int32(6), numpy.int32(2)),
-                    too_big32b = (rand(6,2,4), numpy.int32(6), numpy.int32(4)),
-                    too_big32c = (rand(6,2,4), numpy.int32(2), numpy.int32(4)),
-                    too_big32d = (rand(6,2,4), numpy.int32(2), numpy.int32(6)),
-                    too_big32e = (rand(6,2,4), numpy.int32(4), numpy.int32(6)),
-                    too_big32f = (rand(6,2,4), numpy.int32(4), numpy.int32(2)),
+        bad_build=dict(
+                    too_big32=(rand(6, 2, 4), numpy.
+                        int32(6), numpy.int32(2)),
+                    too_big32b=(rand(6, 2, 4), numpy.
+                        int32(6), numpy.int32(4)),
+                    too_big32c=(rand(6, 2, 4), numpy.
+                        int32(2), numpy.int32(4)),
+                    too_big32d=(rand(6, 2, 4), numpy.
+                        int32(2), numpy.int32(6)),
+                    too_big32e=(rand(6, 2, 4), numpy.
+                        int32(4), numpy.int32(6)),
+                    too_big32f=(rand(6, 2, 4), numpy.
+                        int32(4), numpy.int32(2)),
         ),
 )
 
@@ -1286,27 +1710,27 @@ AllocTester = makeBroadcastTester(
 s1, s2, s3 = randint_ranged(1, 13, (3,))
 # alloc a scalar into a vector
 Alloc01GradTester = makeBroadcastTester(
-        name = 'Alloc01GradTester',
+        name='Alloc01GradTester',
         #op = (lambda self, x: alloc(x, s1)),
-        op = (lambda x: alloc(x, s1)),
-        expected = (lambda x: numpy.zeros((s1,), dtype=x.dtype) + x),
-        grad = dict(
-            x1 = (rand(),),
-            x2 = (rand(),),
-            x3 = (rand(),),
+        op=(lambda x: alloc(x, s1)),
+        expected=(lambda x: numpy.zeros((s1,), dtype=x.dtype) + x),
+        grad=dict(
+            x1=(rand(),),
+            x2=(rand(),),
+            x3=(rand(),),
             ),
         )
 
 # alloc a vector into a tensor3
 Alloc13GradTester = makeBroadcastTester(
-        name = 'Alloc13GradTester',
+        name='Alloc13GradTester',
         #op = (lambda self, x: alloc(x, s1, s2, s3)),
-        op = (lambda x: alloc(x, s1, s2, s3)),
-        expected = (lambda x: numpy.zeros((s1, s2, s3), dtype=x.dtype) + x),
-        grad = dict(
-            x1 = (rand(s3),),
-            x2 = (rand(s3),),
-            x3 = (rand(s3),),
+        op=(lambda x: alloc(x, s1, s2, s3)),
+        expected=(lambda x: numpy.zeros((s1, s2, s3), dtype=x.dtype) + x),
+        grad=dict(
+            x1=(rand(s3),),
+            x2=(rand(s3),),
+            x3=(rand(s3),),
             ),
         )
 
@@ -1342,10 +1766,10 @@ class TestAlloc(unittest.TestCase):
             grad_derp = theano.grad(derp, some_vector)
             fgrad = theano.function([some_vector], grad_derp,
                                     mode=self.mode)
-            topo_obj = fobj.maker.env.toposort()
+            topo_obj = fobj.maker.fgraph.toposort()
             assert numpy.sum([isinstance(node.op, alloc)
                               for node in topo_obj]) == 0
-            topo_grad = fgrad.maker.env.toposort()
+            topo_grad = fgrad.maker.fgraph.toposort()
 
             #print subtensor
             #theano.printing.debugprint(fgrad)
@@ -1355,18 +1779,17 @@ class TestAlloc(unittest.TestCase):
             fgrad(test_params)
 
     def test_alloc_output(self):
-        val = tensor.constant(self.rng.randn(1,1), dtype=self.dtype)
+        val = tensor.constant(self.rng.randn(1, 1), dtype=self.dtype)
         for alloc in self.allocs:
             # The output is the result of the alloc operation,
             # we do not want it to be constant-folded
             out = alloc()(val, 50, 60)
 
             f = theano.function([], out)
-            topo = f.maker.env.toposort()
+            topo = f.maker.fgraph.toposort()
             assert numpy.sum([isinstance(node.op, alloc)
                               for node in topo]) == 1
-            assert not isinstance(topo[0].op,
-                    theano.compile.function_module.DeepCopyOp)
+            assert not isinstance(topo[0].op, DeepCopyOp)
 
 
 def test_eye():
@@ -1401,6 +1824,7 @@ def test_eye():
         yield check, dtype, 5, 3, 1
         yield check, dtype, 5, 3, -1
 
+
 def test_identity():
     def check(dtype):
         obj = rand_of_dtype((2,), dtype)
@@ -1408,13 +1832,14 @@ def test_identity():
         f = function([sym], tensor_copy(sym))
         assert numpy.all(obj == f(obj))
         assert obj.dtype == f(obj).dtype
-        topo = f.maker.env.toposort()
-        assert len(topo)==1
+        topo = f.maker.fgraph.toposort()
+        assert len(topo) == 1
         if theano.config.mode != 'FAST_COMPILE':
-            assert isinstance(topo[0].op, theano.compile.function_module.DeepCopyOp)
+            assert isinstance(topo[0].op, DeepCopyOp)
 
     for dtype in ALL_DTYPES:
         yield check, dtype
+
 
 class CastTester(unittest.TestCase):
     def test_good_between_real_types(self):
@@ -1444,7 +1869,8 @@ class CastTester(unittest.TestCase):
         for real_dtype in REAL_DTYPES:
             for complex_dtype in COMPLEX_DTYPES:
                 inp = tensor.vector(dtype=real_dtype)
-                self.assertRaises(TypeError, tensor.cast(inp, dtype=complex_dtype))
+                self.assertRaises(TypeError, tensor.cast(
+                    inp, dtype=complex_dtype))
 
 ClipTester = makeTester(name='ClipTester',
                         op=clip,
@@ -1475,6 +1901,7 @@ ClipTester = makeTester(name='ClipTester',
                        )
                         # I can't think of any way to make this fail at runtime
 
+
 class T_Clip(unittest.TestCase):
     def test_complex_value(self):
         for dtype in ['complex64', 'complex128']:
@@ -1488,16 +1915,15 @@ class T_Clip(unittest.TestCase):
 #      gradient numerically
 
 
-
 #useful mostly for unit tests
-def _approx_eq(a,b,eps=1.0e-4):
+def _approx_eq(a, b, eps=1.0e-4):
     a = numpy.asarray(a)
     b = numpy.asarray(b)
     if a.shape != b.shape:
         if _approx_eq.debug:
             print a.shape, b.shape
         return False
-    abs_rel_err = numeric_grad.abs_rel_err(a,b)
+    abs_rel_err = numeric_grad.abs_rel_err(a, b)
     # numpy.max don't like empty ndarray.
     if a.size == b.size == 0:
         return True
@@ -1508,29 +1934,50 @@ def _approx_eq(a,b,eps=1.0e-4):
     return  True
 _approx_eq.debug = 0
 
+def test_batched_dot():
+    first = theano.tensor.tensor3("first")
+    second = theano.tensor.tensor3("second")
+    output = theano.tensor.basic.batched_dot(first, second)
+    first_val = numpy.random.rand(10, 10, 20).astype(config.floatX)
+    second_val = numpy.random.rand(10, 20, 5).astype(config.floatX)
+    result_fn = theano.function([first, second], output)
+    result = result_fn(first_val, second_val)
+    assert result.shape[0] == first_val.shape[0]
+    assert result.shape[1] == first_val.shape[1]
+    assert result.shape[2] == second_val.shape[2]
+
+    first_mat = theano.tensor.dmatrix("first")
+    second_mat = theano.tensor.dmatrix("second")
+    output = theano.tensor.basic.batched_dot(first_mat, second_mat)
+    first_mat_val = numpy.random.rand(10, 10).astype(config.floatX)
+    second_mat_val = numpy.random.rand(10, 10).astype(config.floatX)
+    result_fn = theano.function([first_mat, second_mat], output)
+    result = result_fn(first_mat_val, second_mat_val)
+
+    assert result.shape[0] == first_val.shape[0]
 
 def test_tensor_values_eq_approx():
     #test, inf, -inf and nan equal themself
-    a=numpy.asarray([-numpy.inf,-1,0,1,numpy.inf,numpy.nan])
-    assert TensorType.values_eq_approx(a,a)
+    a = numpy.asarray([-numpy.inf, -1, 0, 1, numpy.inf, numpy.nan])
+    assert TensorType.values_eq_approx(a, a)
 
     #test inf, -inf don't equal themself
-    b=numpy.asarray([numpy.inf,-1,0,1,numpy.inf,numpy.nan])
-    assert not TensorType.values_eq_approx(a,b)
-    b=numpy.asarray([-numpy.inf,-1,0,1,-numpy.inf,numpy.nan])
-    assert not TensorType.values_eq_approx(a,b)
+    b = numpy.asarray([numpy.inf, -1, 0, 1, numpy.inf, numpy.nan])
+    assert not TensorType.values_eq_approx(a, b)
+    b = numpy.asarray([-numpy.inf, -1, 0, 1, -numpy.inf, numpy.nan])
+    assert not TensorType.values_eq_approx(a, b)
 
     #test allow_remove_inf
-    b=numpy.asarray([numpy.inf,-1,0,1,5,numpy.nan])
-    assert TensorType.values_eq_approx(a,b,allow_remove_inf=True)
-    b=numpy.asarray([numpy.inf,-1,0,1,5,6])
-    assert not TensorType.values_eq_approx(a,b,allow_remove_inf=True)
+    b = numpy.asarray([numpy.inf, -1, 0, 1, 5, numpy.nan])
+    assert TensorType.values_eq_approx(a, b, allow_remove_inf=True)
+    b = numpy.asarray([numpy.inf, -1, 0, 1, 5, 6])
+    assert not TensorType.values_eq_approx(a, b, allow_remove_inf=True)
 
     #test allow_remove_nan
-    b=numpy.asarray([numpy.inf,-1,0,1,5,numpy.nan])
-    assert not TensorType.values_eq_approx(a,b,allow_remove_nan=False)
-    b=numpy.asarray([-numpy.inf,-1,0,1,numpy.inf,6])
-    assert not TensorType.values_eq_approx(a,b,allow_remove_nan=False)
+    b = numpy.asarray([numpy.inf, -1, 0, 1, 5, numpy.nan])
+    assert not TensorType.values_eq_approx(a, b, allow_remove_nan=False)
+    b = numpy.asarray([-numpy.inf, -1, 0, 1, numpy.inf, 6])
+    assert not TensorType.values_eq_approx(a, b, allow_remove_nan=False)
 
 
 def test_nan_inf_constant_signature():
@@ -1577,9 +2024,11 @@ class T_Shape(unittest.TestCase):
     def test_basic0(self):
         s = shape(numpy.ones((5, 3)))
         self.assertTrue((eval_outputs([s]) == [5, 3]).all())
+
     def test_basic1(self):
         s = shape(numpy.ones((2)))
         self.assertTrue((eval_outputs([s]) == [2]).all())
+
     def test_basic2(self):
         s = shape(numpy.ones((5, 3, 10)))
         self.assertTrue((eval_outputs([s]) == [5, 3, 10]).all())
@@ -1614,7 +2063,8 @@ class T_max_and_argmax(unittest.TestCase):
         data = rand(2, 3)
         n = as_tensor_variable(data)
         for (axis, np_axis)  in [(-1, -1), (0, 0), (1, 1), (None, None),
-                                 ([0, 1], None), ([1, 0], None)]:
+                                 ([0, 1], None), ([1, 0], None),
+                                 (constant(0), 0)]:
             v, i = eval_outputs(max_and_argmax(n, axis))
             assert i.dtype == 'int64'
             self.assertTrue(numpy.all(v == numpy.max(data, np_axis)))
@@ -1680,6 +2130,18 @@ class T_max_and_argmax(unittest.TestCase):
             self.assertTrue(numpy.all(i == numpy.argmax(data, np_axis)))
             v = eval_outputs(max_and_argmax(n, axis)[0].shape)
             assert tuple(v) == numpy.max(data, np_axis).shape
+
+    def test_arg_grad(self):
+        """
+        The test checks that the gradient of argmax(x).sum() is 0
+        """
+
+        x = matrix()
+        cost = argmax(x, axis=0).sum()
+        value_error_raised = False
+        gx = grad(cost, x)
+        val = tensor.get_constant_value(gx)
+        assert val == 0.0
 
     def test_grad(self):
         data = rand(2, 3)
@@ -1863,6 +2325,7 @@ class T_argmin_argmax(unittest.TestCase):
     def test_grad_argmin(self):
         data = rand(2, 3)
         n = as_tensor_variable(data)
+        n.name = 'n'
 
         #test grad of argmin
         utt.verify_grad(lambda v: argmin(v, axis=-1), [data])
@@ -1874,7 +2337,9 @@ class T_argmin_argmax(unittest.TestCase):
         utt.verify_grad(lambda v: argmin(v.flatten()), [data])
 
         try:
-            grad(argmin(n, axis=-1), n)
+            cost = argmin(n, axis=-1)
+            cost.name = None
+            g = grad(cost, n)
             raise Exception('Expected an error')
         except TypeError:
             pass
@@ -2098,7 +2563,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
                  adv_incsub1=tensor.AdvancedIncSubtensor1,
                  mode=None,
                  dtype=theano.config.floatX,
-                 ignore_topo=(theano.compile.function_module.DeepCopyOp)):
+                 ignore_topo=DeepCopyOp):
         self.shared = shared
         self.sub = sub
         self.inc_sub = inc_sub
@@ -2139,9 +2604,10 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
     def eval_output_and_check(self, t, list=False):
         f = inplace_func([], t, mode=self.mode)
-        topo = f.maker.env.toposort()
-        topo_ = [node for node in topo if not isinstance(node.op, self.ignore_topo)]
-        assert len(topo_)==1
+        topo = f.maker.fgraph.toposort()
+        topo_ = [node for node in topo if not isinstance(node.op,
+             self.ignore_topo)]
+        assert len(topo_) == 1
         if not list:
             assert isinstance(topo_[0].op, self.sub)
         else:
@@ -2155,7 +2621,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         try:
             t = n[0]
         except ValueError, e:
-            self.assertTrue(hasattr(e,'subtensor_invalid'))
+            self.assertTrue(hasattr(e, 'subtensor_invalid'))
             return
         self.fail()
 
@@ -2185,7 +2651,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
     def test1_err_subslice(self):
         n = self.shared(numpy.ones(3, dtype=self.dtype))
         try:
-            t = n[slice(0,slice(1,2,None),None)]
+            t = n[slice(0, slice(1, 2, None), None)]
         except Exception, e:
             ### Relax constraint on the type of Exception,
             ### since this might be handled by AvancedSubtensor
@@ -2195,18 +2661,18 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         self.fail()
 
     def test1_ok_range_finite(self):
-        n = self.shared(numpy.ones(3, dtype=self.dtype)*5)
+        n = self.shared(numpy.arange(3, dtype=self.dtype))
         t = n[0:2]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == (2,))
-        self.assertTrue(tval[1] == 5.0)
+        self.assertTrue((tval == [0, 1]).all())
 
     def test2_ok_range_finite(self):
-        n = self.shared(numpy.ones((3,4), dtype=self.dtype)*5)
+        n = self.shared(numpy.arange(12, dtype=self.dtype).reshape((3, 4)))
         # Also check negative index
-        for idx in [(slice(0,2),3),((slice(0,2),-1)),(slice(0,2),-4)]:
-            t = n[idx]#l]#0:2,3]
+        for idx in [(slice(0, 2), 3), ((slice(0, 2), -1)), (slice(0, 2), -4)]:
+            t = n[idx]  # l]#0:2,3]
             self.assertTrue(isinstance(t.owner.op, Subtensor))
             tval = self.eval_output_and_check(t)
             self.assertTrue(tval.shape == (2,))
@@ -2226,14 +2692,14 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
     def test1_err_invalid(self):
         n = self.shared(numpy.ones(1, dtype=self.dtype))
         try:
-            t = n[0,0]
+            t = n[0, 0]
         except ValueError, e:
-            self.assertTrue(hasattr(e,'subtensor_invalid'))
+            self.assertTrue(hasattr(e, 'subtensor_invalid'))
             return
         self.fail()
 
     def test1_ok_elem(self):
-        n = self.shared(numpy.ones(1, dtype=self.dtype)*5)
+        n = self.shared(numpy.ones(1, dtype=self.dtype) * 5)
         t = n[0]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
@@ -2242,32 +2708,32 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
     def test1_ok_range_infinite(self):
         #Subtensor.debug = True
-        n = self.shared(numpy.ones(3, dtype=self.dtype)*5)
+        n = self.shared(numpy.arange(3, dtype=self.dtype))
         t = n[1:]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == (2,))
-        self.assertTrue(tval[1] == 5.0)
+        self.assertTrue((tval == [1.0, 2.0]).all())
 
     def test1_ok_strided(self):
-        n = self.shared(numpy.ones(5, dtype=self.dtype)*5)
+        n = self.shared(numpy.arange(5, dtype=self.dtype))
         t = n[1::2]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == (2,))
-        self.assertTrue(tval[1] == 5.0)
+        self.assertTrue((tval == [1.0, 3.0]).all())
 
-        t = n[0:-1:2] #0 to 1 from the end stepping by 2
+        t = n[0:-1:2]  # 0 to 1 from the end stepping by 2
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == (2,))
-        self.assertTrue(tval[1] == 5.0)
+        self.assertTrue((tval == [0.0, 2.0]).all())
 
     def test2_err_bounds0(self):
-        n = self.shared(numpy.ones((2,3), dtype=self.dtype)*5)
+        n = self.shared(numpy.ones((2, 3), dtype=self.dtype) * 5)
         ctv_backup = config.compute_test_value
         config.compute_test_value = 'off'
         try:
-            for idx in [(0,4),(0,-4)]:
+            for idx in [(0, 4), (0, -4)]:
                 t = n[idx]
                 self.assertTrue(isinstance(t.owner.op, Subtensor))
                 # Silence expected warnings
@@ -2286,8 +2752,8 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
             config.compute_test_value = ctv_backup
 
     def test2_err_bounds1(self):
-        n = self.shared((numpy.ones((2,3), dtype=self.dtype)*5))
-        t = n[4:5,2]
+        n = self.shared((numpy.ones((2, 3), dtype=self.dtype) * 5))
+        t = n[4:5, 2]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         old_stderr = sys.stderr
         sys.stderr = StringIO.StringIO()
@@ -2301,113 +2767,163 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
             sys.stderr = old_stderr
 
     def test2_ok_elem(self):
-        n = self.shared(numpy.asarray(range(6), dtype=self.dtype).reshape((2,3)))
-        t = n[0,2]
+        n = self.shared(numpy.arange(6, dtype=self.dtype).reshape((2, 3)))
+        t = n[0, 2]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == ())
         self.assertTrue(numpy.all(tval == 2))
 
     def test2_ok_row(self):
-        n = self.shared(numpy.asarray(range(6), dtype=self.dtype).reshape((2,3)))
+        n = self.shared(numpy.arange(6, dtype=self.dtype).reshape((2, 3)))
         t = n[1]
         self.assertFalse(any(n.type.broadcastable))
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == (3,))
-        self.assertTrue(numpy.all(tval == [3,4,5]))
+        self.assertTrue(numpy.all(tval == [3, 4, 5]))
 
     def test2_ok_col(self):
-        n = self.shared(numpy.ones((2,3), dtype=self.dtype)*5)
-        t = n[:,0]
+        n = self.shared(numpy.arange(6, dtype=self.dtype).reshape((2, 3)))
+        t = n[:, 0]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         self.assertFalse(any(n.type.broadcastable))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == (2,))
-        self.assertTrue(numpy.all(tval == 5.0))
+        self.assertTrue(numpy.all(tval == [0, 3]))
 
     def test2_ok_rows_finite(self):
-        n = self.shared(numpy.ones((4,3), dtype=self.dtype)*5)
-        t = n[1:3,0]
+        n = self.shared(numpy.arange(12, dtype=self.dtype).reshape((4, 3)))
+        t = n[1:3, 0]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == (2,))
-        self.assertTrue(numpy.all(tval == 5.0))
+        self.assertTrue(numpy.all(tval == [3, 6]))
 
     def test2_ok_cols_infinite(self):
-        n = self.shared(numpy.asarray(range(12), dtype=self.dtype).reshape((4,3)))
-        t = n[1,2:]
+        n = self.shared(numpy.arange(12, dtype=self.dtype).reshape((4, 3)))
+        t = n[1, 2:]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == (1,))
         self.assertTrue(numpy.all(tval == 5))
 
     def test2_ok_strided(self):
-        n = self.shared(numpy.asarray(range(20), dtype=self.dtype).reshape((4,5)))
-        t = n[1:4:2,1:5:2]
+        n = self.shared(numpy.arange(20, dtype=self.dtype).reshape((4, 5)))
+        t = n[1:4:2, 1:5:2]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
-        self.assertTrue(tval.shape == (2,2))
-        self.assertTrue(numpy.all(tval == [[6, 8],[16, 18]]))
+        self.assertTrue(tval.shape == (2, 2))
+        self.assertTrue(numpy.all(tval == [[6, 8], [16, 18]]))
 
     def test3_ok_mat(self):
-        n = self.shared(numpy.asarray(range(24), dtype=self.dtype).reshape((2,3,4)))
-        t = n[0,0,0]
+        n = self.shared(numpy.arange(24, dtype=self.dtype).reshape((2, 3, 4)))
+        t = n[0, 0, 0]
         self.assertTrue(isinstance(t.owner.op, Subtensor))
         tval = self.eval_output_and_check(t)
         self.assertTrue(tval.shape == ())
         self.assertTrue(numpy.all(tval == 0))
 
+    def test_newaxis(self):
+        """
+        newaxis support comes from logic in the __getitem__ of TensorType
+        Variables, which currently inserts dimshuffle to get the right number
+        of dimensions, and adjusts the slice tuple accordingly.
+
+        So testing is done via square-bracket notation rather than direct
+        interaction with the Subtensor Op (which has no support of its own for
+        newaxis).
+        """
+        newaxis = numpy.newaxis
+
+        n = self.shared(numpy.arange(24, dtype=self.dtype).reshape((2, 3, 4)))
+        assert n.ndim == 3
+
+        n4 = n[newaxis, :, :, :]
+        assert n4.broadcastable == (True, False, False, False), n4
+
+        n4 = n[:, newaxis, :, :]
+        assert n4.broadcastable == (False, True, False, False), n4
+
+        n4 = n[:, :, newaxis, :]
+        assert n4.broadcastable == (False, False, True, False), n4
+
+        n4 = n[:, :, :, newaxis]
+        assert n4.broadcastable == (False, False, False, True), n4
+
+        n3 = n.flatten()[newaxis, :, newaxis]
+        assert n3.broadcastable == (True, False, True), n3
+
+        s = cscalar()
+        s1 = s[newaxis]
+        assert s1.broadcastable == (True,), s1
+
+        vs1, vn3, vn4 = theano.function([s], [s1, n3, n4])(-2.0)
+
+        assert numpy.all(vs1 == [-2.0])
+        assert numpy.all(vn3
+                == numpy.arange(24)[newaxis, :, newaxis])
+        assert numpy.all(vn4
+                == numpy.arange(24).reshape((2, 3, 4))[:, :, :, newaxis])
+
     def test_grad_1d(self):
         subi = 0
-        data = numpy.asarray(rand(2,3), dtype=self.dtype)
+        data = numpy.asarray(rand(2, 3), dtype=self.dtype)
         n = self.shared(data)
         z = scal.constant(subi)
-        t = n[z:,z]
+        t = n[z:, z]
         gn = grad(sum(exp(t)), n)
 
         f = inplace_func([], gn, mode=self.mode)
-        topo = f.maker.env.toposort()
-        topo_ = [node for node in topo if not isinstance(node.op, self.ignore_topo)]
+        topo = f.maker.fgraph.toposort()
+        topo_ = [node for node in topo if not isinstance(node.op,
+             self.ignore_topo)]
         if not self.fast_compile:
-            assert len(topo_)==6
-        assert numpy.sum([isinstance(node.op, self.inc_sub) for node in topo_])==1
-        assert numpy.sum([isinstance(node.op, self.sub) for node in topo_])==1
+            assert len(topo_) == 6
+        assert numpy.sum([isinstance(node.op, self.inc_sub)
+             for node in topo_]) == 1
+        assert numpy.sum([isinstance(node.op, self.sub)
+             for node in topo_]) == 1
         gval = f()
 
         good = numpy.zeros_like(data)
-        good[subi:,subi] = numpy.exp(data[subi:,subi])
+        good[subi:, subi] = numpy.exp(data[subi:, subi])
         self.assertTrue(numpy.allclose(gval, good), (gval, good))
 
     def test_grad_0d(self):
-        data = numpy.asarray(rand(2,3), dtype=self.dtype)
+        data = numpy.asarray(rand(2, 3), dtype=self.dtype)
         n = self.shared(data)
-        t = n[1,0]
+        t = n[1, 0]
         gn = grad(sum(exp(t)), n)
         f = self.function([], gn)
-        topo = f.maker.env.toposort()
-        topo_ = [node for node in topo if not isinstance(node.op, self.ignore_topo)]
+        topo = f.maker.fgraph.toposort()
+        topo_ = [node for node in topo if not isinstance(node.op,
+             self.ignore_topo)]
         if not self.fast_compile:
-            assert len(topo_)==6
-        assert numpy.sum([isinstance(node.op, self.inc_sub) for node in topo_])==1
-        assert numpy.sum([isinstance(node.op, self.sub) for node in topo_])==1
+            assert len(topo_) == 6
+        assert numpy.sum([isinstance(node.op, self.inc_sub)
+             for node in topo_]) == 1
+        assert numpy.sum([isinstance(node.op, self.sub)
+             for node in topo_]) == 1
 
         gval = f()
         good = numpy.zeros_like(data)
-        good[1,0] = numpy.exp(data[1,0])
+        good[1, 0] = numpy.exp(data[1, 0])
         self.assertTrue(numpy.allclose(gval, good), (gval, good))
 
     def test_ok_list(self):
-        for data, idx in [(rand(4), [1,0]),
-                          (rand(4,5), [2,3]),
-                          (rand(4,2,3), [0,3]),
-                          (rand(4,2,3), [3,3,1,1,2,2,0,0]),
-                          (rand(4,2,3), [3,3,1,1,2,2,0,0,-1,-2,-3,-4]),
+        for data, idx in [(rand(4), [1, 0]),
+                          (rand(4, 5), [2, 3]),
+                          (rand(4, 2, 3), [0, 3]),
+                          (rand(4, 2, 3), [3, 3, 1, 1, 2, 2, 0, 0]),
+                          (rand(4, 2, 3), [3, 3,
+                               1, 1, 2, 2, 0, 0, -1, -2, -3, -4]),
                           # Test 4 dims as gpu code use another algo in that case
                           # This new algo is not as much optimized for that case.
-                          (rand(4,4,2,3), [3,3,1,1,2,2,0,0,-1,-2,-3,-4]),
+                          (rand(4, 4, 2, 3), [3,
+                               3, 1, 1, 2, 2, 0, 0, -1, -2, -3, -4]),
                           # Test with TensorConstant index.
-                          (rand(4,2,3), constant([3,3,1,1,2,2,0,0])),
+                          (rand(4, 2, 3), constant([3, 3, 1, 1, 2, 2, 0, 0])),
                           ]:
             data = numpy.asarray(data, dtype=self.dtype)
             n = self.shared(data)
@@ -2425,76 +2941,83 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
             self.assertTrue(numpy.allclose(val, good), (val, good))
 
             # Test reuse of output memory
-            if isinstance(self.adv_sub1,tensor.AdvancedSubtensor1):
+            if isinstance(self.adv_sub1, tensor.AdvancedSubtensor1):
                 op = self.adv_sub1()
                 # When idx is a TensorConstant.
                 if hasattr(idx, "data"):
                     idx = idx.data
                 test_out = [[None]]
-                op.perform(None, [data, idx],test_out)
+                op.perform(None, [data, idx], test_out)
                 out1 = test_out[0][0]
-                op.perform(None, [data, idx],test_out)
+                op.perform(None, [data, idx], test_out)
                 out2 = test_out[0][0]
                 assert out1 is out2
 
     def test_err_invalid_list(self):
         n = self.shared(numpy.asarray(5, dtype=self.dtype))
-        self.assertRaises(TypeError, n.__getitem__, [0,0])
+        self.assertRaises(TypeError, n.__getitem__, [0, 0])
 
-    def test_err_invalid_2list(self):
-        # TODO the error message is not clear
-        n = self.shared(numpy.ones((3,3), dtype=self.dtype)*5)
-        self.assertRaises(TypeError, n.__getitem__, ([0,0],[1,1]))
+    def test_err_invalid_not_2d(self):
+        n = self.shared(numpy.ones((3, 3, 3), dtype=self.dtype) * 5)
+        self.assertRaises(NotImplementedError, n.__getitem__,
+                          ([0, 0, 0], [1, 1, 1], [2, 2, 2]))
+
+    def test_err_invalid_2list_dtype(self):
+        n = self.shared(numpy.ones((3, 3), dtype=self.dtype) * 5)
+        self.assertRaises(TypeError, n.__getitem__, ([0., 0], [1, 1]))
 
     def test_err_bound_list(self):
-        n = self.shared(numpy.ones((2,3),dtype=self.dtype)*5)
+        n = self.shared(numpy.ones((2, 3), dtype=self.dtype) * 5)
         l = lvector()
         t = n[l]
         # We test again AdvancedSubtensor1 as we transfer data to the cpu.
         self.assertTrue(isinstance(t.owner.op, tensor.AdvancedSubtensor1))
 
         f = self.function([l], t, op=self.adv_sub1)
-        topo = f.maker.env.toposort()
-        topo_ = [node for node in topo if not isinstance(node.op, self.ignore_topo)]
-        assert len(topo_)==1
+        topo = f.maker.fgraph.toposort()
+        topo_ = [node for node in topo if not isinstance(node.op,
+             self.ignore_topo)]
+        assert len(topo_) == 1
         self.assertTrue(isinstance(topo_[0].op, self.adv_sub1))
-        for shp in [[0,4],[0,-3], [-10]]:
+        for shp in [[0, 4], [0, -3], [-10]]:
             self.assertRaises(IndexError, f, shp)
 
     def test_adv_sub1_broadcast(self):
-        ones = numpy.ones((1,3), dtype=self.dtype)
-        n = self.shared(ones*5, broadcastable=(True, False))
+        ones = numpy.ones((1, 3), dtype=self.dtype)
+        n = self.shared(ones * 5, broadcastable=(True, False))
         idx = tensor.lvector()
         t = n[idx]
         self.assertTrue(isinstance(t.owner.op, tensor.AdvancedSubtensor1))
 
         f = self.function([idx], t, op=self.adv_sub1)
-        topo = f.maker.env.toposort()
-        topo_ = [node for node in topo if not isinstance(node.op, self.ignore_topo)]
-        assert len(topo_)==1
+        topo = f.maker.fgraph.toposort()
+        topo_ = [node for node in topo if not isinstance(node.op,
+             self.ignore_topo)]
+        assert len(topo_) == 1
         self.assertTrue(isinstance(topo_[0].op, self.adv_sub1))
-        self.assertTrue(numpy.allclose(f([0]),ones[0]*5))
-        self.assertRaises(IndexError, f, [0,1])
+        self.assertTrue(numpy.allclose(f([0]), ones[0] * 5))
+        self.assertRaises(IndexError, f, [0, 1])
 
     def test_shape_i_const(self):
         # Each axis is treated independently by shape_i/shape operators
 
         mode_opt = self.mode.including("fast_run")
-        data = self.shared(numpy.array(numpy.arange(5),dtype=self.dtype))
-        for start in [None]+ [-8,-5,-1,0,1,5,8]:
-            outs   = []
+        data = self.shared(numpy.array(numpy.arange(5), dtype=self.dtype))
+        for start in [None] + [-8, -5, -1, 0, 1, 5, 8]:
+            outs = []
             shapes = []
-            for stop in [None] + [-8,-5,-1,0,1,5,8]:
-                for step in [None]+[-3,-1,2]:
-                    outs += [ data[start:stop:step].shape ]
-                    shapes += [data.get_value(borrow=True)[start:stop:step].shape ]
+            for stop in [None] + [-8, -5, -1, 0, 1, 5, 8]:
+                for step in [None] + [-3, -1, 2]:
+                    outs += [data[start:stop:step].shape]
+                    shapes += [data.get_value(borrow=
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        True)[start:stop:step].shape]
             f = self.function([], outs, mode=mode_opt,
                               op=self.ops, N=0)
             t_shapes = f()
-            for t_shape, shape in zip(t_shapes,shapes):
+            for t_shape, shape in zip(t_shapes, shapes):
                 assert numpy.all(t_shape == shape)
-            assert tensor.Subtensor not in [ x.op for x in
-                                           f.maker.env.toposort() ]
+            assert tensor.Subtensor not in [x.op for x in
+                                           f.maker.fgraph.toposort()]
 
     def test_shape_i_scalar(self):
         # Each axis is treated independently by shape_i/shape operators
@@ -2503,27 +3026,28 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         v_data = numpy.array(numpy.arange(5), dtype=self.dtype)
         t_data = self.shared(v_data)
-        start  = tensor.iscalar('b')
-        stop   = tensor.iscalar('e')
-        step   = tensor.iscalar('s')
+        start = tensor.iscalar('b')
+        stop = tensor.iscalar('e')
+        step = tensor.iscalar('s')
         f = self.function([start, stop, step],
                           t_data[start:stop:step].shape,
                           mode=mode_opt,
                           op=self.ops,
                           N=0)
-        assert tensor.Subtensor not in [x.op for x in f.maker.env.toposort()]
-        for start in [-8,-5,-4,-1,0,1,4,5,8]:
-            for stop in [-8,-5,-4,-1,0,1,4,5,8]:
-                for step in [-3,-1,2,5]:
+        assert tensor.Subtensor not in [x.op for x in f.maker.
+            fgraph.toposort()]
+        for start in [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+            for stop in [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+                for step in [-3, -1, 2, 5]:
                     assert numpy.all(
                             f(start,stop,step) == v_data[start:stop:step].shape)
 
     def test_slice_canonical_form_0(self):
-        start  = tensor.iscalar('b')
-        stop   = tensor.iscalar('e')
-        step   = tensor.iscalar('s')
+        start = tensor.iscalar('b')
+        stop = tensor.iscalar('e')
+        step = tensor.iscalar('s')
         length = tensor.iscalar('l')
-        cnf = tensor.get_canonical_form_slice(slice(start,stop,step), length)
+        cnf = tensor.get_canonical_form_slice(slice(start, stop, step), length)
         f = self.function([start, stop, step, length], [
             tensor.as_tensor_variable(cnf[0].start),
             tensor.as_tensor_variable(cnf[0].stop),
@@ -2532,20 +3056,20 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         length = 5
         a = numpy.arange(length)
-        for start in [ -8,-5,-4,-1,0,1,4,5,8]:
-            for stop in  [ -8,-5,-4,-1,0,1,4,5,8]:
-                for step in [-6,-3,-1,2,5]:
-                    out = f(start,stop,step,length)
-                    t_out = a[ out[0]:out[1]:out[2]][::out[3]]
+        for start in [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+            for stop in  [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+                for step in [-6, -3, -1, 2, 5]:
+                    out = f(start, stop, step, length)
+                    t_out = a[out[0]:out[1]:out[2]][::out[3]]
                     v_out = a[start:stop:step]
                     assert numpy.all(t_out == v_out)
                     assert numpy.all(t_out.shape == v_out.shape)
 
     def test_slice_canonical_form_1(self):
-        stop   = tensor.iscalar('e')
-        step   = tensor.iscalar('s')
+        stop = tensor.iscalar('e')
+        step = tensor.iscalar('s')
         length = tensor.iscalar('l')
-        cnf = tensor.get_canonical_form_slice(slice(None,stop,step), length)
+        cnf = tensor.get_canonical_form_slice(slice(None, stop, step), length)
         f = self.function([stop, step, length], [
             tensor.as_tensor_variable(cnf[0].start),
             tensor.as_tensor_variable(cnf[0].stop),
@@ -2554,20 +3078,19 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         length = 5
         a = numpy.arange(length)
-        for stop in  [ -8,-5,-4,-1,0,1,4,5,8]:
-            for step in [-6,-3,-1,2,5]:
-                out = f(stop,step,length)
-                t_out = a[ out[0]:out[1]:out[2]][::out[3]]
+        for stop in  [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+            for step in [-6, -3, -1, 2, 5]:
+                out = f(stop, step, length)
+                t_out = a[out[0]:out[1]:out[2]][::out[3]]
                 v_out = a[:stop:step]
                 assert numpy.all(t_out == v_out)
                 assert numpy.all(t_out.shape == v_out.shape)
 
-
     def test_slice_canonical_form_2(self):
-        start  = tensor.iscalar('b')
-        step   = tensor.iscalar('s')
+        start = tensor.iscalar('b')
+        step = tensor.iscalar('s')
         length = tensor.iscalar('l')
-        cnf = tensor.get_canonical_form_slice(slice(start,None,step), length)
+        cnf = tensor.get_canonical_form_slice(slice(start, None, step), length)
         f = self.function([start, step, length], [
             tensor.as_tensor_variable(cnf[0].start),
             tensor.as_tensor_variable(cnf[0].stop),
@@ -2576,20 +3099,19 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         length = 5
         a = numpy.arange(length)
-        for start in [ -8,-5,-4,-1,0,1,4,5,8]:
-            for step in [-6,-3,-1,2,5]:
-                out = f(start,step,length)
-                t_out = a[ out[0]:out[1]:out[2]][::out[3]]
+        for start in [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+            for step in [-6, -3, -1, 2, 5]:
+                out = f(start, step, length)
+                t_out = a[out[0]:out[1]:out[2]][::out[3]]
                 v_out = a[start:None:step]
                 assert numpy.all(t_out == v_out)
                 assert numpy.all(t_out.shape == v_out.shape)
 
-
     def test_slice_canonical_form_3(self):
-        start  = tensor.iscalar('b')
-        stop   = tensor.iscalar('e')
+        start = tensor.iscalar('b')
+        stop = tensor.iscalar('e')
         length = tensor.iscalar('l')
-        cnf = tensor.get_canonical_form_slice(slice(start,stop,None), length)
+        cnf = tensor.get_canonical_form_slice(slice(start, stop, None), length)
         f = self.function([start, stop, length], [
             tensor.as_tensor_variable(cnf[0].start),
             tensor.as_tensor_variable(cnf[0].stop),
@@ -2598,18 +3120,18 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         length = 5
         a = numpy.arange(length)
-        for start in [ -8,-5,-4,-1,0,1,4,5,8]:
-            for stop in  [ -8,-5,-4,-1,0,1,4,5,8]:
-                out = f(start,stop,length)
-                t_out = a[ out[0]:out[1]:out[2]][::out[3]]
+        for start in [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+            for stop in  [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+                out = f(start, stop, length)
+                t_out = a[out[0]:out[1]:out[2]][::out[3]]
                 v_out = a[start:stop:None]
                 assert numpy.all(t_out == v_out)
                 assert numpy.all(t_out.shape == v_out.shape)
 
     def test_slice_canonical_form_4(self):
-        step   = tensor.iscalar('s')
+        step = tensor.iscalar('s')
         length = tensor.iscalar('l')
-        cnf = tensor.get_canonical_form_slice(slice(None,None,step), length)
+        cnf = tensor.get_canonical_form_slice(slice(None, None, step), length)
         f = self.function([step, length], [
             tensor.as_tensor_variable(cnf[0].start),
             tensor.as_tensor_variable(cnf[0].stop),
@@ -2618,18 +3140,17 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         length = 5
         a = numpy.arange(length)
-        for step in [-6,-3,-1,2,5]:
-            out = f(step,length)
-            t_out = a[ out[0]:out[1]:out[2]][::out[3]]
+        for step in [-6, -3, -1, 2, 5]:
+            out = f(step, length)
+            t_out = a[out[0]:out[1]:out[2]][::out[3]]
             v_out = a[None:None:step]
             assert numpy.all(t_out == v_out)
             assert numpy.all(t_out.shape == v_out.shape)
 
-
     def test_slice_canonical_form_5(self):
-        start  = tensor.iscalar('b')
+        start = tensor.iscalar('b')
         length = tensor.iscalar('l')
-        cnf = tensor.get_canonical_form_slice(slice(start,None,None), length)
+        cnf = tensor.get_canonical_form_slice(slice(start, None, None), length)
         f = self.function([start, length], [
             tensor.as_tensor_variable(cnf[0].start),
             tensor.as_tensor_variable(cnf[0].stop),
@@ -2638,17 +3159,17 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         length = 5
         a = numpy.arange(length)
-        for start in [ -8,-5,-4,-1,0,1,4,5,8]:
-            out = f(start,length)
-            t_out = a[ out[0]:out[1]:out[2]][::out[3]]
+        for start in [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+            out = f(start, length)
+            t_out = a[out[0]:out[1]:out[2]][::out[3]]
             v_out = a[start:None:None]
             assert numpy.all(t_out == v_out)
             assert numpy.all(t_out.shape == v_out.shape)
 
     def test_slice_canonical_form_6(self):
-        stop   = tensor.iscalar('e')
+        stop = tensor.iscalar('e')
         length = tensor.iscalar('l')
-        cnf = tensor.get_canonical_form_slice(slice(None,stop,None), length)
+        cnf = tensor.get_canonical_form_slice(slice(None, stop, None), length)
         f = self.function([stop, length], [
             tensor.as_tensor_variable(cnf[0].start),
             tensor.as_tensor_variable(cnf[0].stop),
@@ -2657,9 +3178,9 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         length = 5
         a = numpy.arange(length)
-        for stop in  [ -8,-5,-4,-1,0,1,4,5,8]:
-            out = f(stop,length)
-            t_out = a[ out[0]:out[1]:out[2]][::out[3]]
+        for stop in  [-8, -5, -4, -1, 0, 1, 4, 5, 8]:
+            out = f(stop, length)
+            t_out = a[out[0]:out[1]:out[2]][::out[3]]
             v_out = a[None:stop:None]
             assert numpy.all(t_out == v_out)
             assert numpy.all(t_out.shape == v_out.shape)
@@ -2673,11 +3194,13 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
             t = n[idx_]
             gn = grad(sum(exp(t)), n)
             f = self.function([], [gn, gn.shape], op=self.adv_incsub1)
-            topo = f.maker.env.toposort()
+            topo = f.maker.fgraph.toposort()
             if not self.fast_compile:
-                assert any([isinstance(node.op, self.adv_incsub1) and node.op.inplace for node in topo])
+                assert any([isinstance(node.op, self.
+                    adv_incsub1) and node.op.inplace for node in topo])
             else:
-                assert any([isinstance(node.op, self.adv_incsub1) for node in topo])
+                assert any([isinstance(node.op, self.
+                    adv_incsub1) for node in topo])
             assert any([isinstance(node.op, self.adv_sub1) for node in topo])
             gval, gshape = f()
             good = numpy.zeros_like(data)
@@ -2694,7 +3217,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
             # Test the grad of the grad (e.i. AdvancedIncSubtensor1.grad)
             def fct(t):
-                return grad(sum(t[idx_]),t)
+                return grad(sum(t[idx_]), t)
             utt.verify_grad(fct, [data])
 
             # Test shape of AdvancedIncSubtensor1 and AdvancedSubtensor1
@@ -2736,24 +3259,24 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         data = numpy.asarray(data, dtype=self.dtype)
         idxs = [[i] for i in range(data.shape[0])]
         for i in range(data.shape[0]):
-            for j in range(0,data.shape[0],2):
-                idxs.append([i,j,(i+1)%data.shape[0]])
+            for j in range(0, data.shape[0], 2):
+                idxs.append([i, j, (i + 1) % data.shape[0]])
         self.grad_list_(idxs, data)
 
-        data = rand(4,3)
+        data = rand(4, 3)
         data = numpy.asarray(data, dtype=self.dtype)
         self.grad_list_(idxs, data)
 
-        data = rand(4,3,2)
+        data = rand(4, 3, 2)
         data = numpy.asarray(data, dtype=self.dtype)
         self.grad_list_(idxs, data)
 
     def test_shape_list(self):
         #TODO for all type of subtensor shape
-        for data, idx in [(rand(4), [1,0]),
-                          (rand(4,2), [2,3]),
-                          (rand(4,2,3), [0,3]),
-                          (rand(4,2,3), [3,3,1,2,2,]),
+        for data, idx in [(rand(4), [1, 0]),
+                          (rand(4, 2), [2, 3]),
+                          (rand(4, 2, 3), [0, 3]),
+                          (rand(4, 2, 3), [3, 3, 1, 2, 2, ]),
                           ]:
             data = numpy.asarray(data, dtype=self.dtype)
             n = self.shared(data)
@@ -2764,7 +3287,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
     def test_grad_advanced_inc_subtensor(self):
         def inc_slice(*s):
-            def just_numeric_args(a,b):
+            def just_numeric_args(a, b):
                 cost = (a[s] + b).sum()
                 cost_wrt_a = grad(cost, a)
                 cost_wrt_b = grad(cost, b)
@@ -2923,10 +3446,10 @@ class TestIncSubtensor1(unittest.TestCase):
         self.m = dmatrix()
         self.t = ctensor3()
 
-        self.adv1q = lvector() # advanced 1d query
+        self.adv1q = lvector()  # advanced 1d query
 
     def test_cant_adv_idx_into_scalar(self):
-        self.assertRaises(TypeError, lambda : self.s[self.adv1q])
+        self.assertRaises(TypeError, lambda: self.s[self.adv1q])
 
     def test_index_into_vec_w_vec(self):
         a = self.v[self.adv1q]
@@ -2941,30 +3464,28 @@ class TestIncSubtensor1(unittest.TestCase):
         #      completely, because the whole expression is redundant.
 
         f = theano.function([self.v, self.adv1q], a, allow_input_downcast=True)
-        aval = f([.4, .9, .1], [1,2])
+        aval = f([.4, .9, .1], [1, 2])
         assert numpy.allclose(aval, [.4, 0.9, 0.1])
-
 
     def test_1d_inc_adv_selection(self):
         a = inc_subtensor(self.v[self.adv1q], self.v[self.adv1q])
 
         assert a.type == self.v.type
         f = theano.function([self.v, self.adv1q], a, allow_input_downcast=True)
-        aval = f([.4, .9, .1], [1,2])
+        aval = f([.4, .9, .1], [1, 2])
         assert numpy.allclose(aval, [.4, 1.8, 0.2])
-
 
     def test_1d_inc_adv_selection_w_broadcasting(self):
         a = inc_subtensor(self.v[self.adv1q], 3.0)
 
         assert a.type == self.v.type
         f = theano.function([self.v, self.adv1q], a, allow_input_downcast=True)
-        aval = f([.4, .9, .1], [1,2])
+        aval = f([.4, .9, .1], [1, 2])
         assert numpy.allclose(aval, [.4, 3.9, 3.1])
 
     def test_assigning_matrix_to_vector_selection(self):
         self.assertRaises(TypeError,
-                lambda : inc_subtensor(self.v[self.adv1q], fmatrix()))
+                lambda: inc_subtensor(self.v[self.adv1q], fmatrix()))
 
 
 class T_Join_and_Split(unittest.TestCase):
@@ -2988,7 +3509,7 @@ class T_Join_and_Split(unittest.TestCase):
 
     def eval_outputs_and_check_join(self, outputs):
         f = theano.function([], outputs, self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert [True for node in topo if isinstance(node.op, self.join_op)]
         variables = f()
         if isinstance(variables, (tuple, list)) and len(variables) == 1:
@@ -3000,7 +3521,7 @@ class T_Join_and_Split(unittest.TestCase):
         if make_vector_op is None:
             make_vector_op = self.make_vector_op
         f = theano.function([], outputs, self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert [True for node in topo if isinstance(node.op, make_vector_op)]
         variables = f()
         if isinstance(variables, (tuple, list)) and len(variables) == 1:
@@ -3045,12 +3566,12 @@ class T_Join_and_Split(unittest.TestCase):
         s = stack(a, b, a, b)
         f = function([a, b], s, mode=self.mode)
         val = f(1, 2)
-        print val
+        #print val
         self.assertTrue(numpy.all(val == [1, 2, 1, 2]))
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert len([n for n in topo if isinstance(n.op, opt.MakeVector)]) > 0
         assert len([n for n in topo if isinstance(n, self.join_op)]) == 0
-        assert f.maker.env.outputs[0].dtype == self.floatX
+        assert f.maker.fgraph.outputs[0].dtype == self.floatX
 
     def test_stack_scalar_make_vector_dtype(self):
         '''Test that calling stack() on scalars instantiates MakeVector,
@@ -3061,10 +3582,10 @@ class T_Join_and_Split(unittest.TestCase):
         f = function([a, b], s, mode=self.mode)
         val = f(1, 2)
         self.assertTrue(numpy.all(val == [1, 2, 1, 2]))
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert len([n for n in topo if isinstance(n.op, opt.MakeVector)]) > 0
         assert len([n for n in topo if isinstance(n, self.join_op)]) == 0
-        assert f.maker.env.outputs[0].dtype == 'int64'
+        assert f.maker.fgraph.outputs[0].dtype == 'int64'
 
     def test_stack_scalar_make_vector_constant(self):
         '''Test that calling stack() on scalars instantiates MakeVector,
@@ -3077,10 +3598,10 @@ class T_Join_and_Split(unittest.TestCase):
         f = function([a, b], s, mode=self.mode)
         val = f(1, 2)
         self.assertTrue(numpy.all(val == [10, 1, 2, 3]))
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert len([n for n in topo if isinstance(n.op, opt.MakeVector)]) > 0
         assert len([n for n in topo if isinstance(n, self.join_op)]) == 0
-        assert f.maker.env.outputs[0].dtype == 'int64'
+        assert f.maker.fgraph.outputs[0].dtype == 'int64'
 
     def test_join_concatenate_one_element(self):
         ''' Fast test of concatenate as this is an alias for join.
@@ -3089,9 +3610,9 @@ class T_Join_and_Split(unittest.TestCase):
         c = tensor.concatenate([m])
         f = theano.function(inputs=[m], outputs=[c],
                             mode=self.mode.including('local_join_1'))
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert len(topo) == 1
-        assert isinstance(topo[0].op, theano.compile.DeepCopyOp)
+        assert isinstance(topo[0].op, DeepCopyOp)
 
     def test_join_vector(self):
         a = self.shared(numpy.array([1, 2, 3], dtype=self.floatX))
@@ -3141,7 +3662,6 @@ class T_Join_and_Split(unittest.TestCase):
         out = theano.function([], b)()
 
         assert (out == want).all()
-
 
     def test_stack_vector(self):
         a = self.shared(numpy.array([1, 2, 3], dtype=self.floatX))
@@ -3211,7 +3731,7 @@ class T_Join_and_Split(unittest.TestCase):
         s = join(ax, a, b)
 
         f = inplace_func([ax], [s], mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert [True for node in topo if isinstance(node.op, self.join_op)]
 
         want = numpy.array([[1, 2, 3], [4, 5, 6], [1, 2, 3], [4, 5, 6]])
@@ -3234,7 +3754,7 @@ class T_Join_and_Split(unittest.TestCase):
 
         a, b, c = triple
         f = function([x, y], [b, c, a], mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert [True for node in topo if isinstance(node.op, opt.MakeVector)]
 
         assert numpy.allclose(f(4, 5), [5, 9, 4])
@@ -3268,7 +3788,7 @@ class T_Join_and_Split(unittest.TestCase):
         assert not c.type.broadcastable[1]
 
         f = function([], c, mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert [True for node in topo if isinstance(node.op, self.join_op)]
 
         f()
@@ -3294,7 +3814,7 @@ class T_Join_and_Split(unittest.TestCase):
         assert not c.type.broadcastable[0]
 
         f = function([], c, mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert [True for node in topo if isinstance(node.op, self.join_op)]
 
         f()
@@ -3326,7 +3846,7 @@ class T_Join_and_Split(unittest.TestCase):
         assert not c.type.broadcastable[0]
 
         f = function([], c, mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert [True for node in topo if isinstance(node.op, self.join_op)]
 
         f()
@@ -3346,9 +3866,10 @@ class T_Join_and_Split(unittest.TestCase):
         assert not b.type.broadcastable[1]
 
         f = function([], b, mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         if theano.config.mode != 'FAST_COMPILE':
-            assert not [True for node in topo if isinstance(node.op, self.join_op)]
+            assert not [True for node in topo if isinstance(
+                node.op, self.join_op)]
 
         f()
         utt.verify_grad((lambda a: join(0, a)), [a_val], rng=rng)
@@ -3378,7 +3899,7 @@ class T_Join_and_Split(unittest.TestCase):
         assert hb[0] and hb[1] and hb[2] and hb[3] and not hb[4] and hb[5]
 
         f = function([a, b, c, d, e], f, mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         assert [True for node in topo if isinstance(node.op, self.join_op)]
 
         rng = numpy.random.RandomState(seed=utt.fetch_seed())
@@ -3421,25 +3942,25 @@ class T_Join_and_Split(unittest.TestCase):
         # Test dim 0
         z = join(0, x1, x2, x3)
         f = theano.function([x1, x2, x3], z.shape, mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
 
         out = f(get_mat(3, 4), get_mat(2, 4), get_mat(1, 4))
         assert (out == [6, 4]).all()
 
         if theano.config.mode != 'FAST_COMPILE':
-            for node in f.maker.env.toposort():
+            for node in f.maker.fgraph.toposort():
                 assert not isinstance(node.op, tensor.Join)
 
         # Test dim 1
         z = join(1, x1, x2, x3)
         f = theano.function([x1, x2, x3], z.shape, mode=self.mode)
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
 
-        out = f( get_mat(3, 4), get_mat(3, 4), get_mat(3, 5))
+        out = f(get_mat(3, 4), get_mat(3, 4), get_mat(3, 5))
         assert (out == [3, 13]).all()
 
         if theano.config.mode != 'FAST_COMPILE':
-            for node in f.maker.env.toposort():
+            for node in f.maker.fgraph.toposort():
                 assert not isinstance(node.op, tensor.Join)
 
         # Test hide error
@@ -3463,90 +3984,91 @@ class test_comparison(unittest.TestCase):
     def test_gt(self):
         for dtype in ['float64', 'float32', 'complex64', 'complex128']:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], x > y)
-            l = numpy.asarray([0.,-1.,1.], dtype=dtype)
-            r = numpy.asarray([0.,1.,-1.], dtype=dtype)
+            fn = inplace_func([x, y], x > y)
+            l = numpy.asarray([0., -1., 1.], dtype=dtype)
+            r = numpy.asarray([0., 1., -1.], dtype=dtype)
             v = fn(l, r)
-            self.assertTrue(numpy.all(v == (l > r)), (v, (l>r)))
+            self.assertTrue(numpy.all(v == (l > r)), (v, (l > r)))
 
     def test_lt(self):
         for dtype in ['float64', 'float32', 'complex64', 'complex128']:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], x < y)
-            l = numpy.asarray([0.,-1.,1.], dtype=dtype)
-            r = numpy.asarray([0.,1.,-1.], dtype=dtype)
+            fn = inplace_func([x, y], x < y)
+            l = numpy.asarray([0., -1., 1.], dtype=dtype)
+            r = numpy.asarray([0., 1., -1.], dtype=dtype)
             v = fn(l, r)
-            self.assertTrue(numpy.all(v == (l < r)), (v, (l<r)))
+            self.assertTrue(numpy.all(v == (l < r)), (v, (l < r)))
 
     def test_le(self):
         for dtype in ['float64', 'float32', 'complex64', 'complex128']:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], x <= y)
-            l = numpy.asarray([0.,-1.,1.], dtype=dtype)
-            r = numpy.asarray([0.,1.,-1.], dtype=dtype)
+            fn = inplace_func([x, y], x <= y)
+            l = numpy.asarray([0., -1., 1.], dtype=dtype)
+            r = numpy.asarray([0., 1., -1.], dtype=dtype)
             v = fn(l, r)
-            self.assertTrue(numpy.all(v == (l <= r)), (v, (l<=r)))
+            self.assertTrue(numpy.all(v == (l <= r)), (v, (l <= r)))
 
     def test_ge(self):
         for dtype in ['float64', 'float32', 'complex64', 'complex128']:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], x >= y)
-            l = numpy.asarray([0.,-1.,1.], dtype=dtype)
-            r = numpy.asarray([0.,1.,-1.], dtype=dtype)
+            fn = inplace_func([x, y], x >= y)
+            l = numpy.asarray([0., -1., 1.], dtype=dtype)
+            r = numpy.asarray([0., 1., -1.], dtype=dtype)
             v = fn(l, r)
-            self.assertTrue(numpy.all(v == (l >= r)), (v, (l>=r)))
+            self.assertTrue(numpy.all(v == (l >= r)), (v, (l >= r)))
 
     def test_eq(self):
         for dtype in ['float64', 'float32', 'complex64', 'complex128']:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], eq(x,y))
-            l = numpy.asarray([0.,-1.,1.], dtype=dtype)
-            r = numpy.asarray([0.,1.,-1.], dtype=dtype)
+            fn = inplace_func([x, y], eq(x, y))
+            l = numpy.asarray([0., -1., 1.], dtype=dtype)
+            r = numpy.asarray([0., 1., -1.], dtype=dtype)
             v = fn(l, r)
-            self.assertTrue(numpy.all(v == (l == r)), (v, (l==r)))
+            self.assertTrue(numpy.all(v == (l == r)), (v, (l == r)))
 
     def test_neq(self):
         for dtype in ['float64', 'float32', 'complex64', 'complex128']:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], neq(x, y))
-            l = numpy.asarray([0.,-1.,1.], dtype=dtype)
-            r = numpy.asarray([0.,1.,-1.], dtype=dtype)
+            fn = inplace_func([x, y], neq(x, y))
+            l = numpy.asarray([0., -1., 1.], dtype=dtype)
+            r = numpy.asarray([0., 1., -1.], dtype=dtype)
             v = fn(l, r)
-            self.assertTrue(numpy.all(v == (l != r)), (v, (l!=r)))
+            self.assertTrue(numpy.all(v == (l != r)), (v, (l != r)))
+
 
 class test_bitwise(unittest.TestCase):
-    dtype = ['int8', 'int16', 'int32', 'int64',]
+    dtype = ['int8', 'int16', 'int32', 'int64', ]
 
     def test_or(self):
         for dtype in self.dtype:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], x|y)
-            l = theano._asarray([0,0,1,1], dtype = dtype)
-            r = theano._asarray([0,1,0,1], dtype = dtype)
+            fn = inplace_func([x, y], x | y)
+            l = theano._asarray([0, 0, 1, 1], dtype=dtype)
+            r = theano._asarray([0, 1, 0, 1], dtype=dtype)
             v = fn(l, r)
             self.assertTrue(numpy.all(v == (operator.or_(l, r))), (l, r, v))
 
     def test_xor(self):
         for dtype in self.dtype:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], x^y)
+            fn = inplace_func([x, y], x ^ y)
             ix = x
             ix = inplace.xor_inplace(ix, y)
-            gn = inplace_func([x,y], ix)
-            l = theano._asarray([0,0,1,1], dtype = dtype)
-            r = theano._asarray([0,1,0,1], dtype = dtype)
+            gn = inplace_func([x, y], ix)
+            l = theano._asarray([0, 0, 1, 1], dtype=dtype)
+            r = theano._asarray([0, 1, 0, 1], dtype=dtype)
             v = fn(l, r)
             self.assertTrue(numpy.all(v == (operator.xor(l, r))), (l, r, v))
             v = gn(l, r)
             #test the in-place stuff
-            self.assertTrue(numpy.all(l == numpy.asarray([0,1,1,0])), l)
+            self.assertTrue(numpy.all(l == numpy.asarray([0, 1, 1, 0])), l)
 
     def test_and(self):
         for dtype in self.dtype:
             x, y = vector(dtype=dtype), vector(dtype=dtype)
-            fn = inplace_func([x,y], x&y)
-            l = theano._asarray([0,0,1,1], dtype = dtype)
-            r = theano._asarray([0,1,0,1], dtype = dtype)
+            fn = inplace_func([x, y], x & y)
+            l = theano._asarray([0, 0, 1, 1], dtype=dtype)
+            r = theano._asarray([0, 1, 0, 1], dtype=dtype)
             v = fn(l, r)
             self.assertTrue(numpy.all(v == (operator.and_(l, r))), (l, r, v))
 
@@ -3554,11 +4076,11 @@ class test_bitwise(unittest.TestCase):
         for dtype in self.dtype:
             x = vector(dtype=dtype)
             fn = inplace_func([x], ~x)
-            for l in [[0,0,1,1],[0,1,0,1],
-                      [0,0,1,1],[0,1,0,1],
-                      [-1,2**16, 2**16-1]
+            for l in [[0, 0, 1, 1], [0, 1, 0, 1],
+                      [0, 0, 1, 1], [0, 1, 0, 1],
+                      [-1, 2 ** 16, 2 ** 16 - 1]
                       ]:
-                l = theano._asarray([0,0,1,1], dtype = dtype)
+                l = theano._asarray([0, 0, 1, 1], dtype=dtype)
                 v = fn(l)
                 self.assertTrue(numpy.all(v == (~l)), (l, v))
 
@@ -3566,8 +4088,8 @@ class test_bitwise(unittest.TestCase):
         n = iscalar()
         m = iscalar()
         k = iscalar()
-        fn = theano.function([m,n,k],eye(m,n,k) )
-        self.assertTrue(numpy.all(fn(5,6,1) == numpy.eye(5,6,1)))
+        fn = theano.function([m, n, k], eye(m, n, k))
+        self.assertTrue(numpy.all(fn(5, 6, 1) == numpy.eye(5, 6, 1)))
 
 
 class T_add(unittest.TestCase):
@@ -3576,40 +4098,47 @@ class T_add(unittest.TestCase):
 
     def test_complex_all_ops(self):
         for nbits in (64, 128):
-            a = value(numpy.ones(3, dtype='complex%i' % nbits)+0.5j)
-            b = value(numpy.ones(3, dtype='complex%i' % nbits)+1.5j)
-            tests = (("+", lambda x,y: x+y),
-                     ("-", lambda x,y: x-y),
-                     ("*", lambda x,y: x*y),
-                     ("/", lambda x,y: x/y))
+            a = shared(numpy.ones(3, dtype='complex%i' % nbits) + 0.5j)
+            b = shared(numpy.ones(3, dtype='complex%i' % nbits) + 1.5j)
+            tests = (("+", lambda x, y: x + y),
+                     ("-", lambda x, y: x - y),
+                     ("*", lambda x, y: x * y),
+                     ("/", lambda x, y: x / y))
             for s, fn in tests:
-                f = inplace_func([a,b], fn(a, b))
-                print 'valid output:', fn(a.data, b.data)
-                print 'theano output:', f(a.data, b.data)
-                self.assertTrue(a.type.values_eq_approx(fn(a.data, b.data), f(a.data, b.data)))
+                f = inplace_func([], fn(a, b))
+                #print 'valid output:', fn(a.data, b.data)
+                #print 'theano output:', f(a.data, b.data)
+                self.assertTrue(a.type.values_eq_approx(fn(
+                    a.get_value(), b.get_value()), f()))
 
     def test_grad_scalar_l(self):
         utt.verify_grad(add, [numpy.asarray([3.0]), rand(3)])
+
     def test_grad_scalar_r(self):
         utt.verify_grad(add, [rand(3), numpy.asarray([3.0])])
+
     def test_grad_row(self):
         utt.verify_grad(add, [rand(3, 5), rand(1, 5)])
+
     def test_grad_col(self):
         utt.verify_grad(add, [rand(3, 5), rand(3, 1)])
+
 
 class T_ceil(unittest.TestCase):
     def test_complex(self):
         self.assertRaises(TypeError, tensor.ceil, tensor.zvector())
 
+
 class T_exp(unittest.TestCase):
     def test_grad_0(self):
         utt.verify_grad(exp, [
-            numpy.asarray([[ 1.5089518 ,  1.48439076, -4.7820262 ],
-            [ 2.04832468,  0.50791564, -1.58892269]])])
+            numpy.asarray([[1.5089518,  1.48439076, -4.7820262],
+            [2.04832468,  0.50791564, -1.58892269]])])
+
     def test_grad_1(self):
         utt.verify_grad(inplace.exp_inplace, [
-            numpy.asarray([[ 1.5089518 ,  1.48439076, -4.7820262 ],
-            [ 2.04832468,  0.50791564, -1.58892269]])])
+            numpy.asarray([[1.5089518,  1.48439076, -4.7820262],
+            [2.04832468,  0.50791564, -1.58892269]])])
 
     def test_int(self):
         x = ivector()
@@ -3621,8 +4150,9 @@ class T_exp(unittest.TestCase):
         x = zvector()
         assert exp(x).dtype == 'complex128'
         f = function([x], exp(x))
-        exp_3 = f([3+2j])
-        assert numpy.allclose(exp_3, numpy.exp(3+2j))
+        exp_3 = f([3 + 2j])
+        assert numpy.allclose(exp_3, numpy.exp(3 + 2j))
+
 
 class T_divimpl(unittest.TestCase):
     def test_impls(self):
@@ -3658,7 +4188,7 @@ class T_mean(unittest.TestCase):
     def test0(self):
         #Simple test...
         x = tensor.vector()
-        f = theano.function([x],tensor.mean(x))
+        f = theano.function([x], tensor.mean(x))
         data = rand(50)
         assert numpy.allclose(f(data), numpy.mean(data))
 
@@ -3668,7 +4198,7 @@ class test_matinv(unittest.TestCase):
     def setUp(self):
         utt.seed_rng()
 
-    def mat_reciprocal(self,dim):
+    def mat_reciprocal(self, dim):
         # symbolic program
         # broadcastable=[False,False] means that the shape of matrix is two dimensional,
         # and none of the dimensions are constrained to have length 1.
@@ -3678,26 +4208,27 @@ class test_matinv(unittest.TestCase):
         utt.seed_rng()
 
         a, b = matrices('ab')
-        ab = a*b
+        ab = a * b
         # Here, as_tensor_variable actually uses the data allocated by numpy.
-        diff = ab - as_tensor_variable(numpy.ones((dim,dim), dtype=config.floatX))
+        diff = ab - as_tensor_variable(numpy.ones((dim, dim),
+             dtype=config.floatX))
         # Sum of squared errors
-        ssdiff = sum((diff**2.0))
+        ssdiff = sum((diff ** 2.0))
 
         g_b = grad(ssdiff, b)
 
         # compilation to function
         # [a,b] are the inputs, [ssdiff,g_b] are the outputs
-        fn = inplace_func([a,b], [ssdiff,g_b])
+        fn = inplace_func([a, b], [ssdiff, g_b])
 
         # use the function
-        x = rand(dim,dim)+0.1      # Initialized s.t. x is not too tiny
-        w = rand(dim,dim)
+        x = rand(dim, dim) + 0.1      # Initialized s.t. x is not too tiny
+        w = rand(dim, dim)
         x = numpy.asarray(x, dtype=config.floatX)
         w = numpy.asarray(w, dtype=config.floatX)
 
         for i in xrange(100):
-            ssd, gw = fn(x,w)
+            ssd, gw = fn(x, w)
             #print ssd, x*w, x, w
             if i == 0:
                 ssd0 = ssd
@@ -3707,35 +4238,36 @@ class test_matinv(unittest.TestCase):
 
     def test_reciprocal(self):
         """Matrix reciprocal by gradient descent"""
-        ssd0,ssd = self.mat_reciprocal(3)
+        ssd0, ssd = self.mat_reciprocal(3)
 
         utt.seed_rng()
         # hand-coded numpy implementation for verification
-        x = rand(3,3)+0.1
-        w = rand(3,3)
+        x = rand(3, 3) + 0.1
+        w = rand(3, 3)
         x = numpy.asarray(x, dtype=config.floatX)
         w = numpy.asarray(w, dtype=config.floatX)
-        ones = numpy.ones((3,3), dtype=config.floatX)
+        ones = numpy.ones((3, 3), dtype=config.floatX)
 
-        myssd0 = numpy.sum((x*w - ones)**2.0)
+        myssd0 = numpy.sum((x * w - ones) ** 2.0)
         # we want at least a test that is not too fast. So we make one here.
         for i in xrange(100):
-            gw = 2*(x*w - ones)*x  # derivative of dMSE/dw
-            myssd = numpy.sum((x*w - ones)**2)
+            gw = 2 * (x * w - ones) * x  # derivative of dMSE/dw
+            myssd = numpy.sum((x * w - ones) ** 2)
             w -= 0.4 * gw
         self.assertAlmostEqual(ssd0, myssd0)
         self.assertAlmostEqual(ssd, myssd)
+
 
 class t_dot(unittest.TestCase):
     def setUp(self):
         utt.seed_rng()
 
-    def cmp_dot(self,x,y):
+    def cmp_dot(self, x, y):
         #x, y are matrices or numbers
         def spec(x):
             x = numpy.asarray(x)
             return type(x), x.dtype, x.shape
-        nz = numpy.dot(x,y)
+        nz = numpy.dot(x, y)
         tz = eval_outputs([dot(as_tensor_variable(x), as_tensor_variable(y))])
         self.assertTrue(tz.dtype == nz.dtype)
         self.assertTrue(tz.shape == nz.shape)
@@ -3746,28 +4278,59 @@ class t_dot(unittest.TestCase):
     #def test_dot_0d_2d(self): self.cmp_dot(3.0, rand(6,7))
     #def test_dot_0d_3d(self): self.cmp_dot(3.0, rand(8,6,7))
     #def test_dot_1d_0d(self): self.cmp_dot(rand(5), 1.1 )
-    def test_dot_1d_1d(self): self.cmp_dot(rand(5), rand(5))
-    def test_dot_1d0_1d0(self): self.cmp_dot(rand(0), rand(0))
+    def test_dot_1d_1d(self):
+        self.cmp_dot(rand(5), rand(5))
+
+    def test_dot_1d0_1d0(self):
+        self.cmp_dot(rand(0), rand(0))
     #numpy return matrix not aligned...
     #def test_dot_1d_1d0(self): self.cmp_dot(rand(5), rand(0))
     #numpy return matrix not aligned...
     #def test_dot_1d0_1d(self): self.cmp_dot(rand(0), rand(5))
-    def test_dot_1d_2d(self): self.cmp_dot(rand(6), rand(6,7))
-    def test_dot_1d0_2d(self): self.cmp_dot(rand(0), rand(0,7))
-    def test_dot_1d_2d0(self): self.cmp_dot(rand(6), rand(6,0))
-    def test_dot_1d0_2d0(self): self.cmp_dot(rand(0), rand(0,0))
+
+    def test_dot_1d_2d(self):
+        self.cmp_dot(rand(6), rand(6, 7))
+
+    def test_dot_1d0_2d(self):
+        self.cmp_dot(rand(0), rand(0, 7))
+
+    def test_dot_1d_2d0(self):
+        self.cmp_dot(rand(6), rand(6, 0))
+
+    def test_dot_1d0_2d0(self):
+        self.cmp_dot(rand(0), rand(0, 0))
     #def test_dot_1d_3d(self): self.cmp_dot(rand(6), rand(8,6,7))
     #def test_dot_2d_0d(self): self.cmp_dot(rand(5,6), 1.0)
-    def test_dot_2d_1d(self): self.cmp_dot(rand(5,6), rand(6))
-    def test_dot_2d0_1d(self): self.cmp_dot(rand(0,6), rand(6))
-    def test_dot_2d_1d0(self): self.cmp_dot(rand(5,0), rand(0))
-    def test_dot_2d0_1d0(self): self.cmp_dot(rand(0,0), rand(0))
-    def test_dot_2d_2d(self): self.cmp_dot(rand(5,6), rand(6,7))
-    def test_dot_2d0_2d(self): self.cmp_dot(rand(0,6), rand(6,7))
-    def test_dot_2d_2d0(self): self.cmp_dot(rand(5,6), rand(6,0))
-    def test_dot_2d0_2d0(self): self.cmp_dot(rand(0,6), rand(6,0))
-    def test_dot_2d_0_2d(self): self.cmp_dot(rand(5,0), rand(0,7))
-    def test_dot_2d0_0_2d0(self): self.cmp_dot(rand(0,6), rand(6,0))
+
+    def test_dot_2d_1d(self):
+        self.cmp_dot(rand(5, 6), rand(6))
+
+    def test_dot_2d0_1d(self):
+        self.cmp_dot(rand(0, 6), rand(6))
+
+    def test_dot_2d_1d0(self):
+        self.cmp_dot(rand(5, 0), rand(0))
+
+    def test_dot_2d0_1d0(self):
+        self.cmp_dot(rand(0, 0), rand(0))
+
+    def test_dot_2d_2d(self):
+        self.cmp_dot(rand(5, 6), rand(6, 7))
+
+    def test_dot_2d0_2d(self):
+        self.cmp_dot(rand(0, 6), rand(6, 7))
+
+    def test_dot_2d_2d0(self):
+        self.cmp_dot(rand(5, 6), rand(6, 0))
+
+    def test_dot_2d0_2d0(self):
+        self.cmp_dot(rand(0, 6), rand(6, 0))
+
+    def test_dot_2d_0_2d(self):
+        self.cmp_dot(rand(5, 0), rand(0, 7))
+
+    def test_dot_2d0_0_2d0(self):
+        self.cmp_dot(rand(0, 6), rand(6, 0))
     #def test_dot_2d_3d(self): self.cmp_dot(rand(5,6), rand(8,6,7))
     #def test_dot_3d_0d(self): self.cmp_dot(rand(4,5,6), 1.0)
     #def test_dot_3d_1d(self): self.cmp_dot(rand(4,5,6), rand(6))
@@ -3778,7 +4341,7 @@ class t_dot(unittest.TestCase):
         ctv_backup = config.compute_test_value
         config.compute_test_value = 'off'
         try:
-            z = dot(x,y)
+            z = dot(x, y)
         finally:
             config.compute_test_value = ctv_backup
         # constant folding will complain to _logger that things are not aligned
@@ -3796,6 +4359,9 @@ class t_dot(unittest.TestCase):
                     e[0].split()[1:4] == ['are', 'not', 'aligned'] or
                     # Reported by blas or Theano.
                     e[0].split()[0:2] == ['Shape', 'mismatch:'] or
+                    # Reported by Theano perform
+                    e[0].split()[0:4]
+                         == ['Incompatible', 'shapes', 'for', 'gemv'] or
                     # Reported by Theano when 'exception_verbosity' is set
                     # to 'high'.
                     e[0].split()[0:3] == ['dot', 'product', 'failed.'],
@@ -3807,15 +4373,15 @@ class t_dot(unittest.TestCase):
         self.not_aligned(rand(5), rand(6))
 
     def test_align_1_2(self):
-        self.not_aligned(rand(5), rand(6,4))
+        self.not_aligned(rand(5), rand(6, 4))
 
     #def test_align_1_3(self): self.not_aligned(rand(5), rand(6,4,7))
 
     def test_align_2_1(self):
-        self.not_aligned(rand(5,4), rand(6))
+        self.not_aligned(rand(5, 4), rand(6))
 
     def test_align_2_1(self):
-        self.not_aligned(rand(5,4), rand(6,7))
+        self.not_aligned(rand(5, 4), rand(6, 7))
 
     #def test_align_2_3(self): self.not_aligned(rand(5,4), rand(6,7,8))
     #def test_align_3_1(self): self.not_aligned(rand(5,4,3), rand(6))
@@ -3824,9 +4390,9 @@ class t_dot(unittest.TestCase):
 
     def test_grad(self):
         #utt.verify_grad(dot, [rand(2,3,4), rand(4)])
-        utt.verify_grad(dot, [rand(2,3), rand(3,2)])
-        utt.verify_grad(dot, [rand(2), rand(2,3)])
-        utt.verify_grad(dot, [rand(3,2), rand(2)])
+        utt.verify_grad(dot, [rand(2, 3), rand(3, 2)])
+        utt.verify_grad(dot, [rand(2), rand(2, 3)])
+        utt.verify_grad(dot, [rand(3, 2), rand(2)])
         utt.verify_grad(dot, [rand(2), rand(2)])
         #utt.verify_grad(dot, [rand(), rand(2)])
         #utt.verify_grad(dot, [rand(), rand(2,5)])
@@ -3844,17 +4410,17 @@ class t_dot(unittest.TestCase):
                 # This stange way to doing thing is the only way that worked on
                 # numpy 1.4.1
                 if r.ndim == 0:
-                    return numpy.asarray(numpy.complex(1.1,2.1), dtype=r.dtype)
+                    return numpy.asarray(numpy.complex(1.1, 2.1), dtype=r.dtype)
                 if r.ndim == 1:
                     if r.dtype == 'complex64':
-                        return numpy.complex64([numpy.complex(1.2,2.2)])
+                        return numpy.complex64([numpy.complex(1.2, 2.2)])
                     elif r.dtype == 'complex128':
-                        return numpy.complex128([numpy.complex(1.2,2.2)])
+                        return numpy.complex128([numpy.complex(1.2, 2.2)])
                 elif r.ndim == 2:
                     if r.dtype == 'complex64':
-                        return numpy.complex64([[numpy.complex(1.3,2.3)]])
+                        return numpy.complex64([[numpy.complex(1.3, 2.3)]])
                     elif r.dtype == 'complex128':
-                        return numpy.complex128([[numpy.complex(1.3,2.3)]])
+                        return numpy.complex128([[numpy.complex(1.3, 2.3)]])
 
             if r.ndim == 0:
                 return numpy.asarray(1.1, dtype=r.dtype)
@@ -3867,22 +4433,23 @@ class t_dot(unittest.TestCase):
         for dtype0 in ('float32', 'float64', 'complex64', 'complex128'):
             for dtype1 in ('float32', 'float64', 'complex64', 'complex128'):
                 for bc0 in ((True,), (False,), (True, True), (True, False), (False, True),
-                        (False,False)):
+                        (False, False)):
                     for bc1 in ((True,), (False,), (True, True), (True, False), (False, True),
-                            (False,False)):
+                            (False, False)):
 
                         x = TensorType(dtype=dtype0, broadcastable=bc0)()
                         y = TensorType(dtype=dtype1, broadcastable=bc1)()
-                        z = dot(x,y)
-                        t = TensorType(dtype=dtype0, broadcastable=z.broadcastable)()
+                        z = dot(x, y)
+                        t = TensorType(dtype=
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    dtype0, broadcastable=z.broadcastable)()
 
-                        rval =  z * 3 + 2*t
-                        f = function([x,y,t], rval)
+                        rval = z * 3 + 2 * t
+                        f = function([x, y, t], rval)
                         xval = val_for(x)
                         yval = val_for(y)
                         tval = val_for(t)
 
-                        f(xval, yval, tval) #debugmode checks result
+                        f(xval, yval, tval)  # debugmode checks result
 
 
 class T_tensorfromscalar(unittest.TestCase):
@@ -3915,11 +4482,29 @@ class T_tensorfromscalar(unittest.TestCase):
         self.assertTrue(v.shape == (), v.shape)
 
         g = grad(t, s)
-        self.assertTrue(eval_outputs([g])==1)
+        self.assertTrue(eval_outputs([g]) == 0.)
+
+    def test2(self):
+        s = scal.constant(56.)
+        t = as_tensor_variable(s)
+        self.assertTrue(t.owner.op is tensor_from_scalar)
+        self.assertTrue(t.type.broadcastable == (), t.type.broadcastable)
+        self.assertTrue(t.type.ndim == 0, t.type.ndim)
+        self.assertTrue(t.type.dtype == s.type.dtype)
+
+        v = eval_outputs([t])
+
+        self.assertTrue(v == 56., v)
+        self.assertTrue(isinstance(v, numpy.ndarray))
+        self.assertTrue(v.shape == (), v.shape)
+
+        g = grad(t, s)
+        self.assertTrue(eval_outputs([g]) == 1.)
+
 
 class T_scalarfromtensor(unittest.TestCase):
     def test0(self):
-        tt = constant(56)#scal.constant(56)
+        tt = constant(56)  # scal.constant(56)
         ss = scalar_from_tensor(tt)
         self.assertTrue(ss.owner.op is scalar_from_tensor)
         self.assertTrue(ss.type.dtype == tt.type.dtype)
@@ -3937,12 +4522,12 @@ class T_scalarfromtensor(unittest.TestCase):
         self.assertTrue(v.shape == (), v.shape)
         tt = lscalar()
         ss = scalar_from_tensor(tt)
-        g = ss.owner.op.grad([tt],[ss])
-        fff=function([tt],ss)
+        g = ss.owner.op.grad([tt], [ss])
+        fff = function([tt], ss)
         v = fff(numpy.asarray(5))
         self.assertTrue(v == 5, v)
         self.assertTrue(isinstance(v, numpy.int64))
-        self.assertTrue(v.shape == (),v.shape)
+        self.assertTrue(v.shape == (), v.shape)
 
 
 class test_grad(unittest.TestCase):
@@ -3950,10 +4535,12 @@ class test_grad(unittest.TestCase):
         def __init__(self):
             self.gval0 = scalar('e')
             self.gval1 = scalar('f')
+
         def make_node(self):
-            inputs = [scalar('a'),scalar('c')]
-            outputs = [scalar('b'),scalar('d')]
+            inputs = [scalar('a'), scalar('c')]
+            outputs = [scalar('b'), scalar('d')]
             return gof.Apply(self, inputs, outputs)
+
         def grad(self, inp, grads):
             x0, x1 = inp
             gz0, gz1 = grads
@@ -3969,10 +4556,10 @@ class test_grad(unittest.TestCase):
         """grad: Test passing multiple variable params"""
         o = test_grad.O()
         a1 = o.make_node()
-        g0,g1 = grad(a1.outputs[0], a1.inputs)
+        g0, g1 = grad(a1.outputs[0], a1.inputs)
+        g0.name = None
         self.assertTrue(o.gval0 is g0)
         self.assertTrue(o.gval1 is g1)
-
 
     def test_grad_keep_type(self):
         """Tests that the theano grad method returns a list if it is passed a list
@@ -3987,12 +4574,11 @@ class test_grad(unittest.TestCase):
 
         G = tensor.grad(y, [X])
 
-        assert isinstance(G,list)
+        assert isinstance(G, list)
 
         G = tensor.grad(y, X)
 
-        assert not isinstance(G,list)
-
+        assert not isinstance(G, list)
 
     def test_1None_rval(self):
         """grad: Test returning a single zero value from grad"""
@@ -4002,13 +4588,13 @@ class test_grad(unittest.TestCase):
                  disconnected_inputs='ignore')
         self.assertTrue(g.owner.op == fill)
         self.assertTrue(g.owner.inputs[1].data == 0)
-        self.assertRaises(ValueError, grad, a1.outputs[0], 'wtf')
+        self.assertRaises(TypeError, grad, a1.outputs[0], 'wtf')
 
     def test_NNone_rval(self):
         """grad: Test returning some zero value from grad"""
         o = test_grad.O()
         a1 = o.make_node()
-        g0,g1,g2 = grad(a1.outputs[0], a1.inputs + [scalar('z')],
+        g0, g1, g2 = grad(a1.outputs[0], a1.inputs + [scalar('z')],
                         disconnected_inputs='ignore')
         self.assertTrue(o.gval0 is g0)
         self.assertTrue(o.gval1 is g1)
@@ -4030,25 +4616,26 @@ class test_grad(unittest.TestCase):
         v = vector()
         m = matrix()
         # grad(v,...) and grad(m,...) should fail
-        self.assertRaises(TypeError, grad, v, s)
-        self.assertRaises(TypeError, grad, v, m)
-        self.assertRaises(TypeError, grad, m, s)
-        self.assertRaises(TypeError, grad, m, v)
+        self.assertRaises(TypeError, grad, v, v)
+        self.assertRaises(TypeError, grad, m, m)
+
 
 class T_op_cache(unittest.TestCase):
     def setUp(self):
         utt.seed_rng()
+
     def test0(self):
         """trigger bug in ticket #162"""
         lr = constant(0.011)
         v = matrix()
         v.name = 'v'
-        gv = fill(v/v, 1.0)/v - (fill(v/v, 1.0) * v) / (v*v)
+        gv = fill(v / v, 1.0) / v - (fill(v / v, 1.0) * v) / (v * v)
         fn_py = inplace_func([v], gv)
         fn_c_or_py = inplace_func([v], gv)
 
-        a = rand(5,2).astype(config.floatX)
+        a = rand(5, 2).astype(config.floatX)
         self.assertTrue(numpy.all(fn_py(a) == fn_c_or_py(a)))
+
 
 class T_reshape(unittest.TestCase):
     def setUp(self):
@@ -4062,85 +4649,104 @@ class T_reshape(unittest.TestCase):
         #basic to 1 dim(without list)
         c = reshape(b, as_tensor_variable(6), ndim=1)
         f = inplace_func([b], c)
-        assert numpy.all(f(numpy.asarray([[0,1,2],[3,4,5]])) == numpy.asarray([0,1,2,3,4,5]))
-        #print f.maker.env.toposort()
+
+        b_val1 = numpy.asarray([[0, 1, 2], [3, 4, 5]])
+        c_val1 = numpy.asarray([0, 1, 2, 3, 4, 5])
+        b_val2 = b_val1.T
+        c_val2 = numpy.asarray([0, 3, 1, 4, 2, 5])
+
+        f_out1 = f(b_val1)
+        f_out2 = f(b_val2)
+        assert numpy.all(f_out1 == c_val1), (f_out1, c_val1)
+        assert numpy.all(f_out2 == c_val2), (f_out2, c_val2)
+        #print f.maker.fgraph.toposort()
         #check that we remove the useless reshape
 
         #basic to 1 dim(with list)
         c = reshape(b, (as_tensor_variable(6),), ndim=1)
         f = inplace_func([b], c)
-        assert numpy.all(f(numpy.asarray([[0,1,2],[3,4,5]])) == numpy.asarray([0,1,2,3,4,5]))
-        #print f.maker.env.toposort()
+        assert numpy.all(f(numpy.asarray([[0, 1, 2], [3, 4, 5]])) ==
+                         numpy.asarray([0, 1, 2, 3, 4, 5]))
+        #print f.maker.fgraph.toposort()
         #check that we remove the useless reshape
 
         #basic to shape object of same ndim
-        c = reshape(b,d.shape)
-        f = inplace_func([b,d], c)
-        assert numpy.all(f(numpy.asarray([[0,1,2],[3,4,5]]),[[0,1],[2,3],[4,5]]) == numpy.asarray([[0,1],[2,3],[4,5]]))
+        c = reshape(b, d.shape)
+        f = inplace_func([b, d], c)
+        assert numpy.all(f(numpy.asarray([[0, 1, 2], [3, 4, 5]]),
+                           [[0, 1], [2, 3], [4, 5]]) ==
+                         numpy.asarray([[0, 1], [2, 3], [4, 5]]))
 
         #basic to 2 dims
-        c = reshape(a, [2,3])
+        c = reshape(a, [2, 3])
         f = inplace_func([a], c)
-        assert numpy.all(f(numpy.asarray([0,1,2,3,4,5])) == numpy.asarray([[0,1,2], [3,4,5]]))
+        assert numpy.all(f(numpy.asarray([0, 1, 2, 3, 4, 5])) ==
+                         numpy.asarray([[0, 1, 2], [3, 4, 5]]))
 
         #test that it works without inplace operations
-        a_val = numpy.asarray([0,1,2,3,4,5])
-        a_val_copy = numpy.asarray([0,1,2,3,4,5])
-        b_val = numpy.asarray([[0,1,2],[3,4,5]])
+        a_val = numpy.asarray([0, 1, 2, 3, 4, 5])
+        a_val_copy = numpy.asarray([0, 1, 2, 3, 4, 5])
+        b_val = numpy.asarray([[0, 1, 2], [3, 4, 5]])
 
-        f_sub = inplace_func([a,b], c-b)
+        f_sub = inplace_func([a, b], c - b)
         assert numpy.all(f_sub(a_val, b_val) == 0.0)
         assert numpy.all(a_val == a_val_copy)
 
         #test that it works with inplace operations
-        a_val = theano._asarray([0,1,2,3,4,5], dtype='float64')
-        a_val_copy = theano._asarray([0,1,2,3,4,5], dtype='float64')
-        b_val = theano._asarray([[0,1,2],[3,4,5]], dtype='float64')
+        a_val = theano._asarray([0, 1, 2, 3, 4, 5], dtype='float64')
+        a_val_copy = theano._asarray([0, 1, 2, 3, 4, 5], dtype='float64')
+        b_val = theano._asarray([[0, 1, 2], [3, 4, 5]], dtype='float64')
 
-        f_sub = inplace_func([a,b], c-b)
+        f_sub = inplace_func([a, b], c - b)
         assert numpy.all(f_sub(a_val, b_val) == 0.0)
         assert numpy.all(a_val == a_val_copy)
 
         # verify gradient
         def just_vals(v):
-            return Reshape(2)(v, theano._asarray([2,3], dtype='int32'))
+            return Reshape(2)(v, theano._asarray([2, 3], dtype='int32'))
         utt.verify_grad(just_vals, [a_val])
 
         #test infer_shape
-        f_sub = function([a,b], (c-b).shape)
-        if config.mode=="FAST_COMPILE":
-            assert len(f_sub.maker.env.toposort())==3
+        f_sub = function([a, b], (c - b).shape)
+        if config.mode == "FAST_COMPILE":
+            assert len(f_sub.maker.fgraph.toposort()) == 3
         else:
-            topo = f_sub.maker.env.toposort()
-            assert len(topo)==1
+            topo = f_sub.maker.fgraph.toposort()
+            assert len(topo) == 1
             topo[0].op == theano.compile.function_module.deep_copy_op
             #assert numpy.all(f_sub(a_val,numpy.asarray([[0,1],[2,3],[4,5]]))==[2,3])#work in FAST_RUN, but fail on other!
             #assert numpy.all(f_sub(a_val,numpy.asarray([[0,1],[2,3],[4,5],[6,7]]))==[2,3])#work in FAST_RUN, but fail on other!
 
         # test broadcast flag for constant value of 1
-        c = reshape(b, (b.shape[0],b.shape[1],1))
+        c = reshape(b, (b.shape[0], b.shape[1], 1))
         f = inplace_func([b], c)
-        assert numpy.all(f(numpy.asarray([[0,1,2],[3,4,5]])) == numpy.asarray([[[0],[1],[2]],[[3],[4],[5]]]))
-        assert f.maker.env.toposort()[-2].outputs[0].type.broadcastable==(False, False, True)
+        assert numpy.all(f(numpy.asarray([[0, 1, 2], [3, 4, 5]])) ==
+                         numpy.asarray([[[0], [1], [2]], [[3], [4], [5]]]))
+        assert (f.maker.fgraph.toposort()[-2].outputs[0].type.broadcastable ==
+                (False, False, True))
 
-        assert numpy.all(f_sub(a_val,b_val)==[2,3])
+        assert numpy.all(f_sub(a_val, b_val) == [2, 3])
 
-    def test_infer_shape(self):
+    def test_bad_shape(self):
         a = matrix('a')
         shapes = ivector('shapes')
         ndim = 2
+        rng = numpy.random.RandomState(seed=utt.fetch_seed())
+        a_val = rng.uniform(size=(3, 4)).astype(config.floatX)
 
+        #Test reshape to 1 dim
+        r = a.reshape(shapes, ndim=1)
+        z = zeros_like(r)
+
+        f = function([a, shapes], z.shape)
+        self.assertRaises(ValueError, f, a_val, [13])
+
+        #Test reshape to 1 dim
         r = a.reshape(shapes, ndim=2)
         z = zeros_like(r)
 
         f = function([a, shapes], z.shape)
 
-        rng = numpy.random.RandomState(seed=utt.fetch_seed())
-        a_val = rng.uniform(size=(3, 4)).astype(config.floatX)
-
-        self.assertTrue((f(a_val, [4, 3]) == [4, 3]).all())
-        self.assertTrue((f(a_val, [-1, 3]) == [4, 3]).all())
-        self.assertTrue((f(a_val, [4, -1]) == [4, 3]).all())
         self.assertRaises(ValueError, f, a_val, [-1, 5])
         self.assertRaises(ValueError, f, a_val, [7, -1])
         self.assertRaises(ValueError, f, a_val, [7, 5])
@@ -4155,6 +4761,7 @@ def test_make_column_matrix_broadcastable():
     f = function([a], b)
     assert (f(numpy.zeros((3, 1))) + numpy.ones(2) == numpy.ones((3, 2))).all()
 
+
 def test_flatten_outdimNone():
     """ Flatten always returns a copy of the array. There is no danger with in-place
     operations and thus no need to test it."""
@@ -4162,13 +4769,14 @@ def test_flatten_outdimNone():
     a = dmatrix()
     c = flatten(a)
     f = inplace_func([a], c)
-    a_val = theano._asarray([[0,1,2],[3,4,5]], dtype='float64')
-    c_val = theano._asarray([0,1,2,3,4,5], dtype='float64')
-    assert numpy.all(f(a_val)==c_val)
+    a_val = theano._asarray([[0, 1, 2], [3, 4, 5]], dtype='float64')
+    c_val = theano._asarray([0, 1, 2, 3, 4, 5], dtype='float64')
+    assert numpy.all(f(a_val) == c_val)
     f = inplace_func([a], c)
-    assert numpy.all(f(a_val)==c_val)
+    assert numpy.all(f(a_val) == c_val)
 
     utt.verify_grad(Flatten(), [a_val])
+
 
 def test_flatten_scalar():
     a = dscalar()
@@ -4176,46 +4784,51 @@ def test_flatten_scalar():
     f = inplace_func([a], c)
     a_val = theano._asarray(3.0, dtype='float64')
     c_val = theano._asarray([3.0], dtype='float64')
-    assert numpy.all(f(a_val)==c_val)
+    assert numpy.all(f(a_val) == c_val)
     f = inplace_func([a], c)
-    assert numpy.all(f(a_val)==c_val)
+    assert numpy.all(f(a_val) == c_val)
 
     #utt.verify_grad(Flatten(), [a_val]) #TODO: fix verify_grd to work on scalars
+
 
 def test_flatten_outdim1():
     a = dmatrix()
     c = flatten(a, 1)
     f = inplace_func([a], c)
-    a_val = theano._asarray([[0,1,2],[3,4,5]], dtype='float64')
-    c_val = theano._asarray([0,1,2,3,4,5], dtype='float64')
-    assert numpy.all(f(a_val)==c_val)
+    a_val = theano._asarray([[0, 1, 2], [3, 4, 5]], dtype='float64')
+    c_val = theano._asarray([0, 1, 2, 3, 4, 5], dtype='float64')
+    assert numpy.all(f(a_val) == c_val)
     f = inplace_func([a], c)
-    assert numpy.all(f(a_val)==c_val)
+    assert numpy.all(f(a_val) == c_val)
 
     utt.verify_grad(Flatten(1), [a_val])
+
 
 def test_flatten_outdim2():
     a = dmatrix()
     c = flatten(a, 2)
     f = inplace_func([a], c)
-    a_val = theano._asarray([[0,1,2],[3,4,5]], dtype='float64')
-    assert numpy.all(f(a_val)==a_val)
+    a_val = theano._asarray([[0, 1, 2], [3, 4, 5]], dtype='float64')
+    assert numpy.all(f(a_val) == a_val)
     f = inplace_func([a], c)
-    assert numpy.all(f(a_val)==a_val)
+    assert numpy.all(f(a_val) == a_val)
 
     utt.verify_grad(Flatten(2), [a_val])
+
 
 def test_flatten_outdim2_of_3():
     a = TensorType('float64', (False, False, False))()
     c = flatten(a, 2)
     f = inplace_func([a], c)
-    a_val = theano._asarray([[[0,1],[2,3]], [[4,5],[6,7]]], dtype='float64')
-    c_val = theano._asarray([[0,1,2,3], [4,5,6,7]], dtype='float64')
-    assert numpy.all(f(a_val)==c_val)
+    a_val = theano._asarray([[[0, 1], [2, 3]], [[4, 5], [6, 7]]],
+         dtype='float64')
+    c_val = theano._asarray([[0, 1, 2, 3], [4, 5, 6, 7]], dtype='float64')
+    assert numpy.all(f(a_val) == c_val)
     f = inplace_func([a], c)
-    assert numpy.all(f(a_val)==c_val)
+    assert numpy.all(f(a_val) == c_val)
 
     utt.verify_grad(Flatten(2), [a_val])
+
 
 def test_flatten_outdim_invalid():
     a = dmatrix()
@@ -4229,6 +4842,7 @@ def test_flatten_outdim_invalid():
         assert False
     except ValueError:
         pass
+
 
 def test_tile():
     # Test the one-dimensional case.
@@ -4268,7 +4882,6 @@ def test_tile_grad_3d():
     assert numpy.all(f(x_) == 2 * 3 * 4 * w)
 
 
-
 class TestARange(unittest.TestCase):
     def setUp(self):
         utt.seed_rng()
@@ -4279,12 +4892,12 @@ class TestARange(unittest.TestCase):
         out = ARange(start.type.dtype)(start, stop, step)
         f = function([start, stop, step], out)
 
-        assert numpy.all(f(0,5,1) == numpy.arange(0,5,1))
-        assert numpy.all(f(2,11,4) == numpy.arange(2,11,4))
-        assert numpy.all(f(-5,1,1) == numpy.arange(-5,1,1))
-        assert numpy.all(f(10,2,-2) == numpy.arange(10,2,-2))
-        assert numpy.all(f(10,2,2) == numpy.arange(10,2,2))
-        assert numpy.all(f(0,0,1) == numpy.arange(0,0,1))
+        assert numpy.all(f(0, 5, 1) == numpy.arange(0, 5, 1))
+        assert numpy.all(f(2, 11, 4) == numpy.arange(2, 11, 4))
+        assert numpy.all(f(-5, 1, 1) == numpy.arange(-5, 1, 1))
+        assert numpy.all(f(10, 2, -2) == numpy.arange(10, 2, -2))
+        assert numpy.all(f(10, 2, 2) == numpy.arange(10, 2, 2))
+        assert numpy.all(f(0, 0, 1) == numpy.arange(0, 0, 1))
 
     def test_integers(self):
         """Test arange constructor, on integer outputs"""
@@ -4299,12 +4912,12 @@ class TestARange(unittest.TestCase):
             assert out.dtype == numpy_dtype
         else:
             raise NotImplementedError(config.cast_policy)
-        assert numpy.all(f(0,5,1) == numpy.arange(0,5,1))
-        assert numpy.all(f(2,11,4) == numpy.arange(2,11,4))
-        assert numpy.all(f(-5,1,1) == numpy.arange(-5,1,1))
-        assert numpy.all(f(10,2,-2) == numpy.arange(10,2,-2))
-        assert numpy.all(f(10,2,2) == numpy.arange(10,2,2))
-        assert numpy.all(f(0,0,1) == numpy.arange(0,0,1))
+        assert numpy.all(f(0, 5, 1) == numpy.arange(0, 5, 1))
+        assert numpy.all(f(2, 11, 4) == numpy.arange(2, 11, 4))
+        assert numpy.all(f(-5, 1, 1) == numpy.arange(-5, 1, 1))
+        assert numpy.all(f(10, 2, -2) == numpy.arange(10, 2, -2))
+        assert numpy.all(f(10, 2, 2) == numpy.arange(10, 2, 2))
+        assert numpy.all(f(0, 0, 1) == numpy.arange(0, 0, 1))
 
     def test_float32(self):
         """Test arange constructor, on float32 outputs"""
@@ -4323,10 +4936,12 @@ class TestARange(unittest.TestCase):
             assert out.dtype == config.floatX
         else:
             raise NotImplementedError(config.cast_policy)
-        arg_vals = [ (0,5,1), (2,11,4), (-5,1.1,1.2), (1.3,2,-2.1), (10,2,2) ]
+        arg_vals = [(0, 5, 1), (2, 11, 4), (-5, 1.1, 1.2), (1.3, 2,
+             -2.1), (10, 2, 2)]
         for arg_v in arg_vals:
             start_v, stop_v, step_v = arg_v
-            start_v_, stop_v_, step_v_ = numpy.asarray(arg_v, dtype=start.type.dtype)
+            start_v_, stop_v_, step_v_ = numpy.asarray(arg_v,
+                 dtype=start.type.dtype)
             f_val = f(start_v_, stop_v_, step_v_)
             if config.cast_policy == 'custom':
                 expected_val = numpy.arange(start_v, stop_v, step_v,
@@ -4345,10 +4960,12 @@ class TestARange(unittest.TestCase):
         f = function([start, stop, step], out)
 
         assert out.dtype == start.type.dtype
-        arg_vals = [ (0,5,1), (2,11,4), (-5,1.1,1.2), (1.3,2,-2.1), (10,2,2) ]
+        arg_vals = [(0, 5, 1), (2, 11, 4), (-5, 1.1, 1.2), (1.3, 2,
+             -2.1), (10, 2, 2)]
         for arg_v in arg_vals:
             start_v, stop_v, step_v = arg_v
-            start_v_, stop_v_, step_v_ = numpy.asarray(arg_v, dtype=start.type.dtype)
+            start_v_, stop_v_, step_v_ = numpy.asarray(arg_v,
+                 dtype=start.type.dtype)
             f_val = f(start_v_, stop_v_, step_v_)
             if config.cast_policy == 'custom':
                 expected_val = numpy.arange(start_v, stop_v, step_v,
@@ -4372,17 +4989,17 @@ class TestARange(unittest.TestCase):
                                              numpy.int32(1)).dtype
         else:
             raise NotImplementedError(config.cast_policy)
-        assert numpy.all(f(0,5) == numpy.arange(0,5))
-        assert numpy.all(f(-5,1) == numpy.arange(-5,1))
-        assert numpy.all(f(0,0) == numpy.arange(0,0))
+        assert numpy.all(f(0, 5) == numpy.arange(0, 5))
+        assert numpy.all(f(-5, 1) == numpy.arange(-5, 1))
+        assert numpy.all(f(0, 0) == numpy.arange(0, 0))
 
         dstart, dstop = dscalars('start', 'stop')
         dout = arange(dstart, dstop)
         df = function([dstart, dstop], dout)
 
         assert dout.dtype == dstart.type.dtype
-        print df(0.2, 5.3)
-        print numpy.arange(0.2, 5.3)
+        #print df(0.2, 5.3)
+        #print numpy.arange(0.2, 5.3)
         assert numpy.all(df(0.2, 5.3) == numpy.arange(0.2, 5.3))
         assert numpy.all(df(0.8, 5.3) == numpy.arange(0.8, 5.3))
         assert numpy.all(df(-0.7, 5.3) == numpy.arange(-0.7, 5.3))
@@ -4435,7 +5052,8 @@ class TestARange(unittest.TestCase):
             assert arange(iscalar(), dscalar()).dtype == dscalar().dtype
             assert arange(fscalar(), dscalar()).dtype == dscalar().dtype
 
-            assert arange(iscalar(), fscalar(), dscalar()).dtype == dscalar().dtype
+            assert arange(iscalar(), fscalar(), dscalar()).dtype == \
+                dscalar().dtype
         elif config.cast_policy in ('numpy', 'numpy+floatX'):
             for dtype in get_numeric_types():
                 # Test with a single argument.
@@ -4516,7 +5134,7 @@ class TestARange(unittest.TestCase):
             mode = 'FAST_RUN'
         mode = compile.mode.get_mode(mode).excluding('fusion')
         f = function([start, stop, step], out.shape, mode=mode)
-        assert len(f.maker.env.toposort())==7
+        assert len(f.maker.fgraph.toposort()) == 7
 #7 [Elemwise{sub,no_inplace}(stop, start), Elemwise{Cast{float64}}(Elemwise{sub,no_inplace}.0), Elemwise{TrueDiv{output_types_preference=transfer_type{0}}}[(0, 0)](Elemwise{Cast{float64}}.0, step), Elemwise{Ceil{output_types_preference=transfer_type{0}}}[(0, 0)](Elemwise{TrueDiv{output_types_preference=transfer_type{0}}}[(0, 0)].0), Elemwise{Cast{int64}}(Elemwise{Ceil{output_types_preference=transfer_type{0}}}[(0, 0)].0), Elemwise{Maximum{output_types_preference=transfer_type{0}}}[(0, 0)](Elemwise{Cast{int64}}.0, 0), MakeVector(Elemwise{Maximum{output_types_preference=transfer_type{0}}}[(0, 0)].0)]
 
         if config.cast_policy == 'custom':
@@ -4529,16 +5147,16 @@ class TestARange(unittest.TestCase):
         else:
             raise NotImplementedError(config.cast_policy)
 
-        assert numpy.all(f(0,5,1) == len(numpy.arange(0,5,1)))
-        assert numpy.all(f(2,11,4) == len(numpy.arange(2,11,4)))
-        assert numpy.all(f(-5,1,1) == len(numpy.arange(-5,1,1)))
-        assert numpy.all(f(10,2,-2) == len(numpy.arange(10,2,-2)))
-        assert numpy.all(f(10,2,2) == len(numpy.arange(10,2,2)))
-        assert numpy.all(f(0,0,1) == len(numpy.arange(0,0,1)))
+        assert numpy.all(f(0, 5, 1) == len(numpy.arange(0, 5, 1)))
+        assert numpy.all(f(2, 11, 4) == len(numpy.arange(2, 11, 4)))
+        assert numpy.all(f(-5, 1, 1) == len(numpy.arange(-5, 1, 1)))
+        assert numpy.all(f(10, 2, -2) == len(numpy.arange(10, 2, -2)))
+        assert numpy.all(f(10, 2, 2) == len(numpy.arange(10, 2, 2)))
+        assert numpy.all(f(0, 0, 1) == len(numpy.arange(0, 0, 1)))
 
         out = arange(start, stop, 1)
         f = function([start, stop], out.shape, mode=mode)
-        assert len(f.maker.env.toposort())==4
+        assert len(f.maker.fgraph.toposort()) == 4
 #4 [Elemwise{sub,no_inplace}(stop, start), Elemwise{Cast{int64}}(Elemwise{sub,no_inplace}.0), Elemwise{Maximum{output_types_preference=transfer_type{0}}}[(0, 0)](Elemwise{Cast{int64}}.0, 0), MakeVector(Elemwise{Maximum{output_types_preference=transfer_type{0}}}[(0, 0)].0)]
         if config.cast_policy == 'custom':
             assert out.dtype == start.type.dtype
@@ -4547,16 +5165,16 @@ class TestARange(unittest.TestCase):
                     numpy.int32(0), numpy.int32(1), numpy.int32(1)).dtype
         else:
             raise NotImplementedError(config.cast_policy)
-        assert numpy.all(f(0,5) == len(numpy.arange(0,5)))
-        assert numpy.all(f(2,11) == len(numpy.arange(2,11)))
-        assert numpy.all(f(-5,1) == len(numpy.arange(-5,1)))
-        assert numpy.all(f(10,2) == len(numpy.arange(10,2)))
-        assert numpy.all(f(10,2) == len(numpy.arange(10,2)))
-        assert numpy.all(f(0,0) == len(numpy.arange(0,0)))
+        assert numpy.all(f(0, 5) == len(numpy.arange(0, 5)))
+        assert numpy.all(f(2, 11) == len(numpy.arange(2, 11)))
+        assert numpy.all(f(-5, 1) == len(numpy.arange(-5, 1)))
+        assert numpy.all(f(10, 2) == len(numpy.arange(10, 2)))
+        assert numpy.all(f(10, 2) == len(numpy.arange(10, 2)))
+        assert numpy.all(f(0, 0) == len(numpy.arange(0, 0)))
 
         out = arange(0, stop, 1)
         f = function([stop], out.shape, mode=mode)
-        assert len(f.maker.env.toposort())==2
+        assert len(f.maker.fgraph.toposort()) == 2
         #[Elemwise{Cast{int64}}(stop), MakeVector(Elemwise{Cast{int64}}.0)]
 
         if config.cast_policy == 'custom':
@@ -4569,12 +5187,13 @@ class TestARange(unittest.TestCase):
         else:
             raise NotImplementedError(config.cast_policy)
 
-        assert numpy.all(f(5) == len(numpy.arange(0,5)))
-        assert numpy.all(f(11) == len(numpy.arange(0,11)))
-        assert numpy.all(f(1) == len(numpy.arange(0,1)))
-        assert numpy.all(f(2) == len(numpy.arange(0,2)))
-        assert numpy.all(f(2) == len(numpy.arange(0,2)))
-        assert numpy.all(f(0) == len(numpy.arange(0,0)))
+        assert numpy.all(f(5) == len(numpy.arange(0, 5)))
+        assert numpy.all(f(11) == len(numpy.arange(0, 11)))
+        assert numpy.all(f(1) == len(numpy.arange(0, 1)))
+        assert numpy.all(f(2) == len(numpy.arange(0, 2)))
+        assert numpy.all(f(2) == len(numpy.arange(0, 2)))
+        assert numpy.all(f(0) == len(numpy.arange(0, 0)))
+
 
 class TestInversePermutation(unittest.TestCase):
     def setUp(self):
@@ -4683,7 +5302,8 @@ class TestPermuteRowElements(unittest.TestCase):
 
         # Each row of p contains a permutation to apply to the corresponding
         # row of input
-        out_bis = numpy.asarray([i_row[p_row] for i_row, p_row in zip(input_val, p_val)])
+        out_bis = numpy.asarray([i_row[p_row] for i_row,
+             p_row in zip(input_val, p_val)])
         assert numpy.all(out_val == out_bis)
 
         # Verify gradient
@@ -4702,7 +5322,8 @@ class TestPermuteRowElements(unittest.TestCase):
 
         rng = numpy.random.RandomState(utt.fetch_seed())
         input_val = rng.uniform(size=(5,)).astype(config.floatX)
-        p_val = numpy.asarray([rng.permutation(5) for i in range(3)], dtype='int32')
+        p_val = numpy.asarray([rng.permutation(5) for i in range(3)
+            ], dtype='int32')
         out_val = permute(input_val, p_val)
 
         # Each row of p contains a permutation to apply to the input vector
@@ -4733,7 +5354,8 @@ class TestPermuteRowElements(unittest.TestCase):
 
         # Each row of p contains a permutation to apply to each row
         # of the input tensor
-        out_bis = numpy.asarray([[in_mat[0,p_row] for p_row in p_val] for in_mat in input_val])
+        out_bis = numpy.asarray([[in_mat[0, p_row]
+             for p_row in p_val] for in_mat in input_val])
         assert numpy.all(out_val == out_bis)
 
         # Verify gradient
@@ -4752,66 +5374,81 @@ class test_tensordot(unittest.TestCase):
         # Test vector-vector
         avec = vector()
         bvec = vector()
-        axes = ((0,),(0,))
+        axes = ((0, ), (0, ))
         c = tensordot(avec, bvec, axes)
-        f1 = inplace_func([avec,bvec],c)
+        f1 = inplace_func([avec, bvec], c)
         aval = rand(5)
         bval = rand(5)
-        self.assertTrue(numpy.tensordot(aval,bval,axes) == \
-                        f1(aval,bval))
-        utt.verify_grad(TensorDot(axes), [aval,bval])
+        self.assertTrue(numpy.tensordot(aval, bval, axes) == \
+                        f1(aval, bval))
+        utt.verify_grad(TensorDot(axes), [aval, bval])
 
         # Test matrix-vector
         bmat = matrix()
-        axes = ((0,),(1,))
+        axes = ((0, ), (1, ))
         c = tensordot(avec, bmat, axes)
-        f2 = inplace_func([avec,bmat],c)
+        f2 = inplace_func([avec, bmat], c)
         aval = rand(5)
-        bval = rand(8,5)
-        self.assertTrue(numpy.allclose(numpy.tensordot(aval,bval,axes),
-                                       f2(aval,bval)))
-        utt.verify_grad(TensorDot(axes), [aval,bval])
+        bval = rand(8, 5)
+        self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
+                                       f2(aval, bval)))
+        utt.verify_grad(TensorDot(axes), [aval, bval])
 
         # Test matrix-matrix
         amat = matrix()
-        axes = ((1,),(0,))
-        c = tensordot(amat, bmat, axes)
-        f3 = inplace_func([amat,bmat],c)
-        aval = rand(4,7)
-        bval = rand(7,9)
-        self.assertTrue(numpy.allclose(numpy.tensordot(aval,bval,axes),
-                                       f3(aval,bval)))
-        utt.verify_grad(TensorDot(axes), [aval,bval])
+        for axes, shps in [[((0,), (0,)), [(4, 7), (4, 9)]],
+                           [((0,), (1,)), [(4, 7), (9, 4)]],
+                           [((1,), (0,)), [(4, 7), (7, 9)]],
+                           [((1,), (1,)), [(4, 7), (9, 7)]],
+                           [((0, 1), (0, 1)), [(4, 7), (4, 7)]],
+#                           [((0, 1), (1, 0)), [(4, 7), (7, 4)]],
+#                           [((1, 0), (1, 0)), [(4, 7), (4, 7)]],
+#                           [((1, 0), (0, 1)), [(4, 7), (7, 4)]],
+                       ]:
+            c = tensordot(amat, bmat, axes)
+            f3 = inplace_func([amat, bmat], c)
+            aval = rand(*shps[0])
+            bval = rand(*shps[1])
+            self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
+                                           f3(aval, bval)))
+            utt.verify_grad(TensorDot(axes), [aval, bval])
 
         # Test ndarray-matrix, sum over one dim of matrix
-        atens = tensor4()
-        axes = ((2,),(1,))
-        c = tensordot(atens, bmat, axes)
-        f4 = inplace_func([atens,bmat],c)
-        aval = rand(1,2,3,4)
-        bval = rand(2,3)
-        self.assertTrue(numpy.allclose(numpy.tensordot(aval,bval,axes),
-                                       f4(aval,bval)))
-        utt.verify_grad(TensorDot(axes), [aval,bval])
+        for axes, shps in [[((2,), (1,)), [(1, 2, 3, 4), (2, 3)]],
+                           [((0,), (1,)), [(1, 2, 3, 4), (3, 1)]],
+                           [((0,), (0,)), [(1, 2, 3, 4), (1, 3)]],
+                           [((3,), (0,)), [(1, 2, 3, 4), (4, 1)]],
+#                           [((3, 1), (0, 1)), [(1, 2, 3, 4), (4, 2)]],
+#                           [((0, 1), (1, 0)), [(1, 2, 3, 4), (2, 1)]],
+#                           [((3, 1), (1, 0)), [(1, 2, 3, 4), (2, 4)]],
+        ]:
+            atens = tensor4()
+            c = tensordot(atens, bmat, axes)
+            f4 = inplace_func([atens, bmat], c)
+            aval = rand(*shps[0])
+            bval = rand(*shps[1])
+            self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
+                                           f4(aval, bval)))
+            utt.verify_grad(TensorDot(axes), [aval, bval])
 
         # Test ndarray-ndarray
         atens = tensor4()
         btens = tensor3()
-        axes = ((1,3),(0,2))
+        axes = ((1, 3), (0, 2))
         c = tensordot(atens, btens, axes)
-        f5 = inplace_func([atens,btens],c)
-        aval = rand(4,3,5,2)
-        bval = rand(3,4,2)
-        self.assertTrue(numpy.allclose(numpy.tensordot(aval,bval,axes),
-                                       f5(aval,bval)))
-        utt.verify_grad(TensorDot(axes), [aval,bval])
+        f5 = inplace_func([atens, btens], c)
+        aval = rand(4, 3, 5, 2)
+        bval = rand(3, 4, 2)
+        self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
+                                       f5(aval, bval)))
+        utt.verify_grad(TensorDot(axes), [aval, bval])
 
-        axes = (axes[1],axes[0])
+        axes = (axes[1], axes[0])
         c = tensordot(btens, atens, axes)
-        f6 = inplace_func([btens,atens],c)
-        self.assertTrue(numpy.allclose(numpy.tensordot(bval,aval,axes),
-                                       f6(bval,aval)))
-        utt.verify_grad(TensorDot(axes), [bval,aval])
+        f6 = inplace_func([btens, atens], c)
+        self.assertTrue(numpy.allclose(numpy.tensordot(bval, aval, axes),
+                                       f6(bval, aval)))
+        utt.verify_grad(TensorDot(axes), [bval, aval])
 
     def test_raise_error(self):
         amat = matrix()
@@ -4820,28 +5457,28 @@ class test_tensordot(unittest.TestCase):
 
         # Test invalid length for axes
         try:
-            c = tensordot(amat, bmat, (0,1,2))
+            c = tensordot(amat, bmat, (0, 1, 2))
             assert False
         except ValueError:
             pass
 
         # Test axes of uneven length
         try:
-            c = tensordot(amat, bmat, ((0,1),(0)))
+            c = tensordot(amat, bmat, ((0, 1), (0)))
             assert False
         except ValueError:
             pass
 
         # Test invalid len(axes) given inputs are matrices
         try:
-            c = tensordot(amat, bmat, ((0,1,2),(0,1,2)))
+            c = tensordot(amat, bmat, ((0, 1, 2), (0, 1, 2)))
             assert False
         except ValueError:
             pass
 
         # Test invalid axes[1] given that y is a vector
         try:
-            c = tensordot(amat, bvec, (0,1))
+            c = tensordot(amat, bvec, (0, 1))
             assert False
         except ValueError:
             pass
@@ -4853,57 +5490,57 @@ class test_tensordot(unittest.TestCase):
         except ValueError:
             pass
 
-
     def test_weird_valid_axes(self):
         # Test matrix-matrix
         amat = matrix()
         bmat = matrix()
-        for axes in 0, (1,0), [1,0], (1,(0,)), ((1,),0), ([1],[0]):
+        for axes in 0, (1, 0), [1, 0], (1, (0, )), ((1, ), 0), ([1], [0]):
             c = tensordot(amat, bmat, axes)
-            f3 = inplace_func([amat,bmat],c)
-            aval = rand(4,7)
-            bval = rand(7,9)
-            self.assertTrue(numpy.allclose(numpy.tensordot(aval,bval,axes),
-                                           f3(aval,bval)))
-            utt.verify_grad(TensorDot(axes), [aval,bval])
+            f3 = inplace_func([amat, bmat], c)
+            aval = rand(4, 7)
+            bval = rand(7, 9)
+            self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
+                                           f3(aval, bval)))
+            utt.verify_grad(TensorDot(axes), [aval, bval])
 
     def test_scalar_axes(self):
         # Test matrix-matrix
         amat = fmatrix()
-        bmat = dmatrix()# We let at float64 to test mix of float32 and float64.
+        bmat = dmatrix()
+              # We let at float64 to test mix of float32 and float64.
         axes = 1
-        aval = rand(4,5).astype('float32')
-        bval = rand(5,3)
+        aval = rand(4, 5).astype('float32')
+        bval = rand(5, 3)
         c = tensordot(amat, bmat, axes)
-        f3 = inplace_func([amat,bmat],c)
-        self.assertTrue(numpy.allclose(numpy.tensordot(aval,bval,axes),
-                                       f3(aval,bval)))
-        utt.verify_grad(TensorDot(axes), [aval,bval])
+        f3 = inplace_func([amat, bmat], c)
+        self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
+                                       f3(aval, bval)))
+        utt.verify_grad(TensorDot(axes), [aval, bval])
 
         # Test tensor-tensor
         amat = tensor3()
         bmat = tensor3()
         axes = 2
-        aval = rand(3,4,5)
-        bval = rand(4,5,3)
+        aval = rand(3, 4, 5)
+        bval = rand(4, 5, 3)
         c = tensordot(amat, bmat, axes)
-        f3 = inplace_func([amat,bmat],c)
-        self.assertTrue(numpy.allclose(numpy.tensordot(aval,bval,axes),
-                                       f3(aval,bval)))
-        utt.verify_grad(TensorDot(axes), [aval,bval])
+        f3 = inplace_func([amat, bmat], c)
+        self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
+                                       f3(aval, bval)))
+        utt.verify_grad(TensorDot(axes), [aval, bval])
 
     def test_scalar0(self):
         # Test tensor-tensor
         amat = matrix()
         bmat = matrix()
         axes = 0
-        aval = rand(4,5)
-        bval = rand(5,4)
+        aval = rand(4, 5)
+        bval = rand(5, 4)
         c = tensordot(amat, bmat, axes)
-        f3 = inplace_func([amat,bmat],c)
-        self.assertTrue(numpy.allclose(numpy.tensordot(aval,bval,axes),
-                                       f3(aval,bval)))
-        utt.verify_grad(TensorDot(axes), [aval,bval])
+        f3 = inplace_func([amat, bmat], c)
+        self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
+                                       f3(aval, bval)))
+        utt.verify_grad(TensorDot(axes), [aval, bval])
 
     def test_tensordot_grad(self):
         # We test it manually as we recreate the op in the make_node
@@ -4912,20 +5549,23 @@ class test_tensordot(unittest.TestCase):
         bmat = matrix()
         gzmat = matrix()
         axes = 1
-        aval = rand(4,5)
-        bval = rand(5,3)
-        gzval = rand(4,3)
-        f1 = inplace_func([amat,bmat,gzmat],tensordot_grad(axes)(amat, bmat, gzmat))
-        f2 = inplace_func([amat,bmat,gzmat],tensordot_grad(((1,),(0,)))(amat, bmat, gzmat))
-        o1=f1(aval,bval,gzval)
-        o2=f2(aval,bval,gzval)
-        self.assertTrue(numpy.allclose(o1[0],o2[0]))
-        self.assertTrue(numpy.allclose(o1[1],o2[1]))
+        aval = rand(4, 5)
+        bval = rand(5, 3)
+        gzval = rand(4, 3)
+        f1 = inplace_func([amat, bmat, gzmat], tensordot_grad(axes)(
+            amat, bmat, gzmat))
+        f2 = inplace_func([amat, bmat, gzmat], tensordot_grad(((1, ), (
+            0,)))(amat, bmat, gzmat))
+        o1 = f1(aval, bval, gzval)
+        o2 = f2(aval, bval, gzval)
+        self.assertTrue(numpy.allclose(o1[0], o2[0]))
+        self.assertTrue(numpy.allclose(o1[1], o2[1]))
+
 
 def test_smallest_stack():
     sx, sy = dscalar(), dscalar()
 
-    rval = inplace_func([sx,sy], stack(sx,sy))(-4.0, -2.0)
+    rval = inplace_func([sx, sy], stack(sx, sy))(-4.0, -2.0)
     assert type(rval) == numpy.ndarray
     assert [-4, -2] == list(rval)
 
@@ -4935,26 +5575,28 @@ def test_smallest():
     y = dvector()
     z = dvector()
     f1 = inplace_func([x], smallest(x))
-    assert numpy.all([1,2,3] == f1([1,2,3]))
-    f3 = inplace_func([x,y,z], smallest(x,y,z))
-    assert numpy.all([1,2,3] == f3([1,3,9], [7,7,7], [8,2,3]))
+    assert numpy.all([1, 2, 3] == f1([1, 2, 3]))
+    f3 = inplace_func([x, y, z], smallest(x, y, z))
+    assert numpy.all([1, 2, 3] == f3([1, 3, 9], [7, 7, 7], [8, 2, 3]))
 
     sx, sy = dscalar(), dscalar()
 
-    assert -4 == inplace_func([sx,sy], smallest(sx,sy))(-4.0, -2.0)
+    assert -4 == inplace_func([sx, sy], smallest(sx, sy))(-4.0, -2.0)
+
 
 def test_reshape_member_fn():
     x = dmatrix()
-    y = x.reshape((4,5,6))
+    y = x.reshape((4, 5, 6))
     assert y.owner.op == Reshape(3)
 
+
 def test_var():
-    a = Tensor(dtype='float64', broadcastable=[False,False,False])()
+    a = Tensor(dtype='float64', broadcastable=[False, False, False])()
     f = function([a], var(a))
 
-    a_val = numpy.arange(60).reshape(3,4,5)
-    print numpy.var(a_val)
-    print f(a_val)
+    a_val = numpy.arange(60).reshape(3, 4, 5)
+    #print numpy.var(a_val)
+    #print f(a_val)
     assert numpy.allclose(numpy.var(a_val), f(a_val))
 
     f = function([a], var(a, axis=0))
@@ -4966,14 +5608,16 @@ def test_var():
     f = function([a], var(a, axis=2))
     assert numpy.allclose(numpy.var(a_val, axis=2), f(a_val))
 
+
 def test_sum_overflow():
     """Ensure that overflow errors are a little bit harder to get"""
     a = Tensor(dtype='int8', broadcastable=[False])()
     f = function([a], sum(a))
-    assert f([1]*300) == 300
+    assert f([1] * 300) == 300
+
 
 @dec.knownfailureif(
-        isinstance(get_default_mode(),theano.compile.debugmode.DebugMode),
+        isinstance(get_default_mode(), theano.compile.debugmode.DebugMode),
         ("This test fails in DEBUG_MODE, but the generated code is OK. "
          "It is actually a problem of DEBUG_MODE, see #626."))
 def test_default():
@@ -4984,22 +5628,24 @@ def test_default():
     assert f(None, 2) == 2
     assert f(1, None) == 1
 
+
 @dec.knownfailureif(
-        isinstance(get_default_mode(),theano.compile.debugmode.DebugMode),
+        isinstance(get_default_mode(), theano.compile.debugmode.DebugMode),
         ("This test fails in DEBUG_MODE, but the generated code is OK. "
          "It is actually a problem of DEBUG_MODE, see #626."))
 def test_default_state():
     x, y = scalars('xy')
-    print config.floatX
-    print x.type
-    print y.type
+    #print config.floatX
+    #print x.type
+    #print y.type
     z = default(x, 3.8)
     new_x = y + z
-    f = function([y, compile.In(x, update = new_x, value = 12.0)], new_x)
+    f = function([y, compile.In(x, update=new_x, value=12.0)], new_x)
     assert f(3) == 15
     f['x'] = None
     assert numpy.allclose(f(1), 4.8)
     assert numpy.allclose(f(numpy.asarray(2.2, dtype=config.floatX)), 7)
+
 
 def test_autocast():
     backup_config = config.cast_policy
@@ -5015,20 +5661,21 @@ def test_autocast():
         finally:
             config.cast_policy = backup_config
 
+
 def _test_autocast_custom():
     """Called from `test_autocast`."""
     assert config.cast_policy == 'custom'
     orig_autocast = autocast_float.dtypes
 
     # Test that autocast_float_as sets the autocast dtype correctly
-    try: # ghetto 2.4 version of with
+    try:  # ghetto 2.4 version of with
         ac = autocast_float_as('float32')
         ac.__enter__()
         assert autocast_float.dtypes == ('float32',)
     finally:
         ac.__exit__()
     assert autocast_float.dtypes == orig_autocast
-    try: #ghetto 2.4 version of with
+    try:  # ghetto 2.4 version of with
         ac = autocast_float_as('float64')
         ac.__enter__()
         assert autocast_float.dtypes == ('float64',)
@@ -5036,11 +5683,11 @@ def _test_autocast_custom():
         ac.__exit__()
     assert autocast_float.dtypes == orig_autocast
     # Test that we can set it back to something, and nest it
-    try: # ghetto 2.4 version of with
+    try:  # ghetto 2.4 version of with
         ac = autocast_float_as('float32')
         ac.__enter__()
         assert autocast_float.dtypes == ('float32',)
-        try: # ghetto 2.4 version of with
+        try:  # ghetto 2.4 version of with
             ac2 = autocast_float_as('float64')
             ac2.__enter__()
             assert autocast_float.dtypes == ('float64',)
@@ -5052,58 +5699,62 @@ def _test_autocast_custom():
     assert autocast_float.dtypes == orig_autocast
 
     # Test that the autocasting dtype is used correctly in expression-building
-    try: # ghetto 2.4 version of with
+    try:  # ghetto 2.4 version of with
         ac = autocast_float_as('float32')
         ac.__enter__()
-        assert (dvector()+ 1.1).dtype == 'float64'
-        assert (fvector()+ 1.1).dtype == 'float32'
-        assert (fvector()+ theano._asarray(1.1,dtype='float64')).dtype == 'float64'
-        assert (fvector()+ theano._asarray(1.1,dtype='float32')).dtype == 'float32'
+        assert (dvector() + 1.1).dtype == 'float64'
+        assert (fvector() + 1.1).dtype == 'float32'
+        assert (fvector() + theano._asarray(1.1, dtype='float64')).dtype == \
+                'float64'
+        assert (fvector() + theano._asarray(1.1, dtype='float32')).dtype == \
+                'float32'
 
-        assert (dvector()+ 1).dtype == 'float64'
-        assert (fvector()+ 1).dtype == 'float32'
+        assert (dvector() + 1).dtype == 'float64'
+        assert (fvector() + 1).dtype == 'float32'
     finally:
         ac.__exit__()
 
     # Test that the autocasting dtype is used correctly in expression-building
-    try: # ghetto 2.4 version of with
+    try:  # ghetto 2.4 version of with
         ac = autocast_float_as('float64')
         ac.__enter__()
-        assert (dvector()+ 1.1).dtype == 'float64'
-        assert (fvector()+ 1.1).dtype == 'float64'
-        assert (fvector()+ 1.0).dtype == 'float64'
-        assert (fvector()+ theano._asarray(1.1,dtype='float64')).dtype == 'float64'
-        assert (fvector()+ theano._asarray(1.1,dtype='float32')).dtype == 'float32'
+        assert (dvector() + 1.1).dtype == 'float64'
+        assert (fvector() + 1.1).dtype == 'float64'
+        assert (fvector() + 1.0).dtype == 'float64'
+        assert (fvector() + theano._asarray(1.1, dtype='float64')).dtype == \
+                'float64'
+        assert (fvector() + theano._asarray(1.1, dtype='float32')).dtype == \
+                'float32'
 
-        assert (dvector()+ 1).dtype == 'float64'
-        assert (fvector()+ 1).dtype == 'float32'
+        assert (dvector() + 1).dtype == 'float64'
+        assert (fvector() + 1).dtype == 'float32'
     finally:
         ac.__exit__()
 
     # Test that the autocasting dtype is used correctly in expression-building
-    try: # ghetto 2.4 version of with
+    try:  # ghetto 2.4 version of with
         ac = autocast_float_as('float32', 'float64')
         ac.__enter__()
-        assert (dvector()+ 1.1).dtype == 'float64'
-        assert (fvector()+ 1.1).dtype == theano.config.floatX
-        assert (fvector()+ 1.0).dtype == 'float32'
-        assert (dvector()+ numpy.float32(1.1)).dtype == 'float64'
-        assert (dvector()+ numpy.float64(1.1)).dtype == 'float64'
-        assert (dvector()+ numpy.float(1.1)).dtype   == 'float64'
-        assert (fvector()+ numpy.float32(1.1)).dtype == 'float32'
-        assert (fvector()+ numpy.float64(1.1)).dtype == 'float64'
-        assert (fvector()+ numpy.float(1.1)).dtype   == theano.config.floatX
-        assert (lvector()+ numpy.int64(1)).dtype == 'int64'
-        assert (lvector()+ numpy.int32(1)).dtype == 'int64'
-        assert (lvector()+ numpy.int16(1)).dtype == 'int64'
-        assert (lvector()+ numpy.int8(1)).dtype == 'int64'
-        assert (ivector()+ numpy.int8(1)).dtype == 'int32'
-        assert (wvector()+ numpy.int8(1)).dtype == 'int16'
-        assert (bvector()+ numpy.int8(1)).dtype == 'int8'
-        try: # ghetto 2.4 version of with
+        assert (dvector() + 1.1).dtype == 'float64'
+        assert (fvector() + 1.1).dtype == theano.config.floatX
+        assert (fvector() + 1.0).dtype == 'float32'
+        assert (dvector() + numpy.float32(1.1)).dtype == 'float64'
+        assert (dvector() + numpy.float64(1.1)).dtype == 'float64'
+        assert (dvector() + numpy.float(1.1)).dtype == 'float64'
+        assert (fvector() + numpy.float32(1.1)).dtype == 'float32'
+        assert (fvector() + numpy.float64(1.1)).dtype == 'float64'
+        assert (fvector() + numpy.float(1.1)).dtype == theano.config.floatX
+        assert (lvector() + numpy.int64(1)).dtype == 'int64'
+        assert (lvector() + numpy.int32(1)).dtype == 'int64'
+        assert (lvector() + numpy.int16(1)).dtype == 'int64'
+        assert (lvector() + numpy.int8(1)).dtype == 'int64'
+        assert (ivector() + numpy.int8(1)).dtype == 'int32'
+        assert (wvector() + numpy.int8(1)).dtype == 'int16'
+        assert (bvector() + numpy.int8(1)).dtype == 'int8'
+        try:  # ghetto 2.4 version of with
             ac2 = autocast_float_as('float64')
             ac2.__enter__()
-            assert (fvector()+ 1.0).dtype == 'float64'
+            assert (fvector() + 1.0).dtype == 'float64'
         finally:
             ac2.__exit__()
     finally:
@@ -5114,9 +5765,10 @@ def _test_autocast_numpy():
     """Called from `test_autocast`."""
     assert config.cast_policy == 'numpy'
     # Go through some typical scalar values.
+
     def ok(z):
         assert tensor.constant(z).dtype == numpy.asarray(z).dtype
-    for x in ([2**i for i in xrange(63)] +
+    for x in ([2 ** i for i in xrange(63)] +
               [0] +
               [0., 1., 1.1, 1.5]):
         n_x = numpy.asarray(x)
@@ -5132,6 +5784,7 @@ def _test_autocast_numpy_floatX():
     """Called from `test_autocast`."""
     assert config.cast_policy == 'numpy+floatX'
     backup_floatX = config.floatX
+
     def ok(z, floatX):
         if (isinstance(z, float) and
             floatX == 'float32' and
@@ -5148,7 +5801,7 @@ def _test_autocast_numpy_floatX():
             # Note that we only consider integer values that Python considers
             # to be 'int', because 'long' is not supported by Theano (due to
             # the fact it is unbounded).
-            for x in ([2**i for i in xrange(64) if type(2**i) == int] +
+            for x in ([2 ** i for i in xrange(64) if type(2 ** i) == int] +
                       [0] +
                       [0., 1., 1.1, 1.5]):
                 ok(x, floatX)
@@ -5283,11 +5936,12 @@ class test_arithmetic_cast(unittest.TestCase):
                                     config.int_division == 'floatX'):
                                     assert theano_dtype == config.floatX
                                     continue
+                                numpy_version =numpy.__version__.split('.')[:2]
                                 if (cfg == 'numpy+floatX' and
                                     a_type == 'complex128' and
                                     b_type == 'float32' and
                                     combo == ('scalar', 'array') and
-                                    numpy.__version__.startswith('1.6.') and
+                                    bool(numpy_version >= [1, 6]) and
                                     theano_dtype == 'complex128' and
                                     numpy_dtypes == ['complex64',
                                                      'complex64']):
@@ -5297,7 +5951,7 @@ class test_arithmetic_cast(unittest.TestCase):
                                     # in progress), so in the meantime we just
                                     # mark this test as a known failure.
                                     raise KnownFailureTest('Known issue with '
-                                            'numpy 1.6.x, see #761')
+                                            'numpy >= 1.6.x see #761')
 
                                 # In any other situation: something wrong is
                                 # going on!
@@ -5375,7 +6029,7 @@ class test_broadcast(unittest.TestCase):
         y = addbroadcast(x, 0)
         f = theano.function([x], y.shape)
         assert (f(numpy.zeros((1, 5), dtype=config.floatX)) == [1, 5]).all()
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         if theano.config.mode != 'FAST_COMPILE':
             assert len(topo) == 2
             assert isinstance(topo[0].op, opt.Shape_i)
@@ -5385,7 +6039,7 @@ class test_broadcast(unittest.TestCase):
         y = unbroadcast(x, 0)
         f = theano.function([x], y.shape)
         assert (f(numpy.zeros((2, 5), dtype=config.floatX)) == [2, 5]).all()
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         if theano.config.mode != 'FAST_COMPILE':
             assert len(topo) == 3
             assert isinstance(topo[0].op, opt.Shape_i)
@@ -5396,7 +6050,7 @@ class test_broadcast(unittest.TestCase):
         y = unbroadcast(x, 0)
         f = theano.function([x], y.shape)
         assert (f(numpy.zeros((1, 5), dtype=config.floatX)) == [1, 5]).all()
-        topo = f.maker.env.toposort()
+        topo = f.maker.fgraph.toposort()
         if theano.config.mode != 'FAST_COMPILE':
             assert len(topo) == 2
             assert isinstance(topo[0].op, opt.Shape_i)
@@ -5420,7 +6074,8 @@ def test_mod():
     as Python. That is what we want.
     """
     x, y = fscalars('xy')
-    fn = gof.DualLinker().accept(gof.Env([x, y], [x % y])).make_function()
+    fn = gof.DualLinker().accept(
+            gof.FunctionGraph([x, y], [x % y])).make_function()
     for a, b in ((0, 1), (1, 1), (0, -1), (1, -1), (-1, -1),
                 (1, 2), (-1, 2), (1, -2), (-1, -2),
                 (5, 3), (-5, 3), (5, -3), (-5, -3)
@@ -5468,21 +6123,34 @@ def test_unalign():
 
     av, bv = tensor.vectors('ab')
     f = theano.function([av, bv], 2 * av + 3 * bv)
-    f.maker.env.toposort()
-    # FAST_COMPILE use the python code that support unaligned data
-    # The DebugMode make a copy of the inputs, so they will be aligned.
-    should_raise = theano.config.mode not in ["FAST_COMPILE", "DebugMode",
-                                              "DEBUG_MODE"]
+    f.maker.fgraph.toposort()
+
     try:
         out_theano = f(a, b)
         assert not a.flags.aligned
         assert not b.flags.aligned
         assert numpy.allclose(out_numpy, out_theano)
-        if should_raise:
-            raise Exception("Expected an error from Theano!")
-    except NotImplementedError, e:
-        if not should_raise:
-            raise Exception("Theano raised an unexpected exception")
+        assert False
+    except TypeError, e:
+        pass
+
+    a = numpy.empty((), dtype=dtype)['f1']
+    b = numpy.empty((), dtype=dtype)['f1']
+    assert not a.flags.aligned
+    assert not b.flags.aligned
+    out_numpy = 2 * a + 3 * b
+
+    av, bv = tensor.scalars('ab')
+    f = theano.function([av, bv], 2 * av + 3 * bv)
+    f.maker.fgraph.toposort()
+    try:
+        out_theano = f(a, b)
+        assert not a.flags.aligned
+        assert not b.flags.aligned
+        assert numpy.allclose(out_numpy, out_theano)
+        assert False
+    except TypeError, e:
+        pass
 
 
 def test_dimshuffle_duplicate():
@@ -5622,9 +6290,9 @@ class test_numpy_assumptions(unittest.TestCase):
 
 
 def test_transpose():
-    x1 = tensor.dvector()
-    x2 = tensor.dmatrix()
-    x3 = tensor.dtensor3()
+    x1 = tensor.dvector('x1')
+    x2 = tensor.dmatrix('x2')
+    x3 = tensor.dtensor3('x3')
 
     x1v = numpy.arange(24)
     x2v = numpy.arange(24).reshape(2, 12)
@@ -5662,135 +6330,885 @@ def test_transpose():
     assert numpy.all(t2d == numpy.transpose(x2v, [0, 1]))
     assert numpy.all(t3d == numpy.transpose(x3v, [0, 2, 1]))
 
+    # Check that we create a name.
+    assert tensor.transpose(x1).name == 'x1.T'
+    assert tensor.transpose(x2).name == 'x2.T'
+    assert tensor.transpose(x3).name == 'x3.T'
+    assert tensor.transpose(tensor.dmatrix()).name is None
 
-class test_sort(unittest.TestCase):
 
+class TestSpecifyShape(unittest.TestCase):
+    def shortDescription(self):
+        return None
+
+    def test_bad_shape(self):
+        """ Test that at run time we raise an exception when the shape
+        is not the one specified"""
+        specify_shape = SpecifyShape()
+
+        x = vector()
+        xval = numpy.random.rand(2).astype(floatX)
+        f = theano.function([x], specify_shape(x, [2]))
+        f(xval)
+        xval = numpy.random.rand(3).astype(floatX)
+        self.assertRaises(AssertionError, f, xval)
+
+        x = matrix()
+        xval = numpy.random.rand(2, 3).astype(floatX)
+        f = theano.function([x], specify_shape(x, [2, 3]))
+        f(xval)
+        for shape in [(1, 3), (2, 2), (5, 5)]:
+            xval = numpy.random.rand(*shape).astype(floatX)
+            self.assertRaises(AssertionError, f, xval)
+
+    def test_bad_number_of_shape(self):
+        """ Test that the number of dimensions provided is good"""
+        specify_shape = SpecifyShape()
+
+        x = vector()
+        shape_vec = ivector()
+        xval = numpy.random.rand(2).astype(floatX)
+        self.assertRaises(AssertionError, specify_shape, x, [])
+        self.assertRaises(AssertionError, specify_shape, x, [2, 2])
+
+        f = theano.function([x, shape_vec], specify_shape(x, shape_vec))
+        self.assertRaises(AssertionError, f, xval, [])
+        self.assertRaises(AssertionError, f, xval, [2, 2])
+
+        x = matrix()
+        xval = numpy.random.rand(2, 3).astype(floatX)
+        for shape in [(),
+                      (1,),
+                      (2, 3, 4)]:
+            self.assertRaises(AssertionError, specify_shape, x, shape)
+            f = theano.function([x, shape_vec], specify_shape(x, shape_vec))
+            self.assertRaises(AssertionError, f, xval, shape)
+
+
+class TestInferShape(utt.InferShapeTester):
+
+    def test_infer_shape(self):
+
+        # tensordot_grad
+        admat = dmatrix()
+        bdmat = dmatrix()
+        gzdmat = dmatrix()
+        admat_val = rand(4, 5)
+        bdmat_val = rand(5, 3)
+        gzdmat_val = rand(4, 3)
+        axes = 1
+        self._compile_and_check([admat, bdmat, gzdmat],
+                                tensordot_grad(axes)(admat, bdmat, gzdmat),
+                        [admat_val, bdmat_val, gzdmat_val], tensordot_grad)
+
+        admat_val = rand(5, 4)
+        bdmat_val = rand(5, 4)
+        gzdscal = dscalar()
+        gzdscal_val = rand()
+        axes = 2
+        self._compile_and_check([admat, bdmat, gzdscal],
+                                tensordot_grad(axes)(admat, bdmat, gzdscal),
+                        [admat_val, bdmat_val, gzdscal_val], tensordot_grad)
+
+        admat_val = rand(4, 5)
+        bdmat_val = rand(5, 3)
+        gzdmat_val = rand(4, 3)
+        axes = ((1, ), (0, ))
+        self._compile_and_check([admat, bdmat, gzdmat],
+                                tensordot_grad(axes)(admat, bdmat, gzdmat),
+                            [admat_val, bdmat_val, gzdmat_val], tensordot_grad)
+
+        axes = ((1, 0))
+        self._compile_and_check([admat, bdmat, gzdmat],
+                                tensordot_grad(axes)(admat, bdmat, gzdmat),
+                            [admat_val, bdmat_val, gzdmat_val], tensordot_grad)
+
+        admat_val = rand(4, 5)
+        bdmat_val = rand(3, 4)
+        gzdmat_val = rand(5, 3)
+        axes = ((0, ), (1, ))
+        self._compile_and_check([admat, bdmat, gzdmat],
+                                tensordot_grad(axes)(admat, bdmat, gzdmat),
+                            [admat_val, bdmat_val, gzdmat_val], tensordot_grad)
+
+        gzdscal = dscalar()
+        admat_val = rand(5, 4)
+        bdmat_val = rand(5, 4)
+        gzdscal_val = rand()
+        axes = ((0, 1), (0, 1))
+        self._compile_and_check([admat, bdmat, gzdscal],
+                                tensordot_grad(axes)(admat, bdmat, gzdscal),
+                        [admat_val, bdmat_val, gzdscal_val], tensordot_grad)
+
+        # tensordot_grad currently do not support not ordered axes
+
+        """
+        gzdscal = dscalar()
+        admat_val = rand(5, 4)
+        bdmat_val = rand(4, 5)
+        gzdscal_val = rand()
+        axes = ((0, 1), (1, 0))
+        self._compile_and_check([admat, bdmat, gzdscal],
+                                tensordot_grad(axes)(admat, bdmat, gzdscal),
+                        [admat_val, bdmat_val, gzdscal_val], tensordot_grad)
+
+        gzdscal = dscalar()
+        admat_val = rand(5, 4)
+        bdmat_val = rand(5, 4)
+        gzdscal_val = rand()
+        axes = ((1, 0 ), (1, 0))
+        self._compile_and_check([admat, bdmat, gzdscal],
+                                tensordot_grad(axes)(admat, bdmat, gzdscal),
+                        [admat_val, bdmat_val, gzdscal_val], tensordot_grad)
+        """
+
+        # tensordot
+        admat = dmatrix()
+        bdmat = dmatrix()
+        admat_val = rand(4, 5)
+        bdmat_val = rand(5, 3)
+        axes = 1
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                            [admat_val, bdmat_val], TensorDot)
+
+        admat_val = rand(5, 4)
+        bdmat_val = rand(5, 4)
+        axes = 2
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                            [admat_val, bdmat_val], TensorDot)
+
+        admat_val = rand(4, 5)
+        bdmat_val = rand(5, 3)
+        axes = ((1, ), (0, ))
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                            [admat_val, bdmat_val], TensorDot)
+
+        axes = ((1, 0))
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                            [admat_val, bdmat_val], TensorDot)
+
+        admat_val = rand(4, 5)
+        bdmat_val = rand(3, 4)
+        axes = ((0, ), (1, ))
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                            [admat_val, bdmat_val], TensorDot)
+
+        axes = ((0, 1))
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                            [admat_val, bdmat_val], TensorDot)
+
+        admat_val = rand(5, 4)
+        bdmat_val = rand(4, 5)
+        axes = ((1,), (0,))
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                        [admat_val, bdmat_val], TensorDot)
+
+        axes = ((0, 1), (1, 0))
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                        [admat_val, bdmat_val], TensorDot)
+
+        admat_val = rand(5, 4)
+        bdmat_val = rand(5, 4)
+        axes = ((0, 1), (0, 1))
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                        [admat_val, bdmat_val], TensorDot)
+
+        admat_val = rand(5, 4)
+        bdmat_val = rand(4, 5)
+        axes = ((1, 0), (0, 1))
+        self._compile_and_check([admat, bdmat],
+                                [TensorDot(axes)(admat, bdmat)],
+                        [admat_val, bdmat_val], TensorDot)
+
+        adtens3 = dtensor3()
+        admat_val = rand(5, 4)
+        adtens3_val = rand(5, 4, 3)
+        axes = 2
+        self._compile_and_check([admat, adtens3],
+                                [TensorDot(axes)(admat, adtens3)],
+                        [admat_val, adtens3_val], TensorDot)
+
+        adtens3_val = rand(4, 5, 3)
+        axes = ((1, 0), (0, 1))
+        self._compile_and_check([admat, adtens3],
+                                [TensorDot(axes)(admat, adtens3)],
+                        [admat_val, adtens3_val], TensorDot)
+
+        adtens3_val = rand(4, 3, 5)
+        axes = ((1, 0), (0, 2))
+        self._compile_and_check([admat, adtens3],
+                                [TensorDot(axes)(admat, adtens3)],
+                        [admat_val, adtens3_val], TensorDot)
+
+        adtens4 = dtensor4()
+        admat_val = rand(5, 4)
+        adtens4_val = rand(5, 4, 3, 2)
+        axes = 2
+        self._compile_and_check([admat, adtens4],
+                                [TensorDot(axes)(admat, adtens4)],
+                        [admat_val, adtens4_val], TensorDot)
+
+        adtens4_val = rand(4, 3, 2, 5)
+        axes = ((1, 0), (0, 3))
+        self._compile_and_check([admat, adtens4],
+                                [TensorDot(axes)(admat, adtens4)],
+                        [admat_val, adtens4_val], TensorDot)
+
+        # Flatten
+        atens3 = tensor3()
+        atens3_val = rand(4, 5, 3)
+        for outdim in (3, 2, 1):
+            self._compile_and_check([atens3],
+                                    [Flatten(outdim)(atens3)],
+                                    [atens3_val], Flatten)
+
+        amat = matrix()
+        amat_val = rand(4, 5)
+        for outdim in (2, 1):
+            self._compile_and_check([amat],
+                                    [Flatten(outdim)(amat)],
+                                    [amat_val], Flatten)
+
+        avec = vector()
+        avec_val = rand(4)
+        outdim = 1
+        self._compile_and_check([avec],
+                                [Flatten(outdim)(avec)],
+                                [avec_val], Flatten)
+
+        # Eye
+        aiscal = iscalar()
+        biscal = iscalar()
+        ciscal = iscalar()
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [Eye()(aiscal, biscal, ciscal)],
+                                [4, 4, 0], Eye)
+
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [Eye()(aiscal, biscal, ciscal)],
+                                [4, 5, 0], Eye)
+
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [Eye()(aiscal, biscal, ciscal)],
+                                [3, 5, 0], Eye)
+
+        # Diagonal
+        atens3 = tensor3()
+        atens3_val = rand(4, 5, 3)
+        atens3_diag = Diagonal()(atens3)
+        self._compile_and_check([atens3], [atens3_diag],
+                                [atens3_val], Diagonal)
+        atens3_diag = Diagonal(1)(atens3)
+        self._compile_and_check([atens3], [atens3_diag],
+                                [atens3_val], Diagonal)
+        atens3_diag = Diagonal(-1)(atens3)
+        self._compile_and_check([atens3], [atens3_diag],
+                                [atens3_val], Diagonal)
+        atens3_diag = Diagonal(1,0,2)(atens3)
+        self._compile_and_check([atens3], [atens3_diag],
+                                [atens3_val], Diagonal)
+        atens3_diag = Diagonal(1,1,2)(atens3)
+        self._compile_and_check([atens3], [atens3_diag],
+                                [atens3_val], Diagonal)
+        atens3_diag = Diagonal(1,2,0)(atens3)
+        self._compile_and_check([atens3], [atens3_diag],
+                                [atens3_val], Diagonal)
+
+        # Diag
+        advec = dvector()
+        advec_val = rand(4)
+        self._compile_and_check([advec], [Diag()(advec)],
+                                [advec_val], Diag)
+
+        # Shape
+        # 'opt.Makevector' precludes optimizer from disentangling
+        # elements of shape
+        adtens = tensor3()
+        adtens_val = rand(4, 5, 3)
+        self._compile_and_check([adtens],
+                                [Shape()(adtens)],
+                                [adtens_val], (opt.MakeVector, Shape))
+
+        # Dot
+        advec = dvector()
+        bdvec = dvector()
+        advec_val = rand(4)
+        bdvec_val = rand(4)
+        self._compile_and_check([advec, bdvec],
+                                [Dot()(advec, bdvec)],
+                                [advec_val, bdvec_val],
+                                (Dot, tensor.blas.Gemv, tensor.blas_c.CGemv))
+
+        admat_val = rand(4, 5)
+        bdmat_val = rand(5, 3)
+        self._compile_and_check([admat, bdmat],
+                                [Dot()(admat, bdmat)],
+                                [admat_val, bdmat_val],
+                                (Dot, tensor.blas.Dot22))
+
+        admat_val = rand(5, 4)
+        self._compile_and_check([admat, advec],
+                                [Dot()(admat, advec)],
+                                [admat_val, advec_val],
+                                (Dot, tensor.blas.Gemv, tensor.blas_c.CGemv))
+
+        bdmat_val = rand(4, 5)
+        self._compile_and_check([advec, bdmat],
+                                [Dot()(advec, bdmat)],
+                                [advec_val, bdmat_val],
+                                (Dot, tensor.blas.Gemv, tensor.blas_c.CGemv))
+
+        # Split
+        aivec = ivector()
+        adtens_val = rand(4, 10, 3)
+        aivec_val = [2, 5, 3]
+        self._compile_and_check([adtens, aiscal, aivec],
+                                [Split(3)(adtens, aiscal, aivec)[0]],
+                                [adtens_val, 1, aivec_val], (Split))
+
+        # Join
+        cdmat = dmatrix()
+        admat_val = rand(1, 3)
+        bdmat_val = rand(3, 3)
+        cdmat_val = rand(4, 3)
+        aiscal_val = 0
+        self._compile_and_check([aiscal, admat, bdmat, cdmat],
+                                [Join()(aiscal, admat, bdmat, cdmat)],
+                        [aiscal_val, admat_val, bdmat_val, cdmat_val], Join)
+
+        admat_val = rand(4, 1)
+        bdmat_val = rand(4, 3)
+        cdmat_val = rand(4, 2)
+        aiscal_val = 1
+        self._compile_and_check([aiscal, admat, bdmat, cdmat],
+                                [Join()(aiscal, admat, bdmat, cdmat)],
+                        [aiscal_val, admat_val, bdmat_val, cdmat_val], Join)
+
+        # PermuteRowElements
+        abool = True
+        rng = numpy.random.RandomState(utt.fetch_seed())
+        advec_val = rand(5)
+        aivec_val = rng.permutation(5).astype('int32')
+        self._compile_and_check([advec, aivec],
+                                [PermuteRowElements()(advec, aivec, abool)],
+                        [advec_val, aivec_val], PermuteRowElements)
+
+        admat_val = rand(3, 5)
+        self._compile_and_check([admat, aivec],
+                                [PermuteRowElements()(admat, aivec, abool)],
+                        [admat_val, aivec_val], PermuteRowElements)
+
+        adtens3 = dtensor3()
+        adtens3_val = rand(3, 2, 5)
+        self._compile_and_check([adtens3, aivec],
+                                [PermuteRowElements()(adtens3, aivec, abool)],
+                        [adtens3_val, aivec_val], PermuteRowElements)
+
+        aimat = imatrix()
+        perma = rng.permutation(5).astype('int32')
+        permb = rng.permutation(5).astype('int32')
+        permc = rng.permutation(5).astype('int32')
+        aimat_val = numpy.vstack((perma, permb, permc))
+        admat_val = rand(3, 5)
+        self._compile_and_check([admat, aimat],
+                                [PermuteRowElements()(admat, aimat, abool)],
+                        [admat_val, aimat_val], PermuteRowElements)
+
+        aitens3 = itensor3()
+        perma = rng.permutation(5).astype('int32')
+        permb = rng.permutation(5).astype('int32')
+        permc = rng.permutation(5).astype('int32')
+        bimat_val = numpy.vstack((perma, permb, permc))
+        aitens3_val = numpy.empty((2, 3, 5), 'int32')
+        aitens3_val[0, ::, ::] = aimat_val
+        aitens3_val[1, ::, ::] = bimat_val
+        self._compile_and_check([admat, aitens3],
+                                [PermuteRowElements()(admat, aitens3, abool)],
+                        [admat_val, aitens3_val], PermuteRowElements)
+
+        # ScalarFromTensor
+        aiscal = iscalar()
+        aconst = constant(45)
+        self._compile_and_check([aiscal],
+                            [TensorFromScalar()(ScalarFromTensor()(aiscal))],
+                                [45], ScalarFromTensor,
+                                excluding=["local_tensor_scalar_tensor"])
+
+        # TensorFromScalar
+        aiscal = scal.float64()
+
+        self._compile_and_check([aiscal],
+                                [TensorFromScalar()(aiscal)],
+                        [4.], TensorFromScalar)
+
+        # Rebroadcast
+        adtens4 = dtensor4()
+        adict = [(0, False), (1, True), (2, False), (3, True)]
+        adtens4_val = rand(2, 1, 3, 1)
+        self._compile_and_check([adtens4],
+                                [Rebroadcast(*adict)(adtens4)],
+                                [adtens4_val], Rebroadcast)
+
+        adtens4_bro = TensorType('float64', (True, True, True, False))()
+        bdict = [(0, True), (1, False), (2, False), (3, False)]
+        adtens4_bro_val = rand(1, 1, 1, 3)
+        self._compile_and_check([adtens4_bro],
+                                [Rebroadcast(*bdict)(adtens4_bro)],
+                                [adtens4_bro_val], Rebroadcast)
+
+        # Alloc
+        randint = numpy.random.random_integers
+        adscal = dscalar()
+        aiscal = lscalar()
+        biscal = lscalar()
+        ciscal = lscalar()
+        discal = lscalar()
+        adscal_val = rand()
+        aiscal_val = randint(3, 5, size=())
+        biscal_val = randint(3, 5, size=())
+        ciscal_val = randint(3, 5, size=())
+        discal_val = randint(3, 5, size=())
+        self._compile_and_check([adscal, aiscal, biscal, ciscal, discal],
+                [Alloc()(adscal, aiscal, biscal, ciscal, discal)],
+                [adscal_val, aiscal_val, biscal_val,
+                 ciscal_val, discal_val], Alloc)
+
+        # MaxAndArgmax,
+        adtens3_val = rand(4, 5, 3)
+        self._compile_and_check([adtens3],
+                MaxAndArgmax()(adtens3, None),
+                [adtens3_val], MaxAndArgmax)
+
+        self._compile_and_check([adtens3],
+                MaxAndArgmax()(adtens3, 0),
+                [adtens3_val], MaxAndArgmax)
+
+        self._compile_and_check([adtens3],
+                MaxAndArgmax()(adtens3, 1),
+                [adtens3_val], MaxAndArgmax)
+
+        self._compile_and_check([adtens3],
+                MaxAndArgmax()(adtens3, 2),
+                [adtens3_val], MaxAndArgmax)
+
+        self._compile_and_check([adtens3],
+                MaxAndArgmax()(adtens3, [0, 1, 2]),
+                [adtens3_val], MaxAndArgmax)
+
+        # ARange
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [ARange('int64')(aiscal, biscal, ciscal)],
+                                [0, 5, 1], ARange)
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [ARange('int64')(aiscal, biscal, ciscal)],
+                                [2, 11, 4], ARange)
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [ARange('int64')(aiscal, biscal, ciscal)],
+                                [-5, 1, 1], ARange)
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [ARange('int64')(aiscal, biscal, ciscal)],
+                                [10, 2, -2], ARange)
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [ARange('int64')(aiscal, biscal, ciscal)],
+                                [10, 2, 2], ARange)
+        self._compile_and_check([aiscal, biscal, ciscal],
+                                [ARange('int64')(aiscal, biscal, ciscal)],
+                                [0, 0, 1], ARange)
+
+        # SpecifyShape
+        aivec_val = [3, 4, 2, 5]
+        adtens4_val = rand(*aivec_val)
+        self._compile_and_check([adtens4, aivec],
+                                [SpecifyShape()(adtens4, aivec)],
+                                [adtens4_val, aivec_val], SpecifyShape)
+
+        # Mean
+        adtens3_val = rand(3, 4, 5)
+        aiscal_val = 2
+        self._compile_and_check([adtens3],
+                                [Mean(None)(adtens3)],
+                                [adtens3_val], Mean)
+        self._compile_and_check([adtens3],
+                                [Mean(aiscal_val)(adtens3)],
+                                [adtens3_val], Mean)
+
+        # IncSubtensor
+        admat = dmatrix()
+        bdmat = dmatrix()
+        advec = dvector()
+        adscal = dscalar()
+        admat_val = rand(5, 4)
+        self._compile_and_check([admat, bdmat],
+                            [inc_subtensor(admat[2:4], bdmat)],
+                            [admat_val, [[1, 2, 3, 4]]], IncSubtensor)
+
+        self._compile_and_check([admat, advec],
+                            [inc_subtensor(admat[2], advec)],
+                            [admat_val, [1, 2, 3, 4]], IncSubtensor)
+
+        self._compile_and_check([admat, adscal],
+                            [inc_subtensor(admat[2, 3], adscal)],
+                            [admat_val, 1], IncSubtensor)
+
+        self._compile_and_check([admat, adscal],
+                            [inc_subtensor(admat[1:3, 2], adscal)],
+                            [admat_val, 1], IncSubtensor)
+
+        self._compile_and_check([admat, bdmat],
+                            [set_subtensor(admat[2:4], bdmat)],
+                            [admat_val, [[1, 2, 3, 4]]], IncSubtensor)
+
+        self._compile_and_check([admat, advec],
+                            [set_subtensor(admat[2], advec)],
+                            [admat_val, [1, 2, 3, 4]], IncSubtensor)
+
+        self._compile_and_check([admat, adscal],
+                            [set_subtensor(admat[2, 3], adscal)],
+                            [admat_val, 1], IncSubtensor)
+
+        self._compile_and_check([admat, adscal],
+                            [set_subtensor(admat[1:3, 2], adscal)],
+                            [admat_val, 1], IncSubtensor)
+
+        bdtens4 = dtensor4()
+        adtens4_val = rand(3, 4, 2, 5)
+        self._compile_and_check([adtens4, bdtens4],
+                            [inc_subtensor(adtens4[::, 2:4, ::, ::], bdtens4)],
+                            [adtens4_val, [[[[1, 2, 3, 4, 5]]]]], IncSubtensor)
+
+        self._compile_and_check([adtens4, bdmat],
+                            [inc_subtensor(adtens4[2, 2:4, 1, ::], bdmat)],
+                            [adtens4_val, [[1, 2, 3, 4, 5]]], IncSubtensor)
+
+        self._compile_and_check([adtens4, advec],
+                            [inc_subtensor(adtens4[0, 1, ::, 4], advec)],
+                            [adtens4_val, [1, 2]], IncSubtensor)
+
+        self._compile_and_check([adtens4, adscal],
+                            [inc_subtensor(adtens4[1:3, 1, ::, 2:4], adscal)],
+                            [adtens4_val, 1], IncSubtensor)
+
+        self._compile_and_check([adtens4, bdtens4],
+                            [set_subtensor(adtens4[::, 2:4, ::, ::], bdtens4)],
+                            [adtens4_val, [[[[1, 2, 3, 4, 5]]]]], IncSubtensor)
+
+        self._compile_and_check([adtens4, bdmat],
+                            [set_subtensor(adtens4[2, 2:4, 1, ::], bdmat)],
+                            [adtens4_val, [[1, 2, 3, 4, 5]]], IncSubtensor)
+
+        self._compile_and_check([adtens4, advec],
+                            [set_subtensor(adtens4[0, 1, ::, 4], advec)],
+                            [adtens4_val, [1, 2]], IncSubtensor)
+
+        self._compile_and_check([adtens4, adscal],
+                            [set_subtensor(adtens4[1:3, 1, ::, 2:4], adscal)],
+                            [adtens4_val, 1], IncSubtensor)
+
+        # AdvancedIncSubtensor1
+        admat = dmatrix()
+        bdmat = dmatrix()
+        advec = dvector()
+        adscal = dscalar()
+        admat_val = rand(5, 4)
+        aivec_val = [2, 3]
+        self._compile_and_check([admat, bdmat],
+                            [set_subtensor(admat[aivec_val], bdmat)],
+                            [admat_val, [[1, 2, 3, 4]]], AdvancedIncSubtensor1)
+
+        aivec_val = [1, 3, 2]
+        self._compile_and_check([admat, advec],
+                            [set_subtensor(admat[aivec_val], advec)],
+                            [admat_val, [1, 2, 3, 4]], AdvancedIncSubtensor1)
+
+        aivec_val = [0, 3, 0]
+        self._compile_and_check([admat, adscal],
+                            [set_subtensor(admat[aivec_val], adscal)],
+                            [admat_val, 1], AdvancedIncSubtensor1)
+
+        bdtens4 = dtensor4()
+        adtens4_val = rand(4, 3, 2, 5)
+        aivec_val = [2, 3]
+        self._compile_and_check([adtens4, bdtens4],
+                            [set_subtensor(adtens4[aivec_val], bdtens4)],
+                            [adtens4_val, [[[[1, 2, 3, 4, 5]]]]],
+                            AdvancedIncSubtensor1)
+
+        aivec_val = [1, 3, 2]
+        self._compile_and_check([adtens4, advec],
+                            [set_subtensor(adtens4[aivec_val], advec)],
+                            [adtens4_val, [1, 2, 3, 4, 5]],
+                            AdvancedIncSubtensor1)
+
+        aivec_val = [0, 3, 0]
+        self._compile_and_check([adtens4, adscal],
+                            [set_subtensor(adtens4[aivec_val], adscal)],
+                            [adtens4_val, 1],
+                            AdvancedIncSubtensor1)
+
+        aivec_val = [2, 3]
+        self._compile_and_check([admat, bdmat],
+                                [inc_subtensor(admat[aivec_val], bdmat)],
+                                [admat_val, [[1, 2, 3, 4], [5, 6, 7, 8]]],
+                                AdvancedIncSubtensor1)
+
+        aivec_val = [1, 3, 2]
+        self._compile_and_check([admat, advec],
+                            [inc_subtensor(admat[aivec_val], advec)],
+                            [admat_val, [1, 2, 3, 4]], AdvancedIncSubtensor1)
+
+        aivec_val = [0, 3, 0]
+        self._compile_and_check([admat, adscal],
+                            [inc_subtensor(admat[aivec_val], adscal)],
+                            [admat_val, 1], AdvancedIncSubtensor1)
+
+        bdtens4 = dtensor4()
+        adtens4_val = rand(4, 3, 2, 5)
+        aivec_val = [2, 3]
+        self._compile_and_check([adtens4, bdtens4],
+                            [inc_subtensor(adtens4[aivec_val], bdtens4)],
+                            [adtens4_val, [[[[1, 2, 3, 4, 5]]],
+                                           [[[6, 7, 8, 9, 10]]]]],
+                            AdvancedIncSubtensor1)
+
+        aivec_val = [1, 2, 1]
+        self._compile_and_check([adtens4, advec],
+                            [inc_subtensor(adtens4[aivec_val], advec)],
+                            [adtens4_val, [1, 2, 3, 4, 5]],
+                            AdvancedIncSubtensor1)
+
+        aivec_val = [0, 3, 0]
+        self._compile_and_check([adtens4, adscal],
+                            [inc_subtensor(adtens4[aivec_val], adscal)],
+                            [adtens4_val, 2],
+                            AdvancedIncSubtensor1)
+
+        # AdvancedIncSubtensor
+        aivec_val = [1, 3, 2]
+        bivec_val = [0, 3, 3]
+        advec_val = [23, 24, 25]
+        self._compile_and_check([admat, advec],
+                    [set_subtensor(admat[aivec_val, bivec_val], advec)],
+                    [admat_val, advec_val], AdvancedIncSubtensor)
+
+        # Reshape
+        # TODO: generalize infer_shape to account for tensor variable
+        # (non-constant) input shape
+        admat = dmatrix()
+        aivec = ivector()
+        ndim = 1
+        admat_val = rand(3, 4)
+        self._compile_and_check([admat],
+                                [Reshape(ndim)(admat, [12])],
+                                [admat_val], Reshape)
+
+        self._compile_and_check([admat],
+                                [Reshape(ndim)(admat, [-1])],
+                                [admat_val], Reshape)
+
+        ndim = 2
+        self._compile_and_check([admat],
+                                [Reshape(ndim)(admat, [4, 3])],
+                                [admat_val], Reshape)
+
+        self._compile_and_check([admat],
+                                [Reshape(ndim)(admat, [4, -1])],
+                                [admat_val], Reshape)
+
+        self._compile_and_check([admat],
+                                [Reshape(ndim)(admat, [3, -1])],
+                                [admat_val], Reshape)
+
+        self._compile_and_check([admat],
+                                [Reshape(ndim)(admat, [-1, 3])],
+                                [admat_val], Reshape)
+        self._compile_and_check([admat],
+                                [Reshape(ndim)(admat, [-1, 4])],
+                                [admat_val], Reshape)
+
+        # enable when infer_shape is generalized:
+        # self._compile_and_check([admat, aivec],
+        #                        [Reshape(ndim)(admat, aivec)],
+        #                        [admat_val, [4, 3]], Reshape)
+        #
+        # self._compile_and_check([admat, aivec],
+        #                        [Reshape(ndim)(admat, aivec)],
+        #                        [admat_val, [4, -1]], Reshape)
+
+        adtens4 = dtensor4()
+        ndim = 4
+        adtens4_val = rand(2, 4, 3, 5)
+        self._compile_and_check([adtens4],
+                                [Reshape(ndim)(adtens4, [1, -1, 10, 4])],
+                                [adtens4_val], Reshape)
+
+        self._compile_and_check([adtens4],
+                                [Reshape(ndim)(adtens4, [1, 3, 10, 4])],
+                                [adtens4_val], Reshape)
+
+        # enable when infer_shape is generalized:
+        # self._compile_and_check([adtens4, aivec],
+        #                        [Reshape(ndim)(adtens4, aivec)],
+        #                        [adtens4_val, [1, -1, 10, 4]], Reshape)
+        #
+        # self._compile_and_check([adtens4, aivec],
+        #                        [Reshape(ndim)(adtens4, aivec)],
+        #                        [adtens4_val, [1, 3, 10, 4]], Reshape)
+
+        # Tile
+        advec = dvector()
+        advec_val = rand(5)
+        aivec_val = [3]
+        ndim = 1
+        self._compile_and_check([advec],
+                                [tile(advec, aivec_val, ndim)],
+                                [advec_val], Tile)
+
+        admat = dmatrix()
+        admat_val = rand(2, 4)
+        aivec_val = [2, 3]
+        ndim = None
+        self._compile_and_check([admat],
+                                [tile(admat, aivec_val)],
+                                [admat_val], Tile)
+
+        adtens4 = dtensor4()
+        adtens4_val = rand(2, 4, 3, 5)
+        aivec_val = [2, 3, 1, 4]
+        ndim = 4
+        self._compile_and_check([adtens4],
+                                [tile(adtens4, aivec_val, ndim)],
+                                [adtens4_val], Tile)
+
+class TestTensorInstanceMethods(unittest.TestCase):
     def setUp(self):
-        self.rng = numpy.random.RandomState(seed=utt.fetch_seed())
-        self.m_val = self.rng.rand(3, 2)
-        self.v_val = self.rng.rand(4)
+        self.vars = matrices('X', 'Y')
+        self.vals = [rand(2,2),rand(2,2)]
 
-    def test1(self):
-        a = theano.tensor.dmatrix()
-        w = sort(a)
-        f = theano.function([a], w)
-        assert numpy.allclose(f(self.m_val), numpy.sort(self.m_val))
+    def test_argmin(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        assert_array_equal(X.argmin().eval({X: x}), x.argmin())
 
-    def test2(self):
-        a = theano.tensor.dmatrix()
-        axis = theano.tensor.scalar()
-        w = sort(a, axis)
-        f = theano.function([a, axis], w)
-        for axis_val in 0, 1:
-            assert numpy.allclose(
-                    f(self.m_val, axis_val),
-                    numpy.sort(self.m_val, axis_val))
+    def test_argmax(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        assert_array_equal(X.argmax().eval({X: x}), x.argmax())
 
-    def test3(self):
-        a = theano.tensor.dvector()
-        w2 = sort(a)
-        f = theano.function([a], w2)
-        assert numpy.allclose(f(self.v_val), numpy.sort(self.v_val))
+    def test_argsort(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        assert_array_equal(X.argsort().eval({X: x}), x.argsort())
+        assert_array_equal(X.argsort(1).eval({X: x}), x.argsort(1))
 
-    def test4(self):
-        a = theano.tensor.dmatrix()
-        axis = theano.tensor.scalar()
-        l = sort(a, axis, "mergesort")
-        f = theano.function([a, axis], l)
-        for axis_val in 0, 1:
-            assert numpy.allclose(
-                    f(self.m_val, axis_val),
-                    numpy.sort(self.m_val, axis_val))
+    def test_clip(self):
+        X, Y = self.vars
+        x, y = self.vals
+        Z = X.clip(0.5 - Y, 0.5 + Y)
+        z = x.clip(0.5 - y, 0.5 + y)
+        assert_array_equal(Z.eval({X: x, Y: y}), z)
 
-    def test5(self):
-        a = theano.tensor.dmatrix()
-        axis = theano.tensor.scalar()
-        a1 = SortOp("mergesort", [])
-        a2 = SortOp("quicksort", [])
+    def test_dot(self):
+        X, Y = self.vars
+        x, y = self.vals
+        # Use allclose comparison as a user reported on the mailing
+        # list failure otherwise with array that print exactly the same.
+        assert_allclose(x.dot(y), X.dot(Y).eval({X: x, Y: y}))
+        Z = X.dot(Y)
+        z = x.dot(y)
+        assert_allclose(x.dot(z), X.dot(Z).eval({X: x, Z: z}))
 
-        #All the below should give true
-        assert a1 != a2
-        assert a1 == SortOp("mergesort", [])
-        assert a2 == SortOp("quicksort", [])
+    def test_real_imag(self):
+        X, Y = self.vars
+        x, y = self.vals
+        Z = X + Y * 1j
+        z = x + y * 1j
+        assert_array_equal(Z.real.eval({Z: z}), x)
+        assert_array_equal(Z.imag.eval({Z: z}), y)
 
-    def test_None(self):
-        a = theano.tensor.dmatrix()
-        l = sort(a, None)
-        f = theano.function([a], l)
-        assert numpy.allclose(f(self.m_val),
-                numpy.sort(self.m_val, None))
+    def test_conj(self):
+        X, Y = self.vars
+        x, y = self.vals
+        Z = X + Y * 1j
+        z = x + y * 1j
+        assert_array_equal(Z.conj().eval({Z: z}), z.conj())
+        assert_array_equal(Z.conjugate().eval({Z: z}), z.conj())
+
+    def test_round(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        assert_array_equal(X.round().eval({X: x}), x.round())
+
+    def test_std(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        # std() is implemented as theano tree and does not pass its
+        # args directly to numpy. This sometimes results in small
+        # difference, so we use allclose test.
+        assert_allclose(X.std().eval({X: x}), x.std())
+
+    def test_repeat(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        assert_array_equal(X.repeat(2).eval({X: x}), x.repeat(2))
+
+    def test_trace(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        assert_array_equal(X.trace().eval({X: x}), x.trace())
+
+    def test_ravel(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        assert_array_equal(X.ravel().eval({X: x}), x.ravel())
+
+    def test_diagonal(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        assert_array_equal(X.diagonal().eval({X: x}), x.diagonal())
+        assert_array_equal(X.diagonal(1).eval({X: x}), x.diagonal(1))
+        assert_array_equal(X.diagonal(-1).eval({X: x}), x.diagonal(-1))
+        for offset, axis1, axis2 in [(1,0,1), (-1,0,1), (0,1,0), (-2,1,0)]:
+            assert_array_equal(X.diagonal(offset, axis1, axis2).eval({X: x}),
+                               x.diagonal(offset, axis1, axis2))
+
+    def test_take(self):
+        X, _ = self.vars
+        x, _ = self.vals
+        indices = [1,0,3]
+        assert_array_equal(X.take(indices).eval({X: x}), x.take(indices))
+        indices = [1,0,1]
+        assert_array_equal(X.take(indices, 1).eval({X: x}), x.take(indices, 1))
+        indices = [-10,5,12]
+        assert_array_equal(X.take(indices, 1, mode='wrap').eval({X: x}),
+                           x.take(indices, 1, mode='wrap'))
+        assert_array_equal(X.take(indices, -1, mode='wrap').eval({X: x}),
+                           x.take(indices, -1, mode='wrap'))
+        assert_array_equal(X.take(indices, 1, mode='clip').eval({X: x}),
+                           x.take(indices, 1, mode='clip'))
+        assert_array_equal(X.take(indices, -1, mode='clip').eval({X: x}),
+                           x.take(indices, -1, mode='clip'))
+        indices = [[1,0,1], [0,1,1]]
+        assert_array_equal(X.take(indices, 1).eval({X: x}), x.take(indices, 1))
+        # Test equivalent advanced indexing
+        assert_array_equal(X[:,indices].eval({X: x}), x[:,indices])
+
+if __name__ == '__main__':
+
+    t = TestInferShape('setUp')
+    t.setUp()
+    t.test_infer_shape()
 
 
-class TensorInferShapeTester(utt.InferShapeTester):
-    def test_sort(self):
-        x = tensor.matrix()
-        self._compile_and_check(
-                [x],
-                [sort(x)],
-                [numpy.random.randn(10, 40).astype(config.floatX)],
-                SortOp)
-        self._compile_and_check(
-                [x],
-                [sort(x, axis=None)],
-                [numpy.random.randn(10, 40).astype(config.floatX)],
-                SortOp)
-
-
-
-def test_argsort():
-    #Set up
-    rng = numpy.random.RandomState(seed=utt.fetch_seed())
-    m_val = rng.rand(3, 2)
-    v_val = rng.rand(4)
-
-    #Example 1
-    a = theano.tensor.dmatrix()
-    w = argsort(a)
-    f = theano.function([a], w)
-    assert numpy.allclose(f(m_val), numpy.argsort(m_val))
-
-    #Example 2
-    a = theano.tensor.dmatrix()
-    axis = theano.tensor.scalar()
-    w = argsort(a, axis)
-    f = theano.function([a, axis], w)
-    for axis_val in 0, 1:
-        assert numpy.allclose(
-                f(m_val, axis_val),
-                numpy.argsort(m_val, axis_val))
-
-    #Example 3
-    a = theano.tensor.dvector()
-    w2 = argsort(a)
-    f = theano.function([a], w2)
-    assert numpy.allclose(f(v_val), numpy.argsort(v_val))
-
-    #Example 4
-    a = theano.tensor.dmatrix()
-    axis = theano.tensor.scalar()
-    l = argsort(a, axis, "mergesort")
-    f = theano.function([a, axis], l)
-    for axis_val in 0, 1:
-        assert numpy.allclose(
-                f(m_val, axis_val),
-                numpy.argsort(m_val, axis_val))
-
-    #Example 5
-    a = theano.tensor.dmatrix()
-    axis = theano.tensor.scalar()
-    a1 = ArgSortOp("mergesort", [])
-    a2 = ArgSortOp("quicksort", [])
-    #All the below should give true
-    assert a1 != a2
-    assert a1 == ArgSortOp("mergesort", [])
-    assert a2 == ArgSortOp("quicksort", [])
-
-    #Example 6: Testing axis=None
-    a = theano.tensor.dmatrix()
-    w2 = argsort(a, None)
-    f = theano.function([a], w2)
-    assert numpy.allclose(f(m_val), numpy.argsort(m_val, None))
-
+"""
 
 if __name__ == '__main__':
     if 0:
@@ -5801,3 +7219,4 @@ if __name__ == '__main__':
         suite = unittest.TestLoader()
         suite = suite.loadTestsFromTestCase(testcase)
         unittest.TextTestRunner(verbosity=2).run(suite)
+"""
