@@ -13,14 +13,19 @@ scal = scalar # somewhere scalar gets reassigned to be a function
 
 from theano.gof.python25 import all, any
 
-from theano.sandbox.cuda import GpuOp, device_properties
-from theano.sandbox.cuda.type import CudaNdarrayType
-from theano.sandbox.cuda import filter as type_support_filter
+try:
+    # We must be able to import this file to create the full doc when nvcc
+    # is not available
+    from theano.sandbox.cuda import filter as type_support_filter
+    from theano.sandbox.cuda import device_properties
+    import cuda_ndarray
+except ImportError:
+    pass
 
+from theano.sandbox.cuda import GpuOp
+from theano.sandbox.cuda.type import CudaNdarrayType
 from theano.sandbox.cuda.elemwise import NaiveAlgo
 
-
-import cuda_ndarray
 
 _logger_name = 'theano.sandbox.cuda.basic_ops'
 _logger = logging.getLogger(_logger_name)
@@ -89,6 +94,7 @@ class HostFromGpu(GpuOp):
         out = outputs[0]
         fail = sub['fail']
         return """
+        Py_XDECREF(%(out)s);
         %(out)s = (PyArrayObject *) CudaNdarray_CreateArrayObj(%(inp)s);
         if(!%(out)s){
             %(fail)s;
@@ -96,7 +102,7 @@ class HostFromGpu(GpuOp):
         """ % locals()
 
     def c_code_cache_version(self):
-        return (1,)
+        return (2,)
 host_from_gpu = HostFromGpu()
 
 
@@ -782,6 +788,10 @@ class GpuCAReduce(GpuOp):
             print >> sio, """
                     ,CudaNdarray_HOST_STRIDES(%(z)s)[%(i)s]
             """ % locals()
+
+        shapes_format = "shape=(%s)" % ",".join(["%d"] * node.inputs[0].ndim)
+        shapes_data = ",".join(["CudaNdarray_HOST_DIMS(%(x)s)[%(i)s]" % locals()
+                                for i in range(node.inputs[0].ndim)])
         print >> sio, """
                     );
             CNDA_THREAD_SYNC;
@@ -790,14 +800,16 @@ class GpuCAReduce(GpuOp):
             {
                 PyErr_Format(PyExc_RuntimeError,
                     "Cuda error: %%s: %%s."
-                    " (grid: %%i x %%i; block: %%i x %%i x %%i)\\n",
+                    " (grid: %%i x %%i; block: %%i x %%i x %%i)"
+                    " %(shapes_format)s \\n",
                     "kernel_reduce_%(pattern)s_%(name)s",
                     cudaGetErrorString(sts),
                     n_blocks.x,
                     n_blocks.y,
                     n_threads.x,
                     n_threads.y,
-                    n_threads.z);
+                    n_threads.z,
+                    %(shapes_data)s);
                 %(fail)s;
             }
         """ % locals()
@@ -1382,7 +1394,7 @@ class GpuCAReduce(GpuOp):
             dim3 n_threads(
                     std::min(CudaNdarray_HOST_DIMS(%(x)s)[0],
                             NUM_VECTOR_OP_THREADS_PER_BLOCK));
-            dim3 n_blocks(CudaNdarray_HOST_DIMS(%(x)s)[1]);
+            dim3 n_blocks(std::min(CudaNdarray_HOST_DIMS(%(x)s)[1], NUM_VECTOR_OP_BLOCKS));
             while (n_blocks.x * (n_blocks.y+1) <= NUM_VECTOR_OP_BLOCKS && n_blocks.y <= CudaNdarray_HOST_DIMS(%(x)s)[2])
             {
                 n_blocks.y += 1;
@@ -1559,7 +1571,7 @@ class GpuCAReduce(GpuOp):
         """ % locals()
 
     def c_code_cache_version_apply(self, node):
-        version = [6]  # the version corresponding to the c code in this Op
+        version = [7]  # the version corresponding to the c code in this Op
 
         # now we insert versions for the ops on which we depend...
         scalar_node = Apply(self.scalar_op,
@@ -2448,7 +2460,7 @@ class GpuIncSubtensor(tensor.IncSubtensor, GpuOp):
 
             :return: C code expression to make a copy of x
 
-            Base class uses PyArrayObject *, subclasses may override for
+            Base class uses `PyArrayObject *`, subclasses may override for
             different types of arrays.
         """
         return """(CudaNdarray*) CudaNdarray_Copy(%(x)s)""" % locals()
@@ -2685,8 +2697,8 @@ class GpuAlloc(GpuOp):
                 raise TypeError('Shape arguments must be integers', s)
             # if s is constant 1, then we're broadcastable in that dim
             try:
-                const_shp = tensor.get_constant_value(s)
-            except TypeError:
+                const_shp = tensor.get_scalar_constant_value(s)
+            except tensor.NotScalarConstantError:
                 const_shp = None
             bcast.append(numpy.all(1 == const_shp))
         otype = CudaNdarrayType(dtype='float32', broadcastable=bcast)
@@ -2730,7 +2742,7 @@ class GpuAlloc(GpuOp):
                 %(fail)s;
             }
         }
-        if (%(memset_0)s)
+        if (%(memset_0)s && CudaNdarray_is_c_contiguous(%(out)s))
         {
             if (cudaSuccess != cudaMemset(%(out)s->devdata, 0,
                                           CudaNdarray_SIZE(%(out)s) * 4))
@@ -2762,7 +2774,7 @@ class GpuAlloc(GpuOp):
         return [None for i in inputs]
 
     def c_code_cache_version(self):
-        return (5,)
+        return (7,)
 
     def do_constant_folding(self, node):
         for client in node.outputs[0].clients:
@@ -2796,6 +2808,13 @@ class GpuContiguous(GpuOp):
     def __hash__(self):
         return hash(type(self))
 
+    def grad(self, inputs, dout):
+
+        x, = inputs
+        dout, = dout
+
+        return [dout]
+
     def __str__(self):
         return self.__class__.__name__
 
@@ -2817,7 +2836,8 @@ class GpuContiguous(GpuOp):
             } else if ((NULL == %(z)s)""" % locals()
         for i in xrange(len(node.inputs[0].type.broadcastable)):
             str += "\n|| (CudaNdarray_HOST_DIMS(%(input)s)[%(i)s] != CudaNdarray_HOST_DIMS(%(z)s)[%(i)s])" % locals()
-        str += """)
+        str += """
+                || !CudaNdarray_is_c_contiguous(%(z)s))
             {
                 Py_XDECREF(%(z)s);
                 %(z)s = (CudaNdarray*)CudaNdarray_Copy(%(input)s);
@@ -2833,57 +2853,9 @@ class GpuContiguous(GpuOp):
         return str
 
     def c_code_cache_version(self):
-        return (1,)
+        return (2,)
 
 gpu_contiguous = GpuContiguous()
-
-
-def tensordot(a, b, axes=2):
-    """
-    Implementation of tensordot that reduces to a regular matrix product.
-
-    This allows tensordot to be GPU accelerated, which isn't possible
-    with the default Theano implementation (which is just a wrapper
-    around numpy.tensordot). based on code from Tijmen Tieleman's gnumpy
-    http://www.cs.toronto.edu/~tijmen/gnumpy.html
-    """
-    if numpy.isscalar(axes):
-        # if 'axes' is a number of axes to multiply and sum over (trailing axes
-        # of a, leading axes of b), we can just reshape and use dot.
-        outshape = tensor.concatenate([a.shape[:a.ndim - axes],
-                                      b.shape[axes:]])
-        outndim = a.ndim + b.ndim - (2 * axes)
-        a_reshaped = a.reshape((tensor.prod(a.shape[:a.ndim - axes]),
-                                tensor.prod(a.shape[a.ndim - axes:])))
-        b_reshaped = b.reshape((tensor.prod(b.shape[:axes]),
-                                tensor.prod(b.shape[axes:])))
-        assert a_reshaped.ndim == 2
-        assert b_reshaped.ndim == 2
-        # We use _dot22 here because:
-        #   - we know that the number of dimensions will be 2
-        #   - it makes it possible for the computation to be moved to GPU
-        # When cuda.opt.local_gpu_tensordot is applied, it is too late
-        # for the usual blas optimizations to take place.
-        # This will change if we decide to get rid of tensor.tensordot,
-        # and always use this version.
-        return tensor.blas._dot22(a_reshaped, b_reshaped).reshape(
-                outshape, ndim=outndim)
-    elif len(axes) == 2:
-        # if 'axes' is a pair of axis lists, we first shuffle the axes of a and
-        # b to reduce this to the first case (note the recursion).
-        a_other, b_other = tuple(axes[0]), tuple(axes[1])
-        num_axes = len(a_other)
-        a_order = (tuple(x for x in tuple(xrange(a.ndim)) if x not in a_other)
-                + a_other)
-        b_order = (b_other
-                + tuple(x for x in tuple(xrange(b.ndim)) if x not in b_other))
-        a_shuffled = a.dimshuffle(a_order)
-        b_shuffled = b.dimshuffle(b_order)
-        return tensordot(a_shuffled, b_shuffled, num_axes)
-    else:
-        raise ValueError(
-            "Axes should be scalar valued or a list/tuple of len 2.",
-            axes)
 
 
 # Those are predifined CudaNdarrayType as done in tensor.basic

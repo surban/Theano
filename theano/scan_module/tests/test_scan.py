@@ -2820,7 +2820,7 @@ class T_Scan(unittest.TestCase):
         o, _ = theano.scan(lambda_fn, x)
         o2, _ = theano.scan(lambda x_t: x_t + 2, x)
 
-        f = theano.function([x], [o, o2])
+        f = theano.function([x], [o, o2], mode=mode_with_opt)
         vx = numpy.zeros((50,), dtype=theano.config.floatX)
         vx[23] = 4
         out, out2 = f(vx)
@@ -3310,6 +3310,32 @@ class T_Scan(unittest.TestCase):
         # disconnected gradient a non disconnected type was returned
         tensor.grad((m * m2).sum(), v)
 
+    def test_disconnected_gradient2(self):
+        v = tensor.vector('v')
+        m = tensor.matrix('m')
+        u0 = tensor.zeros((7,))
+
+        [u, m2], _ = theano.scan(lambda x, u: [x+u, u+v],
+                                 sequences=m,
+                                 outputs_info=[u0, None])
+        # This used to raise an exception with older versions becasue
+        # scan could not detect the connection between `m2` and `x`
+        tensor.grad(m2.sum(), m)
+
+    def test_dot_optimization(self):
+        A = tensor.matrix('A')
+        B = tensor.matrix('B')
+        S, _ = theano.scan(lambda x1,x2, u: u + tensor.dot(x1,x2),
+                           sequences = [A.dimshuffle(0, 1, 'x'),
+                                        B.dimshuffle(0,'x', 1)],
+                           outputs_info=[tensor.zeros_like(A)])
+        f = theano.function([A,B], S.owner.inputs[0][-1])
+        rng = numpy.random.RandomState(utt.fetch_seed())
+        vA = rng.uniform(size=(5, 5)).astype(theano.config.floatX)
+        vB = rng.uniform(size=(5, 5)).astype(theano.config.floatX)
+        assert numpy.allclose(f(vA, vB), numpy.dot(vA.T, vB))
+
+
     def test_pregreedy_optimizer(self):
         W = tensor.zeros((5, 4))
         bv = tensor.zeros((5,))
@@ -3321,7 +3347,8 @@ class T_Scan(unittest.TestCase):
             lambda x: tensor.dot(tensor.dot(x, W) + bh_t, W.T) + bv_t,
             outputs_info=v,
             n_steps=2)
-        theano.function([v], chain)(numpy.zeros((3, 5)))
+        theano.function([v], chain)(numpy.zeros((3, 5),
+                                                dtype=theano.config.floatX))
 
     def test_savemem_does_not_duplicate_number_of_scan_nodes(self):
         var = tensor.ones(())

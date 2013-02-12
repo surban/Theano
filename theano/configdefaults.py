@@ -6,6 +6,7 @@ from theano.configparser import (
         AddConfigVar, BoolParam, ConfigParam, EnumStr, IntParam,
         TheanoConfigParser)
 from theano.misc.cpucount import cpuCount
+from theano.misc.windows import call_subprocess_Popen
 
 _logger = logging.getLogger('theano.configdefaults')
 
@@ -99,8 +100,16 @@ enum = EnumStr("g++", "")
 # in an unusual Python 2.4.4 Windows environment with the default stdin=None.
 dummy_stdin = open(os.devnull)
 try:
-    subprocess.Popen('g++', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                     stdin=dummy_stdin.fileno())
+    try:
+        rc = call_subprocess_Popen(['g++', '-v'], stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   stdin=dummy_stdin).wait()
+    except OSError:
+        rc = 1
+finally:
+    dummy_stdin.close()
+    del dummy_stdin
+if rc == 0:
     # Keep the default linker the same as the one for the mode FAST_RUN
     AddConfigVar('linker',
                  ("Default linker used if the theano flags mode is Mode "
@@ -108,7 +117,7 @@ try:
                  EnumStr('cvm', 'c|py', 'py', 'c', 'c|py_nogc', 'c&py',
                      'vm', 'vm_nogc', 'cvm_nogc'),
                  in_c_key=False)
-except OSError:
+else:
     # g++ is not present, linker should default to python only
     AddConfigVar('linker',
                  ("Default linker used if the theano flags mode is Mode "
@@ -121,7 +130,6 @@ except OSError:
             'degraded.')
     enum = EnumStr("")
 
-del dummy_stdin
 AddConfigVar('cxx',
              "The c++ compiler to use. Currently only g++ is"
              " supported. But supporting more is easy if someone want this."
@@ -290,7 +298,7 @@ AddConfigVar('warn.ignore_bug_before',
               "bugs found after that version. "
               "Warning for specific bugs can be configured with specific "
               "[warn] flags."),
-             EnumStr('None', 'all', '0.3', '0.4', '0.4.1', '0.5', '0.6',
+             EnumStr('0.5', 'None', 'all', '0.3', '0.4', '0.4.1', '0.6',
                      allow_override=False),
              in_c_key=False)
 
@@ -411,6 +419,11 @@ else:
                         " OMP_NUM_THREADS to the number of threads you"
                         " want theano to use.")
     default_openmp = count > 1
+
+# Disable it by default for now as currently only the ConvOp support
+# it And this cause slow down by default as we do not disable it for
+# too small convolution.
+default_openmp = False
 
 AddConfigVar('openmp',
              "Allow (or not) parallel computation on the CPU with OpenMP. "

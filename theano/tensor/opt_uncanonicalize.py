@@ -28,20 +28,14 @@ Also, we should make the fgraph refuse optimization that break the canonization 
 import logging
 _logger = logging.getLogger('theano.tensor.opt')
 
-import operator
-import itertools
-import sys
-
-import theano
 from theano import gof
 from elemwise import CAReduce
 import basic as T
 
-from theano.gof.python25 import any, all
 from theano.gof.opt import Optimizer
 from theano.gof import InconsistencyError, toolbox
 
-from basic import get_constant_value
+from basic import get_scalar_constant_value, NotScalarConstantError
 from theano.tensor.opt import register_uncanonicalize
 from theano import scalar as scal
 
@@ -64,8 +58,8 @@ class MaxAndArgmaxOptimizer(Optimizer):
                 if node.op == T._max_and_argmax:
                     if len(node.outputs[1].clients)==0:
                         try:
-                            axis=get_constant_value(node.inputs[1])
-                        except (ValueError, TypeError), e:
+                            axis=get_scalar_constant_value(node.inputs[1])
+                        except NotScalarConstantError:
                             return False
 
                         new = CAReduce(scal.maximum,axis)(node.inputs[0])

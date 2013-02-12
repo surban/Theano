@@ -3,8 +3,8 @@ import errno
 import os
 import platform
 import re
-import subprocess
 import shutil
+import subprocess
 import sys
 import textwrap
 
@@ -13,6 +13,7 @@ import numpy
 import theano
 from theano.configparser import config, AddConfigVar, ConfigParam, StrParam
 from theano.gof.utils import flatten
+from theano.misc.windows import call_subprocess_Popen
 
 # Using the dummy file descriptors below is a workaround for a crash
 # experienced in an unusual Python 2.4.4 Windows environment with the default
@@ -21,8 +22,10 @@ dummy_in = open(os.devnull)
 dummy_err = open(os.devnull, 'w')
 p = None
 try:
-    p = subprocess.Popen(['g++', '-dumpversion'], stdout=subprocess.PIPE,
-                         stdin=dummy_in.fileno(), stderr=dummy_err.fileno())
+    p = call_subprocess_Popen(['g++', '-dumpversion'],
+                              stdout=subprocess.PIPE,
+                              stdin=dummy_in.fileno(),
+                              stderr=dummy_err.fileno())
     p.wait()
     gcc_version_str = p.stdout.readline().strip()
 except OSError:
@@ -39,7 +42,7 @@ compiledir_format_dict = {"platform": platform.platform(),
                           "numpy_version": numpy.__version__,
                           "gxx_version": gcc_version_str.replace(" ", "_"),
                          }
-compiledir_format_keys = ", ".join(compiledir_format_dict.keys())
+compiledir_format_keys = ", ".join(sorted(compiledir_format_dict.keys()))
 default_compiledir_format =\
                     "compiledir_%(platform)s-%(processor)s-%(python_version)s"
 

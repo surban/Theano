@@ -141,7 +141,12 @@ def std_fgraph(input_specs, output_specs, accept_inplace = False):
                 break
 
     # We need to protect all immutable inputs from inplace operations.
-    fgraph.attach_feature(Supervisor(input for spec, input in zip(input_specs, inputs) if not (spec.mutable or (hasattr(fgraph, 'destroyers') and fgraph.destroyers(input)))))
+    fgraph.attach_feature(
+            Supervisor(input
+                for spec, input in zip(input_specs, inputs)
+                if not (spec.mutable or
+                        (hasattr(fgraph, 'destroyers') and
+                            fgraph.destroyers(input)))))
 
     # If named nodes are replaced, keep the name
     for feature in std_fgraph.features:
@@ -281,6 +286,7 @@ class Function(object):
         self.maker = maker
         self.profile = None  # reassigned in FunctionMaker.create
         self.trust_input = False  # If True, we don't check the input parameter
+        self.name = None
 
         # We will be popping stuff off this `containers` object.  It is a copy.
         containers = list(self.input_storage)
@@ -494,7 +500,7 @@ class Function(object):
                     except Exception, e:
                         function_name = "theano function"
                         if self.name:
-                            function_name += 'with name "' + self.name + '" '
+                            function_name += ' with name "' + self.name + '" '
                         #end if
                         e.args = tuple(["Bad input argument to " + function_name +
                                         " at index %d(0-based)" % i] +

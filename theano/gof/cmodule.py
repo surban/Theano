@@ -22,6 +22,7 @@ import theano
 from theano.gof.utils import flatten
 from theano.configparser import config
 from theano.gof.cc import hash_from_code
+from theano.misc.windows import call_subprocess_Popen
 
 # we will abuse the lockfile mechanism when reading and writing the registry
 import compilelock
@@ -890,10 +891,11 @@ class ModuleCache(object):
             hash_key = hash(key)
             key_data = None
             # We have never seen this key before.
-            # Acquire lock before creating things in the compile cache,
-            # to avoid that other processes remove the compile dir while it
-            # is still empty.
-            compilelock.get_lock()
+
+            # We acquire the lock later only if we were able to
+            # generate C code. Otherwise, we would take the lock for ops
+            # that have only a perform().
+            lock_taken = False
             # This try/finally block ensures that the lock is released once we
             # are done writing in the cache file or after raising an exception.
             try:
@@ -917,6 +919,16 @@ class ModuleCache(object):
                     # The first compilation step is to yield the source code.
                     src_code = compile_steps.next()
                     module_hash = get_module_hash(src_code, key)
+
+                    # The op has c_code, so take the lock.
+                    compilelock.get_lock()
+                    lock_taken = True
+
+                    if not os.path.exists(location):
+                        # Temporary fix, we should make sure it don't
+                        # get deleted by the clear*() fct.
+                        os.makedirs(path)
+
                     if module_hash in self.module_hash_to_key_data:
                         _logger.debug("Duplicated module! Will re-use the "
                                 "previous one")
@@ -1038,7 +1050,7 @@ class ModuleCache(object):
 
             finally:
                 # Release lock if needed.
-                if not keep_lock:
+                if not keep_lock and lock_taken:
                     compilelock.release_lock()
 
             # Update map from key to module name for all keys associated to
@@ -1460,7 +1472,7 @@ class GCC_compiler(object):
         #cxxflags.append("-D NPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION")
         numpy_ver = [int(n) for n in numpy.__version__.split('.')[:2]]
 
-        # numpy 1.7 deprecated the following macro but the didn't
+        # numpy 1.7 deprecated the following macro but the new one didn't
         # existed in the past
         if bool(numpy_ver < [1, 7]):
             cxxflags.append("-D NPY_ARRAY_ENSURECOPY=NPY_ENSURECOPY")
@@ -1474,7 +1486,7 @@ class GCC_compiler(object):
     @staticmethod
     def compile_str(module_name, src_code, location=None,
                     include_dirs=None, lib_dirs=None, libs=None,
-                    preargs=None):
+                    preargs=None, py_module=True):
         """
         :param module_name: string (this has been embedded in the src_code
 
@@ -1494,10 +1506,14 @@ class GCC_compiler(object):
 
         :param preargs: a list of extra compiler arguments
 
+        :param py_module: if False, compile to a shared library, but do not
+            import it as a Python module.
+
         :returns: dynamically-imported python module of the compiled code.
+            (unless py_module is False, in that case returns None.)
         """
         #TODO: Do not do the dlimport in this function
-        
+
         if not theano.config.cxx:
             raise MissingGXX("g++ not available! We can't compile c code.")
 
@@ -1592,7 +1608,7 @@ class GCC_compiler(object):
             print >> sys.stderr, ' '.join(cmd)
 
         try:
-            p = subprocess.Popen(cmd, stderr=subprocess.PIPE)
+            p = call_subprocess_Popen(cmd, stderr=subprocess.PIPE)
             compile_stderr = p.communicate()[1]
         except Exception:
             # An exception can occur e.g. if `g++` is not found.
@@ -1619,9 +1635,10 @@ class GCC_compiler(object):
             # Print errors just below the command line.
             print compile_stderr
 
-        #touch the __init__ file
-        file(os.path.join(location, "__init__.py"), 'w').close()
-        return dlimport(lib_filename)
+        if py_module:
+            #touch the __init__ file
+            file(os.path.join(location, "__init__.py"), 'w').close()
+            return dlimport(lib_filename)
 
 
 def icc_module_compile_str(*args):

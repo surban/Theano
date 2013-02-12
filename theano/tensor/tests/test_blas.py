@@ -5,6 +5,7 @@ import sys
 import theano.tensor as T
 from theano import tensor
 from theano.gof.python25 import product as itertools_product
+from theano.gof.python25 import any
 from theano.printing import pp
 
 import numpy
@@ -14,7 +15,6 @@ from numpy import (arange, array, common_type, complex64, complex128, float32,
 from numpy.testing import assert_array_almost_equal
 #from numpy.testing import dec
 #from numpy.testing.noseclasses import KnownFailureTest
-
 from theano.tensor.blas import (_dot22, _dot22scalar, res_is_a, _as_scalar,
                                 _is_real_matrix, _gemm_canonicalize,
                                 _factor_canonicalized, Gemm, Gemv,
@@ -259,8 +259,8 @@ class t_gemm(TestCase):
 
     def test_destroy_map4(self):
         """test that dot args can be aliased"""
-        Z = shared(self.rand(2, 2))
-        A = shared(self.rand(2, 2))
+        Z = shared(self.rand(2, 2), name='Z')
+        A = shared(self.rand(2, 2), name='A')
         one = T.constant(1.0).astype(Z.dtype)
         f = inplace_func([], gemm_inplace(Z, one, A, A, one))
         f()
@@ -479,7 +479,7 @@ def just_gemm(i, o, ishapes=[(4, 3), (3, 5), (4, 5), (), ()],
                 on_unused_input='ignore')
         nb_gemm = 0
         for node in f.maker.fgraph.apply_nodes:
-            if node.op == T.dot:
+            if isinstance(node.op, T.Dot):
                 raise Failure('dot not changed to gemm_inplace in graph')
             if node.op == _dot22:
                 raise Failure('_dot22 not changed to gemm_inplace in graph')
@@ -562,7 +562,7 @@ def test_gemm_opt_double_gemm():
         f = inplace_func([Param(ii, mutable=True) for ii in i], o,
                 mode='FAST_RUN', on_unused_input='ignore')
         for node in f.maker.fgraph.apply_nodes:
-            if node.op == T.dot:
+            if isinstance(node.op, T.Dot):
                 raise Failure('dot in graph')
             if node.op == _dot22:
                 raise Failure('_dot22 in graph')
@@ -857,7 +857,8 @@ def test_dot22():
             if dtype1 == dtype2:
                 assert _dot22 in [x.op for x in topo], (dtype1, dtype2)
             else:
-                assert T.dot in [x.op for x in topo], (dtype1, dtype2)
+                check = [isinstance(x.op, T.Dot) for x in topo]
+                assert any(check), (dtype1, dtype2)
             rng = numpy.random.RandomState(unittest_tools.fetch_seed())
 
             def cmp(a_shp, b_shp):
@@ -919,8 +920,8 @@ def test_dot22scalar():
                             assert _dot22 in ops, (dtype1, dtype2,
                                                    dtype3, dtype4)
                         else:
-                            assert T.dot in ops, (dtype1, dtype2,
-                                                  dtype3, dtype4)
+                            check = [isinstance(o, T.Dot) for o in ops]
+                            assert any(check), (dtype1, dtype2, dtype3, dtype4)
 
                     def cmp(a_shp, b_shp, c_shp, sqr_shp=(5, 5)):
                         av = rng.uniform(size=a_shp).astype(dtype1)
@@ -1601,6 +1602,13 @@ class TestGer(TestCase, unittest_tools.TestOptimizationMixin):
                 gemm_no_inplace(
                     self.A, self.a, self.x.dimshuffle(0, 'x'),
                     self.y.dimshuffle('x', 0), self.b(1.5)).owner)
+
+    def test_b_nonconst_does_not_triggers_ger(self):
+        """ test local_gemm_to_ger opt"""
+        assert not T.blas.local_gemm_to_ger.transform(
+                gemm_no_inplace(
+                    self.A, self.a, self.x.dimshuffle(0, 'x'),
+                    self.y.dimshuffle('x', 0), self.a).owner)
 
     def test_outer(self):
         f = self.function([self.x, self.y], T.outer(self.x, self.y))

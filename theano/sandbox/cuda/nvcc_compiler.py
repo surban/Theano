@@ -15,6 +15,7 @@ from theano.gof.cmodule import (std_libs, std_lib_dirs,
                                 std_include_dirs, dlimport,
                                 get_lib_extension, local_bitwidth)
 from theano.gof.python25 import any
+from theano.misc.windows import call_subprocess_Popen
 
 _logger = logging.getLogger("theano.sandbox.cuda.nvcc_compiler")
 _logger.setLevel(logging.WARN)
@@ -64,8 +65,9 @@ nvcc_version = None
 def is_nvcc_available():
     """Return True iff the nvcc compiler is found."""
     def set_version():
-        p = subprocess.Popen([nvcc_path, '--version'], stdout=subprocess.PIPE,
-                             stderr=subprocess.PIPE)
+        p = call_subprocess_Popen([nvcc_path, '--version'],
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.PIPE)
         p.wait()
         s = p.stdout.readlines()[-1].split(',')[1].strip().split()
         assert s[0] == 'release'
@@ -162,7 +164,7 @@ class NVCC_compiler(object):
     def compile_str(
             module_name, src_code,
             location=None, include_dirs=[], lib_dirs=[], libs=[], preargs=[],
-            rpaths=rpath_defaults):
+            rpaths=rpath_defaults, py_module=True):
         """:param module_name: string (this has been embedded in the src_code
         :param src_code: a complete c or c++ source listing for the module
         :param location: a pre-existing filesystem directory where the
@@ -176,8 +178,11 @@ class NVCC_compiler(object):
         :param preargs: a list of extra compiler arguments
         :param rpaths: list of rpaths to use with Xlinker.
                        Defaults to `rpath_defaults`.
+        :param py_module: if False, compile to a shared library, but
+            do not import as a Python module.
 
         :returns: dynamically-imported python module of the compiled code.
+            (unless py_module is False, in that case returns None.)
 
         :note 1: On Windows 7 with nvcc 3.1 we need to compile in the
                  real directory Otherwise nvcc never finish.
@@ -253,10 +258,15 @@ class NVCC_compiler(object):
         # compute capability? '--gpu-architecture=compute_13',
         # '--gpu-code=compute_13',
         #nvcc argument
-        preargs1 = [pa for pa in preargs
-                    if pa.startswith('-O') or
-                    pa.startswith('--maxrregcount=') or
-                    pa.startswith('-arch=')]
+        preargs1 = []
+        for pa in preargs:
+            for pattern in ['-O', '-arch=',
+                            '--fmad', '--ftz', '--maxrregcount',
+                            '--prec-div', '--prec-sqrt',  '--use_fast_math',
+                            '-fmad', '-ftz', '-maxrregcount',
+                            '-prec-div', '-prec-sqrt', '-use_fast_math']:
+                if pa.startswith(pattern):
+                    preargs1.append(pa)
         preargs2 = [pa for pa in preargs
                     if pa not in preargs1]  # other arguments
 
@@ -386,9 +396,10 @@ class NVCC_compiler(object):
             # this doesn't happen to my knowledge
             print >> sys.stderr, "DEBUG: nvcc STDOUT", nvcc_stdout
 
-        #touch the __init__ file
-        file(os.path.join(location, "__init__.py"), 'w').close()
-        return dlimport(lib_filename)
+        if py_module:
+            #touch the __init__ file
+            file(os.path.join(location, "__init__.py"), 'w').close()
+            return dlimport(lib_filename)
 
 
 def remove_python_framework_dir(cmd):

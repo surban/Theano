@@ -5,7 +5,7 @@
 """
 __docformat__ = "restructuredtext en"
 
-import time, copy, sys, copy_reg, gc, os
+import copy, sys, copy_reg, gc
 from itertools import izip
 from StringIO import StringIO
 
@@ -677,8 +677,13 @@ def _optcheck_fgraph(input_specs, output_specs, accept_inplace=False):
     inputs, outputs = gof.graph.clone(orig_inputs, orig_outputs)
     equivalence_tracker = _VariableEquivalenceTracker()
     fgraph = gof.fg.FunctionGraph(inputs, outputs,
-            #DestroyHandler is not needed because it is actually installed by an optimization
-            # after canonicalization.  This variables in a big speed gain.
+            # DestroyHandler may not be needed yet, as there is usually no
+            # inplace operation in the graph at this stage. DestroyHandler
+            # will be installed by an optimization after canonicalization,
+            # before the inplace operations are applied.
+            # This results in a big speed gain.
+            # If inplace operations are accepted and present, however,
+            # DestroyHandler will be inserted in the loop below.
             #features=[equivalence_tracker, gof.DestroyHandler(do_imports_on_attach=False)])
             features=[equivalence_tracker])
 
@@ -687,6 +692,13 @@ def _optcheck_fgraph(input_specs, output_specs, accept_inplace=False):
             if getattr(node.op, 'destroy_map', None):
                 raise TypeError("Graph must not contain inplace operations",
                                 node)
+    else:
+        # However, if some inplace ops are already in the graph,
+        # DestroyHandler is needed for the Supervisor below to work correctly.
+        for node in fgraph.apply_nodes:
+            if getattr(node.op, 'destroy_map', None):
+                fgraph.attach_feature(gof.DestroyHandler())
+                break
 
     # We need to protect all immutable inputs from inplace operations.
     fgraph.attach_feature(Supervisor(input for spec, input in zip(input_specs, inputs)
@@ -1597,7 +1609,11 @@ class _Linker(gof.link.LocalLinker):
         active_order = self.schedule(fgraph) # an ordering of just the active nodes
         active_order_set = set(active_order)
 
-        no_recycling = self.no_recycling
+        # Disable no_recycling, in order to be able to use
+        # check_preallocated_output even on the output of the function.
+        # no_recycling in individual thunks does not really matter, since
+        # the function's outputs will always be freshly allocated.
+        no_recycling = []
 
         input_storage, output_storage, storage_map = link.map_storage(
             fgraph, order, input_storage_, output_storage_)
@@ -1692,11 +1708,14 @@ class _Linker(gof.link.LocalLinker):
                     _logger.warn("We won't check the perform function of node '%s' but we will check its make_thunk function" % node)
                     thunks_py[-1] = thunk
 
-        if no_recycling is True:
-            no_recycling = storage_map.values()
-            no_recycling = utils.difference(no_recycling, input_storage)
+        # Use self.no_recycling (that was passed in accept()) to always
+        # use new memory storage when it is needed, in particular for the
+        # function's outputs. no_recycling_map will be used in f() below.
+        if self.no_recycling is True:
+            no_recycling_map = storage_map.values()
+            no_recycling_map = utils.difference(no_recycling_map, input_storage)
         else:
-            no_recycling = [storage_map[r] for r in no_recycling
+            no_recycling_map = [storage_map[r] for r in self.no_recycling
                             if r not in fgraph.inputs]
 
         # Precompute some things for storage pre-allocation
@@ -1717,7 +1736,7 @@ class _Linker(gof.link.LocalLinker):
             _logger.debug("starting a DebugMode call")
             _logger.debug("self.maker.mode.check_preallocated_output: %s",
                     self.maker.mode.check_preallocated_output)
-            for x in no_recycling:
+            for x in no_recycling_map:
                 x[0] = None
 
             # nest all this in try-finally to put storage *back* into

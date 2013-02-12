@@ -55,11 +55,14 @@ nosetests.
 
 
 import cPickle
+import datetime
 import os
 import subprocess
 import sys
-import datetime
+import time
+
 import theano
+from theano.misc.windows import call_subprocess_Popen
 
 
 def main(stdout=None, stderr=None, argv=None, theano_nose=None,
@@ -100,7 +103,7 @@ def main(stdout=None, stderr=None, argv=None, theano_nose=None,
                 theano_nose = path
                 break
     if theano_nose is None:
-        raise Exception("Not able to find theano_nose")
+        raise Exception("Not able to find theano-nose")
     if batch_size is None:
         batch_size = 100
     stdout_backup = sys.stdout
@@ -260,11 +263,11 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
                                                  n_tests + 1)):
                 # Print the test we will start in the raw log to help
                 # debug tests that are too long.
-                f_rawlog.write("\nWill run test #%d %s\n" % (test_id,
-                                                         data["ids"][test_id]))
+                f_rawlog.write("\n%s Will run test #%d %s\n" % (
+                    time.ctime(), test_id, data["ids"][test_id]))
                 f_rawlog.flush()
 
-                proc = subprocess.Popen(
+                proc = call_subprocess_Popen(
                     ([python, theano_nose, '-v', '--with-id']
                     + [str(test_id)] + argv +
                      ['--disabdocstring']),

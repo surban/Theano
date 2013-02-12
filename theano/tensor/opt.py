@@ -33,7 +33,7 @@ from theano.gof.opt import (Optimizer, pre_constant_merge,
                             pre_greedy_local_optimizer)
 from theano.gof.opt import merge_optimizer
 from theano.gof import toolbox, DestroyHandler
-from basic import get_constant_value, ShapeError
+from basic import get_scalar_constant_value, ShapeError, NotScalarConstantError
 
 
 theano.configparser.AddConfigVar('on_shape_error',
@@ -92,10 +92,10 @@ def scalarconsts_rest(inputs):
     nonconsts = []
     for i in inputs:
         try:
-            v = get_constant_value(i)
+            v = get_scalar_constant_value(i)
             consts.append(v)
             origconsts.append(i)
-        except Exception:
+        except NotScalarConstantError:
             nonconsts.append(i)
     return consts, origconsts, nonconsts
 
@@ -125,7 +125,13 @@ def broadcast_like(value, template, fgraph, dtype=None):
                                      if rval.broadcastable[i]
             and not template.broadcastable[i]])
     assert rval.type.dtype == dtype
-    assert rval.type.broadcastable == template.broadcastable
+
+    if rval.type.broadcastable != template.broadcastable:
+        raise AssertionError("rval.type.broadcastable is " +
+                str(rval.type.broadcastable) +
+                " but template.broadcastable is" +
+                str(template.broadcastable))
+
     return rval
 
 
@@ -322,15 +328,15 @@ def local_0_dot_x(node):
     y = node.inputs[1]
     replace = False
     try:
-        if get_constant_value(x) == 0:
+        if get_scalar_constant_value(x) == 0:
             replace = True
-    except TypeError:
+    except NotScalarConstantError:
         pass
 
     try:
-        if get_constant_value(y) == 0:
+        if get_scalar_constant_value(y) == 0:
             replace = True
-    except TypeError:
+    except NotScalarConstantError:
         pass
 
     if replace:
@@ -410,7 +416,8 @@ def local_lift_transpose_through_dot(node):
     if not (isinstance(node.op, T.DimShuffle)
             and node.op.new_order == (1, 0)):
         return False
-    if not (node.inputs[0].owner and node.inputs[0].owner.op == T.dot):
+    if not (node.inputs[0].owner
+            and isinstance(node.inputs[0].owner.op, T.Dot)):
         return False
     x, y = node.inputs[0].owner.inputs
 
@@ -806,7 +813,21 @@ class ShapeFeature(object):
                         "for a variable with %d dimensions." % (
                         len(s), r.ndim))
 
-            shape_vars = [self.unpack(s_i) for s_i in s]
+            shape_vars = []
+            for i in range(r.ndim):
+                if (hasattr(r.type, 'broadcastable') and
+                    r.type.broadcastable[i]):
+                    shape_vars.append(self.lscalar_one)
+                else:
+                    shape_vars.append(self.unpack(s[i]))
+            assert all([not hasattr(r.type, "broadcastable") or
+                        not r.type.broadcastable[i] or
+                        # The two following comparison are a speed optimization
+                        # But we never timed this speed optimization!
+                        self.lscalar_one.equals(shape_vars[i]) or
+                        self.lscalar_one.equals(
+                            T.extract_constant(shape_vars[i]))
+                        for i in range(r.ndim)])
             self.shape_of[r] = tuple(shape_vars)
             for sv in shape_vars:
                 self.shape_of_reverse_index.setdefault(sv, set()).add(r)
@@ -848,6 +869,15 @@ class ShapeFeature(object):
                 merged_shape.append(r_shape[i])
             else:
                 merged_shape.append(other_shape[i])
+        assert all([(not hasattr(r.type, "broadcastable") or
+                     not r.type.broadcastable[i] and
+                     not other_r.type.broadcastable[i]) or
+                    # The two following comparison are a speed optimization
+                    # But we never timed this speed optimization!
+                    self.lscalar_one.equals(merged_shape[i]) or
+                    self.lscalar_one.equals(
+                        T.extract_constant(merged_shape[i]))
+                    for i in range(r.ndim)])
         self.shape_of[r] = tuple(merged_shape)
         for sv in self.shape_of[r]:
             self.shape_of_reverse_index.setdefault(sv, set()).add(r)
@@ -864,6 +894,13 @@ class ShapeFeature(object):
                 new_shape.append(self.unpack(s_i))
             else:
                 new_shape.append(s_j)
+        assert all([not hasattr(r.type, "broadcastable") or
+                    not r.type.broadcastable[i] or
+                    # The two following comparison are a speed optimization
+                    # But we never timed this speed optimization!
+                    self.lscalar_one.equals(new_shape[i]) or
+                    self.lscalar_one.equals(T.extract_constant(new_shape[i]))
+                    for i in range(r.ndim)])
         self.shape_of[r] = tuple(new_shape)
         for sv in self.shape_of[r]:
             self.shape_of_reverse_index.setdefault(sv, set()).add(r)
@@ -1177,9 +1214,12 @@ def local_subtensor_make_vector(node):
             elif isinstance(idx, Variable):
                 # if it is a constant we can do something with it
                 try:
-                    v = get_constant_value(idx)
+                    v = get_scalar_constant_value(idx)
+                    if isinstance(v, numpy.integer):
+                        # Python 2.4 wants to index only with Python integers
+                        v = int(v)
                     return [x.owner.inputs[v]]
-                except Exception:
+                except NotScalarConstantError:
                     pass
             else:
                 # it is a slice of ints and/or Variables
@@ -1315,13 +1355,13 @@ def local_remove_useless_assert(node):
         cond = []
         for c in node.inputs[1:]:
             try:
-                const = get_constant_value(c)
+                const = get_scalar_constant_value(c)
 
                 if 0 != const.ndim or const == 0:
                     #Should we raise an error here? How to be sure it
                     #is not catched?
                     cond.append(c)
-            except TypeError:
+            except NotScalarConstantError:
                 cond.append(c)
 
         if len(cond) == 0:
@@ -1477,7 +1517,7 @@ def local_upcast_elemwise_constant_inputs(node):
                 else:
                     try:
                         # works only for scalars
-                        cval_i = get_constant_value(i)
+                        cval_i = get_scalar_constant_value(i)
                         if all(i.broadcastable):
                             new_inputs.append(T.shape_padleft(
                                 T.cast(cval_i, output_dtype),
@@ -1490,7 +1530,7 @@ def local_upcast_elemwise_constant_inputs(node):
                                 *[shape_i(d)(i) for d in xrange(i.ndim)]))
                             #print >> sys.stderr, "AAA",
                             #*[Shape_i(d)(i) for d in xrange(i.ndim)]
-                    except TypeError:
+                    except NotScalarConstantError:
                         #for the case of a non-scalar
                         if isinstance(i, T.TensorConstant):
                             new_inputs.append(T.cast(i, output_dtype))
@@ -1550,8 +1590,8 @@ def local_useless_subtensor(node):
 
             length_pos = shape_of[node.inputs[0]][pos]
             try:
-                length_pos_data = get_constant_value(length_pos)
-            except TypeError:
+                length_pos_data = get_scalar_constant_value(length_pos)
+            except NotScalarConstantError:
                 pass
 
             if isinstance(idx.stop, int):
@@ -2032,9 +2072,9 @@ def local_incsubtensor_of_allocs(node):
         y = node.inputs[1]
         replace = False
         try:
-            if get_constant_value(y) == 0:
+            if get_scalar_constant_value(y) == 0:
                 replace = True
-        except TypeError:
+        except NotScalarConstantError:
             pass
 
         if replace:
@@ -2059,13 +2099,13 @@ def local_setsubtensor_of_allocs(node):
         replace_y = None
 
         try:
-            replace_x = get_constant_value(x)
-        except TypeError:
+            replace_x = get_scalar_constant_value(x)
+        except NotScalarConstantError:
             pass
 
         try:
-            replace_y = get_constant_value(y)
-        except TypeError:
+            replace_y = get_scalar_constant_value(y)
+        except NotScalarConstantError:
             pass
 
         if (replace_x == replace_y and
@@ -2253,24 +2293,24 @@ def local_mul_switch_sink(node):
         if i.owner and i.owner.op == T.switch:
             switch = i.owner
             try:
-                if get_constant_value(switch.inputs[1]) == 0.:
+                if get_scalar_constant_value(switch.inputs[1]) == 0.:
                     listmul = node.inputs[:idx] + node.inputs[idx + 1:]
                     fct = [T.switch(switch.inputs[0], 0,
                                     T.mul(*(listmul + [switch.inputs[2]])))]
                     fct[0].values_eq_approx = fct[
                         0].type.values_eq_approx_remove_nan
                     return fct
-            except TypeError:
+            except NotScalarConstantError:
                 pass
             try:
-                if get_constant_value(switch.inputs[2]) == 0.:
+                if get_scalar_constant_value(switch.inputs[2]) == 0.:
                     listmul = node.inputs[:idx] + node.inputs[idx + 1:]
                     fct = [T.switch(switch.inputs[0],
                                     T.mul(*(listmul + [switch.inputs[1]])), 0)]
                     fct[0].values_eq_approx = fct[
                         0].type.values_eq_approx_remove_nan
                     return fct
-            except TypeError:
+            except NotScalarConstantError:
                 pass
     return False
 
@@ -2295,22 +2335,22 @@ def local_div_switch_sink(node):
     if node.inputs[0].owner and node.inputs[0].owner.op == T.switch:
         switch = node.inputs[0].owner
         try:
-            if get_constant_value(switch.inputs[1]) == 0.:
+            if get_scalar_constant_value(switch.inputs[1]) == 0.:
                 fct = [T.switch(switch.inputs[0], 0,
                                 op(switch.inputs[2], node.inputs[1]))]
                 fct[0].values_eq_approx = fct[
                     0].type.values_eq_approx_remove_nan
                 return fct
-        except TypeError:
+        except NotScalarConstantError:
             pass
         try:
-            if get_constant_value(switch.inputs[2]) == 0.:
+            if get_scalar_constant_value(switch.inputs[2]) == 0.:
                 fct = [T.switch(switch.inputs[0],
                                 op(switch.inputs[1], node.inputs[1]), 0)]
                 fct[0].values_eq_approx = fct[
                     0].type.values_eq_approx_remove_nan
                 return fct
-        except TypeError:
+        except NotScalarConstantError:
             pass
     return False
 
@@ -2375,7 +2415,7 @@ if 0:
 
             def tmp(thing):
                 try:
-                    return T.get_constant_value(thing)
+                    return T.get_scalar_constant_value(thing)
                 except (TypeError, ValueError), e:
                     print e, thing.owner.inputs[0]
                     return None
@@ -2702,8 +2742,8 @@ class Canonizer(gof.LocalOptimizer):
         """
         if isinstance(v, Variable):
             try:
-                return get_constant_value(v)
-            except TypeError:
+                return get_scalar_constant_value(v)
+            except NotScalarConstantError:
                 return None
         else:
             return v
@@ -3204,15 +3244,15 @@ def local_sum_alloc(node):
             if (node.op.axis is None or
                 node.op.axis == tuple(range(input.ndim))):
                 try:
-                    val = get_constant_value(input)
+                    val = get_scalar_constant_value(input)
                     assert val.size == 1
                     val = val.reshape(1)[0] * T.mul(*shapes)
                     return [T.cast(val, dtype=node.outputs[0].dtype)]
-                except TypeError:
+                except NotScalarConstantError:
                     pass
             else:
                 try:
-                    val = get_constant_value(input)
+                    val = get_scalar_constant_value(input)
                     assert val.size == 1
                     val = val.reshape(1)[0]
                     to_prod = [shapes[i] for i in xrange(len(shapes))
@@ -3222,7 +3262,7 @@ def local_sum_alloc(node):
                     return [T.alloc(T.cast(val, dtype=node.outputs[0].dtype),
                                     *[shapes[i] for i in xrange(len(shapes))
                                       if i not in node.op.axis])]
-                except TypeError:
+                except NotScalarConstantError:
                     pass
 
 
@@ -3282,8 +3322,8 @@ def local_mul_zero(node):
 
         for i in node.inputs:
             try:
-                value = get_constant_value(i)
-            except TypeError:
+                value = get_scalar_constant_value(i)
+            except NotScalarConstantError:
                 continue
             #print 'MUL by value', value, node.inputs
             if N.all(value == 0):
@@ -3520,8 +3560,8 @@ def local_add_specialize(node):
         new_inputs = []
         for input in node.inputs:
             try:
-                y = get_constant_value(input)
-            except TypeError:
+                y = get_scalar_constant_value(input)
+            except NotScalarConstantError:
                 y = input
             if numpy.all(y == 0.0):
                 continue
@@ -3614,7 +3654,7 @@ def local_abs_merge(node):
             if i.owner and i.owner.op == T.abs_:
                 inputs.append(i.owner.inputs[0])
             else:
-                const = get_constant_value(i)
+                const = get_scalar_constant_value(i)
                 if not (const >= 0).all():
                     return False
                 inputs.append(i)
@@ -3880,9 +3920,9 @@ def _is_1(expr):
     """rtype bool. True iff expr is a constant close to 1
     """
     try:
-        v = get_constant_value(expr)
+        v = get_scalar_constant_value(expr)
         return numpy.allclose(v, 1)
-    except TypeError:
+    except NotScalarConstantError:
         return False
 
 
@@ -3890,9 +3930,9 @@ def _is_minus1(expr):
     """rtype bool. True iff expr is a constant close to -1
     """
     try:
-        v = get_constant_value(expr)
+        v = get_scalar_constant_value(expr)
         return numpy.allclose(v, -1)
-    except TypeError:
+    except NotScalarConstantError:
         return False
 
 #1+erf(x)=>erfc(-x)
@@ -4132,8 +4172,8 @@ def local_grad_log_erfc_neg(node):
         mul_neg = T.mul(*mul_inputs)
 
         try:
-            cst2 = get_constant_value(mul_neg.owner.inputs[0])
-        except TypeError:
+            cst2 = get_scalar_constant_value(mul_neg.owner.inputs[0])
+        except NotScalarConstantError:
             return False
 
         if len(mul_neg.owner.inputs) == 2:
@@ -4159,8 +4199,8 @@ def local_grad_log_erfc_neg(node):
 
             x = erfc_x
             try:
-                cst = get_constant_value(erfc_x.owner.inputs[0])
-            except TypeError:
+                cst = get_scalar_constant_value(erfc_x.owner.inputs[0])
+            except NotScalarConstantError:
                 return False
             if cst2 != -cst * 2:
                 return False

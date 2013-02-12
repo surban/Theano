@@ -32,11 +32,11 @@ from theano.tensor import (_shared, wvector, bvector, autocast_float_as,
         tensor4, permute_row_elements, Flatten, fmatrix, fscalars, grad,
         inplace, iscalar, matrix, minimum, matrices, maximum, mul, neq,
         Reshape, row, scalar, scalars, second, smallest, stack, sub, Tensor,
-        tensor_copy, tensordot, tensordot_grad,  TensorType, unbroadcast,
+        tensor_copy, tensordot, TensorType, unbroadcast,
         var, Join, shape, MaxAndArgmax, lscalar, zvector, exp,
-        get_constant_value, ivector, reshape, scalar_from_tensor, scal,
+        get_scalar_constant_value, ivector, reshape, scalar_from_tensor, scal,
         iscalars, arange,  dscalars, fvector, imatrix, numeric_grad,
-        opt, ComplexError, TensorDot, lvector, true_div, max, min, Split, roll,
+        opt, ComplexError, lvector, true_div, max, min, Split, roll,
         tile, patternbroadcast, Eye, Shape, Default, Dot, PermuteRowElements,
         ScalarFromTensor, TensorFromScalar, dtensor4, Rebroadcast, Alloc,
         dtensor3, SpecifyShape, Mean, IncSubtensor, AdvancedIncSubtensor1,
@@ -417,8 +417,8 @@ def makeTester(name, op, expected, checks=None, good=None, bad_build=None,
 
 
 def rand(*shape):
-    r = numpy.asarray(numpy.random.rand(*shape), dtype=config.floatX)
-    return r * 2 - 1
+    r = numpy.random.rand(*shape) * 2 - 1
+    return numpy.asarray(r, dtype=config.floatX)
 
 
 def rand_nonzero(shape, eps=3e-4):
@@ -2140,7 +2140,7 @@ class T_max_and_argmax(unittest.TestCase):
         cost = argmax(x, axis=0).sum()
         value_error_raised = False
         gx = grad(cost, x)
-        val = tensor.get_constant_value(gx)
+        val = tensor.get_scalar_constant_value(gx)
         assert val == 0.0
 
     def test_grad(self):
@@ -3625,43 +3625,44 @@ class T_Join_and_Split(unittest.TestCase):
 
     def test_roll(self):
 
-        # Test simple 1D example
-        a = self.shared(numpy.array([1, 2, 3, 4, 5, 6], dtype=self.floatX))
-        b = roll(a, 2)
-        want = numpy.array([5, 6, 1, 2, 3, 4])
-        out = theano.function([], b)()
+        for get_shift in [lambda a:a, lambda x:theano.shared(x)]:
+            # Test simple 1D example
+            a = self.shared(numpy.array([1, 2, 3, 4, 5, 6], dtype=self.floatX))
+            b = roll(a, get_shift(2))
+            want = numpy.array([5, 6, 1, 2, 3, 4])
+            out = theano.function([], b)()
 
-        assert (out == want).all()
+            assert (out == want).all()
 
-        # Test simple 1D example with explicit 0 axis
-        b = roll(a, -1, 0)
-        want = numpy.array([2, 3, 4, 5, 6, 1])
-        out = theano.function([], b)()
+            # Test simple 1D example with explicit 0 axis
+            b = roll(a, get_shift(-1), 0)
+            want = numpy.array([2, 3, 4, 5, 6, 1])
+            out = theano.function([], b)()
 
-        assert (out == want).all()
+            assert (out == want).all()
 
-        # Test 2D example - ensure that behavior matches numpy.roll behavior
-        a = self.shared(numpy.arange(21).reshape((3, 7)).astype(self.floatX))
-        b = roll(a, -2, 1)
+            # Test 2D example - ensure that behavior matches numpy.roll behavior
+            a = self.shared(numpy.arange(21).reshape((3, 7)).astype(self.floatX))
+            b = roll(a, get_shift(-2), 1)
 
-        want = numpy.roll(a.get_value(borrow=True), -2, 1)
-        out = theano.function([], b)()
+            want = numpy.roll(a.get_value(borrow=True), -2, 1)
+            out = theano.function([], b)()
 
-        assert (out == want).all()
+            assert (out == want).all()
 
-        # Test rolling on axis 0
-        want = numpy.roll(a.get_value(borrow=True), -2, 0)
-        b = roll(a, -2, 0)
-        out = theano.function([], b)()
+            # Test rolling on axis 0
+            want = numpy.roll(a.get_value(borrow=True), -2, 0)
+            b = roll(a, get_shift(-2), 0)
+            out = theano.function([], b)()
 
-        assert (out == want).all()
+            assert (out == want).all()
 
-        # Test rolling on default axis with ndim > 1
-        want = numpy.roll(a.get_value(borrow=True), 2)
-        b = roll(a, 2)
-        out = theano.function([], b)()
+            # Test rolling on default axis with ndim > 1
+            want = numpy.roll(a.get_value(borrow=True), 2)
+            b = roll(a, get_shift(2))
+            out = theano.function([], b)()
 
-        assert (out == want).all()
+            assert (out == want).all()
 
     def test_stack_vector(self):
         a = self.shared(numpy.array([1, 2, 3], dtype=self.floatX))
@@ -4269,24 +4270,64 @@ class t_dot(unittest.TestCase):
             return type(x), x.dtype, x.shape
         nz = numpy.dot(x, y)
         tz = eval_outputs([dot(as_tensor_variable(x), as_tensor_variable(y))])
-        self.assertTrue(tz.dtype == nz.dtype)
-        self.assertTrue(tz.shape == nz.shape)
+        self.assertTrue(tz.dtype == nz.dtype,
+                (tz.dtype, tz.dtype.num, nz.dtype, nz.dtype.num))
+        self.assertTrue(tz.shape == nz.shape, (tz.shape, nz.shape))
         self.assertTrue(_approx_eq(nz, tz))
 
-    #def test_dot_0d_0d(self): self.cmp_dot(1.1, 2.2)
-    #def test_dot_0d_1d(self): self.cmp_dot(1.1, rand(5))
-    #def test_dot_0d_2d(self): self.cmp_dot(3.0, rand(6,7))
-    #def test_dot_0d_3d(self): self.cmp_dot(3.0, rand(8,6,7))
-    #def test_dot_1d_0d(self): self.cmp_dot(rand(5), 1.1 )
+    def test_Op_dims(self):
+        # _dot is a Dot op instance
+        _dot = theano.tensor.basic._dot
+        d0 = scalar()
+        d1 = vector()
+        d2 = matrix()
+        d3 = tensor3()
+
+        self.assertRaises(TypeError, _dot, d0, d0)
+        self.assertRaises(TypeError, _dot, d0, d1)
+        self.assertRaises(TypeError, _dot, d0, d2)
+        self.assertRaises(TypeError, _dot, d0, d3)
+        self.assertRaises(TypeError, _dot, d1, d0)
+        _dot(d1, d1)
+        _dot(d1, d2)
+        self.assertRaises(TypeError, _dot, d1, d3)
+        self.assertRaises(TypeError, _dot, d2, d0)
+        _dot(d2, d1)
+        _dot(d2, d2)
+        self.assertRaises(TypeError, _dot, d2, d3)
+        self.assertRaises(TypeError, _dot, d3, d0)
+        self.assertRaises(TypeError, _dot, d3, d1)
+        self.assertRaises(TypeError, _dot, d3, d2)
+        self.assertRaises(TypeError, _dot, d3, d3)
+
+    def test_dot_0d_0d(self):
+        self.cmp_dot(rand(), rand())
+
+    def test_dot_0d_1d(self):
+        self.cmp_dot(rand(), rand(5))
+
+    def test_dot_0d_2d(self):
+        self.cmp_dot(rand(), rand(6,7))
+
+    def test_dot_0d_3d(self):
+        self.cmp_dot(rand(), rand(8,6,7))
+
+    def test_dot_1d_0d(self):
+        self.cmp_dot(rand(5), rand())
+
     def test_dot_1d_1d(self):
         self.cmp_dot(rand(5), rand(5))
 
     def test_dot_1d0_1d0(self):
         self.cmp_dot(rand(0), rand(0))
+
     #numpy return matrix not aligned...
-    #def test_dot_1d_1d0(self): self.cmp_dot(rand(5), rand(0))
+    def test_dot_1d_1d0(self):
+        self.assertRaises(ValueError, self.cmp_dot, rand(5), rand(0))
+
     #numpy return matrix not aligned...
-    #def test_dot_1d0_1d(self): self.cmp_dot(rand(0), rand(5))
+    def test_dot_1d0_1d(self):
+        self.assertRaises(ValueError, self.cmp_dot, rand(0), rand(5))
 
     def test_dot_1d_2d(self):
         self.cmp_dot(rand(6), rand(6, 7))
@@ -4299,8 +4340,12 @@ class t_dot(unittest.TestCase):
 
     def test_dot_1d0_2d0(self):
         self.cmp_dot(rand(0), rand(0, 0))
-    #def test_dot_1d_3d(self): self.cmp_dot(rand(6), rand(8,6,7))
-    #def test_dot_2d_0d(self): self.cmp_dot(rand(5,6), 1.0)
+
+    def test_dot_1d_3d(self):
+        self.cmp_dot(rand(6), rand(8,6,7))
+
+    def test_dot_2d_0d(self):
+        self.cmp_dot(rand(5,6), rand())
 
     def test_dot_2d_1d(self):
         self.cmp_dot(rand(5, 6), rand(6))
@@ -4331,11 +4376,21 @@ class t_dot(unittest.TestCase):
 
     def test_dot_2d0_0_2d0(self):
         self.cmp_dot(rand(0, 6), rand(6, 0))
-    #def test_dot_2d_3d(self): self.cmp_dot(rand(5,6), rand(8,6,7))
-    #def test_dot_3d_0d(self): self.cmp_dot(rand(4,5,6), 1.0)
-    #def test_dot_3d_1d(self): self.cmp_dot(rand(4,5,6), rand(6))
-    #def test_dot_3d_2d(self): self.cmp_dot(rand(4,5,6), rand(6,7))
-    #def test_dot_3d_3d(self): self.cmp_dot(rand(4,5,6), rand(8,6,7))
+
+    def test_dot_2d_3d(self):
+        self.cmp_dot(rand(5,6), rand(8,6,7))
+
+    def test_dot_3d_0d(self):
+        self.cmp_dot(rand(4,5,6), rand())
+
+    def test_dot_3d_1d(self):
+        self.cmp_dot(rand(4,5,6), rand(6))
+
+    def test_dot_3d_2d(self):
+        self.cmp_dot(rand(4,5,6), rand(6,7))
+
+    def test_dot_3d_3d(self):
+        self.cmp_dot(rand(4,5,6), rand(8,6,7))
 
     def not_aligned(self, x, y):
         ctv_backup = config.compute_test_value
@@ -4375,39 +4430,53 @@ class t_dot(unittest.TestCase):
     def test_align_1_2(self):
         self.not_aligned(rand(5), rand(6, 4))
 
-    #def test_align_1_3(self): self.not_aligned(rand(5), rand(6,4,7))
+    def test_align_1_3(self):
+        self.not_aligned(rand(5), rand(6,4,7))
 
     def test_align_2_1(self):
         self.not_aligned(rand(5, 4), rand(6))
 
-    def test_align_2_1(self):
+    def test_align_2_2(self):
         self.not_aligned(rand(5, 4), rand(6, 7))
 
-    #def test_align_2_3(self): self.not_aligned(rand(5,4), rand(6,7,8))
-    #def test_align_3_1(self): self.not_aligned(rand(5,4,3), rand(6))
-    #def test_align_3_2(self): self.not_aligned(rand(5,4,3), rand(6,7))
-    #def test_align_3_3(self): self.not_aligned(rand(5,4,3), rand(6,7,8))
+    def test_align_2_3(self):
+        self.not_aligned(rand(5,4), rand(6,7,8))
+
+    def test_align_3_1(self):
+        self.not_aligned(rand(5,4,3), rand(6))
+
+    def test_align_3_2(self):
+        self.not_aligned(rand(5,4,3), rand(6,7))
+
+    def test_align_3_3(self):
+        self.not_aligned(rand(5,4,3), rand(6,7,8))
 
     def test_grad(self):
-        #utt.verify_grad(dot, [rand(2,3,4), rand(4)])
         utt.verify_grad(dot, [rand(2, 3), rand(3, 2)])
         utt.verify_grad(dot, [rand(2), rand(2, 3)])
         utt.verify_grad(dot, [rand(3, 2), rand(2)])
         utt.verify_grad(dot, [rand(2), rand(2)])
-        #utt.verify_grad(dot, [rand(), rand(2)])
-        #utt.verify_grad(dot, [rand(), rand(2,5)])
+        utt.verify_grad(dot, [rand(), rand(2)])
+        utt.verify_grad(dot, [rand(), rand(2,5)])
+        utt.verify_grad(dot, [rand(2), rand()])
+        utt.verify_grad(dot, [rand(2,5), rand()])
+        utt.verify_grad(dot, [rand(2,3,4), rand(4)])
+        utt.verify_grad(dot, [rand(3), rand(2,3,4)])
+        utt.verify_grad(dot, [rand(4,3), rand(2,3,4)])
+        utt.verify_grad(dot, [rand(2,3,4), rand(4,5)])
+        utt.verify_grad(dot, [rand(2,3,4), rand(3,4,5)])
 
     def test_broadcastable_patterns(self):
 
         #
-        # These examples hsould all work because we broadcastable or no, all dimensions of all
+        # These examples should all work because we broadcastable or no, all dimensions of all
         # results have size 1.
         #
         def val_for(r):
             if r.dtype.startswith('complex'):
                 # We want to test complex at the same time, so we give a value
                 # To the imaginary component.
-                # This stange way to doing thing is the only way that worked on
+                # This strange way of doing things is the only way that worked on
                 # numpy 1.4.1
                 if r.ndim == 0:
                     return numpy.asarray(numpy.complex(1.1, 2.1), dtype=r.dtype)
@@ -4625,7 +4694,8 @@ class T_op_cache(unittest.TestCase):
         utt.seed_rng()
 
     def test0(self):
-        """trigger bug in ticket #162"""
+        """trigger bug in ticket #162
+        """
         lr = constant(0.011)
         v = matrix()
         v.name = 'v'
@@ -5366,6 +5436,13 @@ class TestPermuteRowElements(unittest.TestCase):
 
 
 class test_tensordot(unittest.TestCase):
+    def TensorDot(self, axes):
+        """
+        Since tensordot is no longer an op, mimic the old op signature
+        to allow easy use of verify_grad.
+        """
+        return lambda a, b : tensordot(a, b, axes)
+
     def setUp(self):
         utt.seed_rng()
 
@@ -5379,9 +5456,10 @@ class test_tensordot(unittest.TestCase):
         f1 = inplace_func([avec, bvec], c)
         aval = rand(5)
         bval = rand(5)
-        self.assertTrue(numpy.tensordot(aval, bval, axes) == \
-                        f1(aval, bval))
-        utt.verify_grad(TensorDot(axes), [aval, bval])
+        out0 = numpy.tensordot(aval, bval, axes)
+        out1 = f1(aval, bval)
+        self.assertTrue(numpy.allclose(out0, out1), (out0, out1))
+        utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
         # Test matrix-vector
         bmat = matrix()
@@ -5392,7 +5470,7 @@ class test_tensordot(unittest.TestCase):
         bval = rand(8, 5)
         self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
                                        f2(aval, bval)))
-        utt.verify_grad(TensorDot(axes), [aval, bval])
+        utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
         # Test matrix-matrix
         amat = matrix()
@@ -5411,7 +5489,7 @@ class test_tensordot(unittest.TestCase):
             bval = rand(*shps[1])
             self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
                                            f3(aval, bval)))
-            utt.verify_grad(TensorDot(axes), [aval, bval])
+            utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
         # Test ndarray-matrix, sum over one dim of matrix
         for axes, shps in [[((2,), (1,)), [(1, 2, 3, 4), (2, 3)]],
@@ -5429,7 +5507,7 @@ class test_tensordot(unittest.TestCase):
             bval = rand(*shps[1])
             self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
                                            f4(aval, bval)))
-            utt.verify_grad(TensorDot(axes), [aval, bval])
+            utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
         # Test ndarray-ndarray
         atens = tensor4()
@@ -5441,14 +5519,14 @@ class test_tensordot(unittest.TestCase):
         bval = rand(3, 4, 2)
         self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
                                        f5(aval, bval)))
-        utt.verify_grad(TensorDot(axes), [aval, bval])
+        utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
         axes = (axes[1], axes[0])
         c = tensordot(btens, atens, axes)
         f6 = inplace_func([btens, atens], c)
         self.assertTrue(numpy.allclose(numpy.tensordot(bval, aval, axes),
                                        f6(bval, aval)))
-        utt.verify_grad(TensorDot(axes), [bval, aval])
+        utt.verify_grad(self.TensorDot(axes), [bval, aval])
 
     def test_raise_error(self):
         amat = matrix()
@@ -5456,52 +5534,38 @@ class test_tensordot(unittest.TestCase):
         bvec = vector()
 
         # Test invalid length for axes
-        try:
-            c = tensordot(amat, bmat, (0, 1, 2))
-            assert False
-        except ValueError:
-            pass
+        self.assertRaises(ValueError, tensordot, amat, bmat, (0, 1, 2))
 
         # Test axes of uneven length
-        try:
-            c = tensordot(amat, bmat, ((0, 1), (0)))
-            assert False
-        except ValueError:
-            pass
+        self.assertRaises(ValueError, tensordot, amat, bmat, ((0, 1), (0)))
 
         # Test invalid len(axes) given inputs are matrices
-        try:
-            c = tensordot(amat, bmat, ((0, 1, 2), (0, 1, 2)))
-            assert False
-        except ValueError:
-            pass
+        self.assertRaises(ValueError, tensordot, amat, bmat, ((0,1,2),(0,1,2)))
 
         # Test invalid axes[1] given that y is a vector
-        try:
-            c = tensordot(amat, bvec, (0, 1))
-            assert False
-        except ValueError:
-            pass
+        self.assertRaises(ValueError, tensordot, amat, bvec, (0, 1))
 
         # Test invalid scalar axes given inputs are matrices
-        try:
-            c = tensordot(amat, bvec, 2)
-            assert False
-        except ValueError:
-            pass
+        self.assertRaises(ValueError, tensordot, amat, bvec, 2)
 
     def test_weird_valid_axes(self):
         # Test matrix-matrix
         amat = matrix()
         bmat = matrix()
-        for axes in 0, (1, 0), [1, 0], (1, (0, )), ((1, ), 0), ([1], [0]):
+        for axes in [0,
+                     (1, 0),
+                     [1, 0],
+                     (1, (0, )),
+                     ((1, ), 0),
+                     ([1], [0]),
+                     ([], [])]:
             c = tensordot(amat, bmat, axes)
             f3 = inplace_func([amat, bmat], c)
             aval = rand(4, 7)
             bval = rand(7, 9)
             self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
                                            f3(aval, bval)))
-            utt.verify_grad(TensorDot(axes), [aval, bval])
+            utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
     def test_scalar_axes(self):
         # Test matrix-matrix
@@ -5515,7 +5579,7 @@ class test_tensordot(unittest.TestCase):
         f3 = inplace_func([amat, bmat], c)
         self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
                                        f3(aval, bval)))
-        utt.verify_grad(TensorDot(axes), [aval, bval])
+        utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
         # Test tensor-tensor
         amat = tensor3()
@@ -5527,7 +5591,7 @@ class test_tensordot(unittest.TestCase):
         f3 = inplace_func([amat, bmat], c)
         self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
                                        f3(aval, bval)))
-        utt.verify_grad(TensorDot(axes), [aval, bval])
+        utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
     def test_scalar0(self):
         # Test tensor-tensor
@@ -5540,26 +5604,7 @@ class test_tensordot(unittest.TestCase):
         f3 = inplace_func([amat, bmat], c)
         self.assertTrue(numpy.allclose(numpy.tensordot(aval, bval, axes),
                                        f3(aval, bval)))
-        utt.verify_grad(TensorDot(axes), [aval, bval])
-
-    def test_tensordot_grad(self):
-        # We test it manually as we recreate the op in the make_node
-
-        amat = matrix()
-        bmat = matrix()
-        gzmat = matrix()
-        axes = 1
-        aval = rand(4, 5)
-        bval = rand(5, 3)
-        gzval = rand(4, 3)
-        f1 = inplace_func([amat, bmat, gzmat], tensordot_grad(axes)(
-            amat, bmat, gzmat))
-        f2 = inplace_func([amat, bmat, gzmat], tensordot_grad(((1, ), (
-            0,)))(amat, bmat, gzmat))
-        o1 = f1(aval, bval, gzval)
-        o2 = f2(aval, bval, gzval)
-        self.assertTrue(numpy.allclose(o1[0], o2[0]))
-        self.assertTrue(numpy.allclose(o1[1], o2[1]))
+        utt.verify_grad(self.TensorDot(axes), [aval, bval])
 
 
 def test_smallest_stack():
@@ -6167,40 +6212,40 @@ def test_dimshuffle_duplicate():
     assert success
 
 
-class T_get_constant_value(unittest.TestCase):
-    def test_get_constant_value(self):
+class T_get_scalar_constant_value(unittest.TestCase):
+    def test_get_scalar_constant_value(self):
         a = tensor.stack(1, 2, 3)
-        assert get_constant_value(a[0]) == 1
-        assert get_constant_value(a[1]) == 2
-        assert get_constant_value(a[2]) == 3
+        assert get_scalar_constant_value(a[0]) == 1
+        assert get_scalar_constant_value(a[1]) == 2
+        assert get_scalar_constant_value(a[2]) == 3
 
         b = tensor.iscalar()
         a = tensor.stack(b, 2, 3)
-        self.assertRaises(TypeError, get_constant_value, a[0])
-        assert get_constant_value(a[1]) == 2
-        assert get_constant_value(a[2]) == 3
+        self.assertRaises(tensor.basic.NotScalarConstantError, get_scalar_constant_value, a[0])
+        assert get_scalar_constant_value(a[1]) == 2
+        assert get_scalar_constant_value(a[2]) == 3
 
-        # For now get_constant_value goes through only MakeVector and Join of
+        # For now get_scalar_constant_value goes through only MakeVector and Join of
         # scalars.
         v = tensor.ivector()
         a = tensor.stack(v, 2, 3)
-        self.assertRaises(TypeError, get_constant_value, a[0])
-        self.assertRaises(TypeError, get_constant_value, a[1])
-        self.assertRaises(TypeError, get_constant_value, a[2])
+        self.assertRaises(tensor.NotScalarConstantError, get_scalar_constant_value, a[0])
+        self.assertRaises(tensor.NotScalarConstantError, get_scalar_constant_value, a[1])
+        self.assertRaises(tensor.NotScalarConstantError, get_scalar_constant_value, a[2])
 
         # Test the case SubTensor(Shape(v)) when the dimensions
         # is broadcastable.
         v = tensor.row()
-        assert get_constant_value(v.shape[0]) == 1
+        assert get_scalar_constant_value(v.shape[0]) == 1
 
     def test_subtensor_of_constant(self):
         c = constant(rand(5))
         for i in range(c.value.shape[0]):
-            assert get_constant_value(c[i]) == c.value[i]
+            assert get_scalar_constant_value(c[i]) == c.value[i]
         c = constant(rand(5, 5))
         for i in range(c.value.shape[0]):
             for j in range(c.value.shape[1]):
-                assert get_constant_value(c[i, j]) == c.value[i, j]
+                assert get_scalar_constant_value(c[i, j]) == c.value[i, j]
 
 
 class T_as_tensor_variable(unittest.TestCase):
@@ -6389,180 +6434,6 @@ class TestInferShape(utt.InferShapeTester):
 
     def test_infer_shape(self):
 
-        # tensordot_grad
-        admat = dmatrix()
-        bdmat = dmatrix()
-        gzdmat = dmatrix()
-        admat_val = rand(4, 5)
-        bdmat_val = rand(5, 3)
-        gzdmat_val = rand(4, 3)
-        axes = 1
-        self._compile_and_check([admat, bdmat, gzdmat],
-                                tensordot_grad(axes)(admat, bdmat, gzdmat),
-                        [admat_val, bdmat_val, gzdmat_val], tensordot_grad)
-
-        admat_val = rand(5, 4)
-        bdmat_val = rand(5, 4)
-        gzdscal = dscalar()
-        gzdscal_val = rand()
-        axes = 2
-        self._compile_and_check([admat, bdmat, gzdscal],
-                                tensordot_grad(axes)(admat, bdmat, gzdscal),
-                        [admat_val, bdmat_val, gzdscal_val], tensordot_grad)
-
-        admat_val = rand(4, 5)
-        bdmat_val = rand(5, 3)
-        gzdmat_val = rand(4, 3)
-        axes = ((1, ), (0, ))
-        self._compile_and_check([admat, bdmat, gzdmat],
-                                tensordot_grad(axes)(admat, bdmat, gzdmat),
-                            [admat_val, bdmat_val, gzdmat_val], tensordot_grad)
-
-        axes = ((1, 0))
-        self._compile_and_check([admat, bdmat, gzdmat],
-                                tensordot_grad(axes)(admat, bdmat, gzdmat),
-                            [admat_val, bdmat_val, gzdmat_val], tensordot_grad)
-
-        admat_val = rand(4, 5)
-        bdmat_val = rand(3, 4)
-        gzdmat_val = rand(5, 3)
-        axes = ((0, ), (1, ))
-        self._compile_and_check([admat, bdmat, gzdmat],
-                                tensordot_grad(axes)(admat, bdmat, gzdmat),
-                            [admat_val, bdmat_val, gzdmat_val], tensordot_grad)
-
-        gzdscal = dscalar()
-        admat_val = rand(5, 4)
-        bdmat_val = rand(5, 4)
-        gzdscal_val = rand()
-        axes = ((0, 1), (0, 1))
-        self._compile_and_check([admat, bdmat, gzdscal],
-                                tensordot_grad(axes)(admat, bdmat, gzdscal),
-                        [admat_val, bdmat_val, gzdscal_val], tensordot_grad)
-
-        # tensordot_grad currently do not support not ordered axes
-
-        """
-        gzdscal = dscalar()
-        admat_val = rand(5, 4)
-        bdmat_val = rand(4, 5)
-        gzdscal_val = rand()
-        axes = ((0, 1), (1, 0))
-        self._compile_and_check([admat, bdmat, gzdscal],
-                                tensordot_grad(axes)(admat, bdmat, gzdscal),
-                        [admat_val, bdmat_val, gzdscal_val], tensordot_grad)
-
-        gzdscal = dscalar()
-        admat_val = rand(5, 4)
-        bdmat_val = rand(5, 4)
-        gzdscal_val = rand()
-        axes = ((1, 0 ), (1, 0))
-        self._compile_and_check([admat, bdmat, gzdscal],
-                                tensordot_grad(axes)(admat, bdmat, gzdscal),
-                        [admat_val, bdmat_val, gzdscal_val], tensordot_grad)
-        """
-
-        # tensordot
-        admat = dmatrix()
-        bdmat = dmatrix()
-        admat_val = rand(4, 5)
-        bdmat_val = rand(5, 3)
-        axes = 1
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                            [admat_val, bdmat_val], TensorDot)
-
-        admat_val = rand(5, 4)
-        bdmat_val = rand(5, 4)
-        axes = 2
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                            [admat_val, bdmat_val], TensorDot)
-
-        admat_val = rand(4, 5)
-        bdmat_val = rand(5, 3)
-        axes = ((1, ), (0, ))
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                            [admat_val, bdmat_val], TensorDot)
-
-        axes = ((1, 0))
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                            [admat_val, bdmat_val], TensorDot)
-
-        admat_val = rand(4, 5)
-        bdmat_val = rand(3, 4)
-        axes = ((0, ), (1, ))
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                            [admat_val, bdmat_val], TensorDot)
-
-        axes = ((0, 1))
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                            [admat_val, bdmat_val], TensorDot)
-
-        admat_val = rand(5, 4)
-        bdmat_val = rand(4, 5)
-        axes = ((1,), (0,))
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                        [admat_val, bdmat_val], TensorDot)
-
-        axes = ((0, 1), (1, 0))
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                        [admat_val, bdmat_val], TensorDot)
-
-        admat_val = rand(5, 4)
-        bdmat_val = rand(5, 4)
-        axes = ((0, 1), (0, 1))
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                        [admat_val, bdmat_val], TensorDot)
-
-        admat_val = rand(5, 4)
-        bdmat_val = rand(4, 5)
-        axes = ((1, 0), (0, 1))
-        self._compile_and_check([admat, bdmat],
-                                [TensorDot(axes)(admat, bdmat)],
-                        [admat_val, bdmat_val], TensorDot)
-
-        adtens3 = dtensor3()
-        admat_val = rand(5, 4)
-        adtens3_val = rand(5, 4, 3)
-        axes = 2
-        self._compile_and_check([admat, adtens3],
-                                [TensorDot(axes)(admat, adtens3)],
-                        [admat_val, adtens3_val], TensorDot)
-
-        adtens3_val = rand(4, 5, 3)
-        axes = ((1, 0), (0, 1))
-        self._compile_and_check([admat, adtens3],
-                                [TensorDot(axes)(admat, adtens3)],
-                        [admat_val, adtens3_val], TensorDot)
-
-        adtens3_val = rand(4, 3, 5)
-        axes = ((1, 0), (0, 2))
-        self._compile_and_check([admat, adtens3],
-                                [TensorDot(axes)(admat, adtens3)],
-                        [admat_val, adtens3_val], TensorDot)
-
-        adtens4 = dtensor4()
-        admat_val = rand(5, 4)
-        adtens4_val = rand(5, 4, 3, 2)
-        axes = 2
-        self._compile_and_check([admat, adtens4],
-                                [TensorDot(axes)(admat, adtens4)],
-                        [admat_val, adtens4_val], TensorDot)
-
-        adtens4_val = rand(4, 3, 2, 5)
-        axes = ((1, 0), (0, 3))
-        self._compile_and_check([admat, adtens4],
-                                [TensorDot(axes)(admat, adtens4)],
-                        [admat_val, adtens4_val], TensorDot)
-
         # Flatten
         atens3 = tensor3()
         atens3_val = rand(4, 5, 3)
@@ -6639,6 +6510,8 @@ class TestInferShape(utt.InferShapeTester):
                                 [adtens_val], (opt.MakeVector, Shape))
 
         # Dot
+
+        #vec/vec
         advec = dvector()
         bdvec = dvector()
         advec_val = rand(4)
@@ -6648,6 +6521,9 @@ class TestInferShape(utt.InferShapeTester):
                                 [advec_val, bdvec_val],
                                 (Dot, tensor.blas.Gemv, tensor.blas_c.CGemv))
 
+        #mat/mat
+        admat = dmatrix()
+        bdmat = dmatrix()
         admat_val = rand(4, 5)
         bdmat_val = rand(5, 3)
         self._compile_and_check([admat, bdmat],
@@ -6655,16 +6531,18 @@ class TestInferShape(utt.InferShapeTester):
                                 [admat_val, bdmat_val],
                                 (Dot, tensor.blas.Dot22))
 
-        admat_val = rand(5, 4)
-        self._compile_and_check([admat, advec],
-                                [Dot()(admat, advec)],
-                                [admat_val, advec_val],
-                                (Dot, tensor.blas.Gemv, tensor.blas_c.CGemv))
-
+        #vec/mat
         bdmat_val = rand(4, 5)
         self._compile_and_check([advec, bdmat],
                                 [Dot()(advec, bdmat)],
                                 [advec_val, bdmat_val],
+                                (Dot, tensor.blas.Gemv, tensor.blas_c.CGemv))
+
+        #mat/vec
+        admat_val = rand(5, 4)
+        self._compile_and_check([admat, bdvec],
+                                [Dot()(admat, bdvec)],
+                                [admat_val, bdvec_val],
                                 (Dot, tensor.blas.Gemv, tensor.blas_c.CGemv))
 
         # Split

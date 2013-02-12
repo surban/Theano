@@ -95,7 +95,7 @@ def test_careduce():
                                ((1024,33),[0,1]),((33,1024),[0,1]),#01
                                ((1025,33),[0,1]),((33,1025),[0,1]),#01
 
-                               ((4100,4,3),[0]),((5,4100,3),[0]),((5,4,4100),[0]),#100
+                               ((4100,4,3),[0]),((5,4100,3),[0]),((5,4,4100),[0]), ((3,65536,1), [0]),#100
                                ((4100,4,3),[1]),((5,4100,3),[1]),((5,4,4100),[1]),#010
                                ((4100,4,3),[2]),((5,4100,3),[2]),((5,4,4100),[2]),#001
                                ((4100,4,3),[0,1]),((5,4100,3),[0,1]),((5,4,4100),[0,1]),#110
@@ -1127,54 +1127,6 @@ def test_shared_cudandarray():
     CudaNdarray'''
     a = cuda.shared_constructor(cuda.CudaNdarray.zeros((2, 3)))
     assert isinstance(a.type, tcn.CudaNdarrayType)
-
-
-class test_tensordot_reshape(unittest.TestCase):
-    '''Test alternative tensordot implementation.
-
-    Test that the tensordot implementation using dimshuffle, reshape and dot
-    gives the same results as the default (numpy) version.
-    '''
-
-    def setUp(self):
-        self.rng = numpy.random.RandomState(utt.fetch_seed())
-
-    def test1(self):
-        # define some tensors
-        tensor1 = self.rng.rand(20, 10, 5, 8).astype(theano.config.floatX)
-        tensor2 = self.rng.rand(5, 8, 20).astype(theano.config.floatX)
-        tensor3 = self.rng.rand(8, 20, 5).astype(theano.config.floatX)
-
-        x = T.tensor4('x')
-        y = T.tensor3('y')
-
-        # case 1: number of axes to sum over
-        default1 = theano.function([x, y], T.tensordot(x, y, 2))(
-                tensor1, tensor2)
-        reshape1 = theano.function([x, y], B.tensordot(x, y, 2))(
-                tensor1, tensor2)
-        assert numpy.allclose(default1, reshape1)
-
-        # case 2: axis pairs
-        default2 = theano.function(
-                [x, y],
-                T.tensordot(x, y, axes=[(0, 3), (1, 0)])
-                )(tensor1, tensor3)
-        reshape2 = theano.function(
-                [x, y],
-                B.tensordot(x, y, axes=[(0, 3), (1, 0)])
-                )(tensor1, tensor3)
-        assert numpy.allclose(default2, reshape2)
-
-        default3 = theano.function(
-                [x, y],
-                T.tensordot(x, y, axes=[(0, 3, 2), (1, 0, 2)])
-                )(tensor1, tensor3)
-        reshape3 = theano.function(
-                [x, y],
-                B.tensordot(x, y, axes=[(0, 3, 2), (1, 0, 2)])
-                )(tensor1, tensor3)
-        assert numpy.allclose(default3, reshape3)
 
 
 class test_size(unittest.TestCase):

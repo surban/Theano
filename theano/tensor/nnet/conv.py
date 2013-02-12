@@ -15,7 +15,7 @@ import logging
 import numpy
 
 import theano
-from theano.tensor import (as_tensor_variable, blas, get_constant_value,
+from theano.tensor import (as_tensor_variable, blas, get_scalar_constant_value,
                            patternbroadcast)
 from theano import OpenMPOp, config
 from theano.gof import Apply
@@ -90,7 +90,7 @@ def conv2d(input, filters, image_shape=None, filter_shape=None,
         image_shape = list(image_shape)
         for i in xrange(len(image_shape)):
             if image_shape[i] is not None:
-                image_shape[i] = get_constant_value(
+                image_shape[i] = get_scalar_constant_value(
                     as_tensor_variable(image_shape[i]))
                 assert str(image_shape[i].dtype).startswith('int')
                 image_shape[i] = int(image_shape[i])
@@ -98,7 +98,7 @@ def conv2d(input, filters, image_shape=None, filter_shape=None,
         filter_shape = list(filter_shape)
         for i in xrange(len(filter_shape)):
             if filter_shape[i] is not None:
-                filter_shape[i] = get_constant_value(
+                filter_shape[i] = get_scalar_constant_value(
                     as_tensor_variable(filter_shape[i]))
                 assert str(filter_shape[i].dtype).startswith('int')
                 filter_shape[i] = int(filter_shape[i])
@@ -965,7 +965,7 @@ class ConvOp(OpenMPOp):
         return ['<numpy/noprefix.h>', '<iostream>', '<sstream>']
 
     def c_code_cache_version(self):
-        return (9, self.openmp)
+        return (10, self.openmp)
 
     def c_support_code(self):
         return """
@@ -1343,14 +1343,24 @@ if (typenum != typenum_f) {
   %(fail)s;
 }
 
-if (!img2d) %(fail)s;
-if (!filtersflipped) %(fail)s;
+if (!img2d)
+{
+    PyErr_SetString(PyExc_AssertionError, "!img2d");
+    %(fail)s;
+}
+if (!filtersflipped)
+{
+    PyErr_SetString(PyExc_AssertionError, "!filtersflipped");
+    %(fail)s;
+}
+
 if ((!%(z)s)
   || *PyArray_DIMS(%(z)s)!=4
   ||(PyArray_DIMS(%(z)s)[0] != %(self_bsize)s)
   ||(PyArray_DIMS(%(z)s)[1] != %(self_nkern)s)
   ||(PyArray_DIMS(%(z)s)[2] != dim_zz[0])
-  || (PyArray_DIMS(%(z)s)[3] != dim_zz[1])
+  ||(PyArray_DIMS(%(z)s)[3] != dim_zz[1])
+  ||!PyArray_ISCONTIGUOUS(%(z)s)
   )
 {
   {Py_XDECREF(%(z)s);}
@@ -1370,19 +1380,11 @@ Os[0]=%(self_outshp0)s;
 Os[1]=%(self_outshp1)s;
 
 //assertions
-if (PyArray_STRIDES(%(z)s)[0] != PyArray_DIMS(%(z)s)[1] *
-                         PyArray_DIMS(%(z)s)[2] *
-                         PyArray_DIMS(%(z)s)[3] *
-                         (npy_intp)sizeof(%(type)s))
+if (!PyArray_ISCONTIGUOUS(%(z)s))
+{
+    PyErr_SetString(PyExc_AssertionError, "Output (%(z)s) not contiguous");
     %(fail)s;
-if (PyArray_STRIDES(%(z)s)[1] != PyArray_DIMS(%(z)s)[2] *
-                         PyArray_DIMS(%(z)s)[3] *
-                         (npy_intp)sizeof(%(type)s))
-    %(fail)s;
-if (PyArray_STRIDES(%(z)s)[2] != PyArray_DIMS(%(z)s)[3] * (npy_intp)sizeof(%(type)s))
-    %(fail)s;
-if (PyArray_STRIDES(%(z)s)[3] != (npy_intp)sizeof(%(type)s))
-    %(fail)s;
+}
 
 for(int b=0;b< %(self_bsize)s;b++){
   for(int n_kern=0;n_kern<%(self_nkern)s;n_kern++){
@@ -1862,14 +1864,24 @@ typenum_f = PyArray_ObjectType((PyObject*)%(filtersflipped)s, 0);
 if (typenum < 0) {PyErr_SetString(PyExc_ValueError, "Invalid type"); %(fail)s;}
 if (typenum != typenum_f) {PyErr_SetString(PyExc_ValueError, "Input types must match"); %(fail)s;}
 
-if (!img2d) %(fail)s;
-if (!filtersflipped) %(fail)s;
+if (!img2d)
+{
+    PyErr_SetString(PyExc_AssertionError, "!img2d");
+    %(fail)s;
+}
+if (!filtersflipped)
+{
+    PyErr_SetString(PyExc_AssertionError, "!filtersflipped");
+    %(fail)s;
+}
+
 if ((!%(z)s)
   || *PyArray_DIMS(%(z)s)!=4
   ||(PyArray_DIMS(%(z)s)[0] != %(self_bsize)s)
   ||(PyArray_DIMS(%(z)s)[1] != %(self_nkern)s)
   ||(PyArray_DIMS(%(z)s)[2] != dim_zz[0])
-  || (PyArray_DIMS(%(z)s)[3] != dim_zz[1])
+  ||(PyArray_DIMS(%(z)s)[3] != dim_zz[1])
+  ||!PyArray_ISCONTIGUOUS(%(z)s)
   )
 {
   {Py_XDECREF(%(z)s);}
@@ -1889,10 +1901,11 @@ Os[0]=%(self_outshp0)s;
 Os[1]=%(self_outshp1)s;
 
 //assertions
-if (PyArray_STRIDES(%(z)s)[0] != PyArray_DIMS(%(z)s)[1] *PyArray_DIMS(%(z)s)[2] *PyArray_DIMS(%(z)s)[3] * (npy_intp)sizeof(%(type)s)) %(fail)s;
-if (PyArray_STRIDES(%(z)s)[1] != PyArray_DIMS(%(z)s)[2] * PyArray_DIMS(%(z)s)[3] * (npy_intp)sizeof(%(type)s)) %(fail)s;
-if (PyArray_STRIDES(%(z)s)[2] != PyArray_DIMS(%(z)s)[3] * (npy_intp)sizeof(%(type)s)) %(fail)s;
-if (PyArray_STRIDES(%(z)s)[3] != (npy_intp)sizeof(%(type)s)) %(fail)s;
+if (!PyArray_ISCONTIGUOUS(%(z)s))
+{
+    PyErr_SetString(PyExc_AssertionError, "Output (%(z)s) not contiguous");
+    %(fail)s;
+}
 
 for(int b=0;b< %(self_bsize)s ;b+=%(unroll_bsize)s){
   for(int n_kern=0;n_kern<%(self_nkern)s;n_kern+=%(unroll_ksize)s){
