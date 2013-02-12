@@ -13,7 +13,6 @@
 #define DllExport   __declspec( dllimport )
 #endif
 #define ALWAYS_INLINE
-=======
 #else //else _WIN32
 #define DllExport
 #define ALWAYS_INLINE __attribute__((always_inline))
