@@ -8,7 +8,7 @@ from theano.gof.op import Op
 from theano.gof.opt import *
 
 from theano.gof import destroyhandler
-from theano.gof.env import Env, InconsistencyError
+from theano.gof.fg import FunctionGraph as Env, InconsistencyError
 from theano.gof.toolbox import ReplaceValidate
 
 from copy import copy
@@ -34,8 +34,8 @@ class MyType(Type):
 def MyVariable(name):
     return Variable(MyType(), None, None, name = name)
 
-def MyValue(data):
-    return graph.Value(MyType(), data = data)
+def MyConstant(data):
+    return graph.Constant(MyType(), data = data)
 
 
 class MyOp(Op):
@@ -93,8 +93,8 @@ def inputs():
 _Env = Env
 def Env(inputs, outputs, validate = True):
     e = _Env(inputs, outputs)
-    e.extend(destroyhandler.DestroyHandler())
-    e.extend(ReplaceValidate())
+    e.attach_feature(destroyhandler.DestroyHandler())
+    e.attach_feature(ReplaceValidate())
     if validate:
         e.validate()
     return e
@@ -110,22 +110,22 @@ class FailureWatch:
 
 
 def consistent(g):
-    print "Testing consistent:", g
+    #print "Testing consistent:", g
     try:
         assert g.consistent()
     except AssertionError:
         print "Test failed! The graph was marked as NOT consistent."
         raise
-    print "Test OK"
+    #print "Test OK"
 
 def inconsistent(g):
-    print "Testing NOT consistent:", g
+    #print "Testing NOT consistent:", g
     try:
         assert not g.consistent()
     except AssertionError:
         print "Test failed! The graph was marked as consistent."
         raise
-    print "Test OK"
+    #print "Test OK"
 
 
 
@@ -385,7 +385,7 @@ def test_value_repl():
     e = add_in_place(x, sy)
     g = Env([x,y], [e], False)
     consistent(g)
-    g.replace(sy, MyValue("abc"))
+    g.replace(sy, MyConstant("abc"))
     consistent(g)
 
 def test_value_repl_2():
@@ -394,7 +394,7 @@ def test_value_repl_2():
     e = add_in_place(x, sy)
     g = Env([x,y], [e], False)
     consistent(g)
-    g.replace(sy, transpose_view(MyValue("abc")))
+    g.replace(sy, transpose_view(MyConstant("abc")))
     consistent(g)
 
 

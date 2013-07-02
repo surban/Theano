@@ -7,11 +7,17 @@
 .. note::
 
     Two similar implementation exists for conv2d:
-    **theano.tensor.signal.conv.conv2d** and
-    **theano.tensor.nnet.conv.conv2d**. The foremer implements a traditional
+
+        :func:`signal.conv2d <theano.tensor.signal.conv.conv2d>` and
+        :func:`nnet.conv2d <theano.tensor.nnet.conv.conv2d>`.
+
+    The former implements a traditional
     2D convolution, while the latter implements the convolutional layers
     present in convolutional neural networks (where filters are 3D and pool
     over several input channels).
+
+    The project `TheanoConv3d2d <https://github.com/jaberg/TheanoConv3d2d>`_
+    is probably faster then the Conv3d documented here.
 
 .. module:: conv
    :platform: Unix, Windows
@@ -21,5 +27,10 @@
 
 TODO: Give examples for how to use these things! They are pretty complicated.
 
-.. autofunction:: theano.tensor.nnet.conv.conv2d
+- Conv implemented
+    - :func:`signal.conv2d <theano.tensor.signal.conv.conv2d>`.
+    - :func:`nnet.conv2d <theano.tensor.nnet.conv.conv2d>`.
+    - :func:`conv3D <theano.tensor.nnet.Conv3D.conv3D>`.
 
+.. autofunction:: theano.tensor.nnet.conv.conv2d
+.. autofunction:: theano.tensor.nnet.Conv3D.conv3D

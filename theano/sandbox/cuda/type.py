@@ -1,7 +1,6 @@
 """Provide CudaNdarrayType
 """
 import os
-import StringIO
 import copy_reg
 
 import numpy
@@ -10,6 +9,7 @@ import theano
 from theano import Type, Variable
 from theano import tensor, config
 from theano import scalar as scal
+from theano.compat.six import StringIO
 
 try:
     # We must do those import to be able to create the full doc when nvcc
@@ -62,7 +62,7 @@ class CudaNdarrayType(Type):
     """
 
     def __init__(self, broadcastable, name=None, dtype=None):
-        if dtype != None and dtype != 'float32':
+        if dtype is not None and dtype != 'float32':
             raise TypeError('%s only supports dtype float32 for now. Tried '
                             'using dtype %s for variable %s' %
                             (self.__class__.__name__, dtype, name))
@@ -130,20 +130,20 @@ class CudaNdarrayType(Type):
         if other.type == self:
             return other
 
-        if not isinstance(other.type, tensor.TensorType):
+        if not isinstance(other.type, (tensor.TensorType, CudaNdarrayType)):
             raise TypeError('Incompatible type', (self, other.type))
         if (other.type.dtype != self.dtype):
             raise TypeError('Incompatible dtype', (self.dtype,
                                                    other.type.dtype))
-        if numpy.any([bi and not obi
-                for obi, bi in zip(
-                    other.type.broadcastable,
-                    self.broadcastable)]):
-            raise TypeError('Incompatible broadcastable', (self.broadcastable,
-                other.type.broadcastable))
+        if other.type.ndim != self.ndim:
+            raise TypeError('Incompatible number of dimensions.'
+                            ' Expected %d, got %d.' % (self.ndim, other.ndim))
         if other.type.broadcastable != self.broadcastable:
-            rebroadcast = tensor.Rebroadcast(*enumerate(self.broadcastable))
-            other = rebroadcast(other)
+            raise TypeError('Incompatible broadcastable dimensions.'
+                            ' Expected %s, got %s.' %
+                            (str(other.type.broadcastable),
+                             str(self.broadcastable)))
+
         return theano.sandbox.cuda.basic_ops.GpuFromHost()(other)
 
     @staticmethod
@@ -274,7 +274,7 @@ class CudaNdarrayType(Type):
         return "%(name)s = NULL;" % locals()
 
     def c_extract(self, name, sub):
-        sio = StringIO.StringIO()
+        sio = StringIO()
         fail = sub['fail']
         nd = self.ndim
         print >> sio, """
@@ -288,7 +288,9 @@ class CudaNdarrayType(Type):
             //std::cerr << "c_extract " << %(name)s << '\\n';
             if (%(name)s->nd != %(nd)s)
             {
-                PyErr_Format(PyExc_RuntimeError, "Some CudaNdarray has rank %%i, it was supposed to have rank %(nd)s", %(name)s->nd);
+                PyErr_Format(PyExc_RuntimeError,
+                             "c_extract: Some CudaNdarray has rank %%i, it was supposed to have rank %(nd)s",
+                             %(name)s->nd);
                 %(name)s = NULL;
                 %(fail)s;
             }
@@ -299,7 +301,9 @@ class CudaNdarrayType(Type):
                 print >> sio, """
             if (CudaNdarray_HOST_DIMS(%(name)s)[%(i)s] != 1)
             {
-                PyErr_Format(PyExc_RuntimeError, "Some CudaNdarray has dim %%i on broadcastable dimension %%i", CudaNdarray_HOST_DIMS(%(name)s)[%(i)s], %(i)s);
+                PyErr_Format(PyExc_RuntimeError,
+                             "c_extract: Some CudaNdarray has dim %%i on broadcastable dimension %%i",
+                             CudaNdarray_HOST_DIMS(%(name)s)[%(i)s], %(i)s);
                 %(name)s = NULL;
                 %(fail)s;
             }
@@ -309,7 +313,9 @@ class CudaNdarrayType(Type):
             if (CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s])
             {
                 //std::cerr << "c_extract bad stride detected...\\n";
-                PyErr_Format(PyExc_RuntimeError, "Some CudaNdarray has a nonzero stride %%i on a broadcastable dimension %%i", CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s], %(i)s);
+                PyErr_Format(PyExc_RuntimeError,
+                             "c_extract: Some CudaNdarray has a nonzero stride %%i on a broadcastable dimension %%i",
+                             CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s], %(i)s);
                 %(name)s = NULL;
                 %(fail)s;
             }
@@ -411,23 +417,57 @@ class CudaNdarrayType(Type):
     def c_compile_args(self):
         return []
 
+    def get_shape_info(self, obj):
+        return obj.shape
 
-# Register CudaNdarrayType to the OutputGuard list of known types
-# to have OutputGuard generate C code for this type.
-theano.compile.mode.register_OutputGuard_c_code(CudaNdarrayType)
+    def get_size(self, shape_info):
+        if shape_info:
+            return numpy.prod(shape_info) * numpy.dtype(self.dtype).itemsize
+        else:  # a scalar
+            return numpy.dtype(self.dtype).itemsize
+
+theano.compile.ops.expandable_types += (CudaNdarrayType,)
+
+# Register C code for ViewOp on CudaNdarrayType
+theano.compile.register_view_op_c_code(
+        CudaNdarrayType,
+        """
+        Py_XDECREF(%(oname)s);
+        %(oname)s = %(iname)s;
+        Py_XINCREF(%(oname)s);
+        """,
+        version=1)
 
 # Register CudaNdarrayType to the DeepCopyOp list of types with c code.
-theano.compile.function_module.register_DeepCopyOp_c_code(CudaNdarrayType, """
-        Py_XDECREF(%(oname)s);
-
-        %(oname)s = (CudaNdarray*)CudaNdarray_Copy(%(iname)s);
-
-        if (!%(oname)s)
-        {
-            PyErr_SetString(PyExc_ValueError, "DeepCopyOp: the copy failed!");
-            %(fail)s;
+theano.compile.register_deep_copy_op_c_code(
+        CudaNdarrayType,
+        """
+        int alloc = %(oname)s == NULL;
+        for(int i=0; !alloc && i<CudaNdarray_NDIM(%(oname)s); i++) {
+           if(CudaNdarray_HOST_DIMS(%(iname)s)[i] !=
+              CudaNdarray_HOST_DIMS(%(oname)s)[i]) {
+               alloc = true;
+               break;
+           }
         }
-        """)
+        if(alloc) {
+            Py_XDECREF(%(oname)s);
+            %(oname)s = (CudaNdarray*)CudaNdarray_Copy(%(iname)s);
+            if (!%(oname)s)
+            {
+                PyErr_SetString(PyExc_ValueError,
+                                "DeepCopyOp: the copy failed!");
+                %(fail)s;
+            }
+        } else {
+            if(CudaNdarray_CopyFromCudaNdarray(%(oname)s, %(iname)s)) {
+                PyErr_SetString(PyExc_ValueError,
+            "DeepCopyOp: the copy failed into already allocated space!");
+                %(fail)s;
+            }
+        }
+        """,
+        version=3)
 
 
 # THIS WORKS But CudaNdarray instances don't compare equal to one

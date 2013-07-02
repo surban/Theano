@@ -1,4 +1,5 @@
 from copy import copy, deepcopy
+import logging
 import sys
 import unittest
 
@@ -15,11 +16,22 @@ except ImportError:
         """
         Skip this test
         """
+_logger = logging.getLogger("theano.tests.unittest_tools")
 
+
+def good_seed_param(seed):
+    if seed == "random":
+        return True
+    try:
+        int(seed)
+    except Exception:
+        return False
+    return True
 
 AddConfigVar('unittests.rseed',
-        "Seed to use for randomized unit tests. Special value 'random' means using a seed of None.",
-        StrParam(666),
+        "Seed to use for randomized unit tests. "
+        "Special value 'random' means using a seed of None.",
+        StrParam(666, is_valid=good_seed_param),
         in_c_key=False)
 
 
@@ -91,7 +103,7 @@ verify_grad.E_grad = T.verify_grad.E_grad
 
 class TestOptimizationMixin(object):
     def assertFunctionContains(self, f, op, min=1, max=sys.maxint):
-        toposort = f.maker.env.toposort()
+        toposort = f.maker.fgraph.toposort()
         matches = [node for node in toposort if node.op == op]
         assert (min <= len(matches) <= max), (toposort, matches,
                                               str(op), len(matches), min, max)
@@ -106,7 +118,7 @@ class TestOptimizationMixin(object):
         return self.assertFunctionContains(f, op, min=N, max=N)
 
     def assertFunctionContainsClass(self, f, op, min=1, max=sys.maxint):
-        toposort = f.maker.env.toposort()
+        toposort = f.maker.fgraph.toposort()
         matches = [node for node in toposort if isinstance(node.op, op)]
         assert (min <= len(matches) <= max), (toposort, matches,
                                               str(op), len(matches), min, max)
@@ -166,19 +178,61 @@ class T_OpContractMixin(object):
 class InferShapeTester(unittest.TestCase):
     def setUp(self):
         seed_rng()
+        # Take into account any mode that may be defined in a child class
+        mode = getattr(self, 'mode', theano.compile.get_default_mode())
         # This mode seems to be the minimal one including the shape_i
         # optimizations, if we don't want to enumerate them explicitly.
-        self.mode = theano.compile.get_default_mode().including("canonicalize")
+        self.mode = mode.including("canonicalize")
 
-    def _compile_and_check(self, inputs, outputs, numeric_inputs, cls):
-        outputs_function = theano.function(inputs, outputs, mode=self.mode)
+    def _compile_and_check(self, inputs, outputs, numeric_inputs, cls,
+                           excluding=None, warn=True):
+        """This tests the infer_shape method only
+
+        When testing with input values with shapes that take the same
+        value over different dimensions (for instance, a square
+        matrix, or a tensor3 with shape (n, n, n), or (m, n, m)), it
+        is not possible to detect if the output shape was computed
+        correctly, or if some shapes with the same value have been
+        mixed up. For instance, if the infer_shape uses the width of a
+        matrix instead of its height, then testing with only square
+        matrices will not detect the problem. If warn=True, we emit a
+        warning when testing with such values.
+
+        """
+        mode = self.mode
+        if excluding:
+            mode = mode.excluding(*excluding)
+        if warn:
+            for var, inp in zip(inputs, numeric_inputs):
+                if isinstance(inp, (int, float, list, tuple)):
+                    inp = var.type.filter(inp)
+                if not hasattr(inp, "shape"):
+                    continue
+                # remove broadcasted dims as it is sure they can't be
+                # changed to prevent the same dim problem.
+                if hasattr(var.type, "broadcastable"):
+                    shp = [inp.shape[i] for i in range(inp.ndim)
+                           if not var.type.broadcastable[i]]
+                else:
+                    shp = inp.shape
+                if len(set(shp)) != len(shp):
+                    _logger.warn(
+                        "While testing the shape inference, we received an"
+                        " input with a shape that has some repeated values: %s"
+                        ", like a square matrix. This makes it impossible to"
+                        " check if the values for these dimensions have been"
+                        " correctly used, or if they have been mixed up.",
+                        str(inp.shape))
+                    break
+
+        outputs_function = theano.function(inputs, outputs, mode=mode)
         shapes_function = theano.function(inputs, [o.shape for o in outputs],
-                mode=self.mode)
+                                          mode=mode)
         #theano.printing.debugprint(shapes_function)
         # Check that the Op is removed from the compiled function.
-        topo_shape = shapes_function.maker.env.toposort()
+        topo_shape = shapes_function.maker.fgraph.toposort()
         assert not any(isinstance(t.op, cls) for t in topo_shape)
-        topo_out = outputs_function.maker.env.toposort()
+        topo_out = outputs_function.maker.fgraph.toposort()
         assert any(isinstance(t.op, cls) for t in topo_out)
         # Check that the shape produced agrees with the actual shape.
         numeric_outputs = outputs_function(*numeric_inputs)

@@ -28,6 +28,7 @@ from theano.sandbox.cuda import GpuElemwise, CudaNdarrayType, GpuOp
 from theano.sandbox.cuda.basic_ops import (as_cuda_ndarray_variable,
                                            gpu_contiguous)
 from theano.sandbox.cuda.opt import gpu_seqopt
+from theano.tensor.utils import hash_from_dict
 
 import pycuda_init
 if not pycuda_init.pycuda_available:
@@ -39,8 +40,7 @@ from pycuda.compiler import SourceModule
 from pycuda.tools import VectorArg
 import pycuda.gpuarray
 
-
-def theano_parse_c_arg(c_arg):
+def _replace_npy_types(c_arg):
     c_arg = c_arg.replace('npy_float32', 'float')
     c_arg = c_arg.replace('npy_float64', 'double')
     c_arg = c_arg.replace('npy_int32', 'int')
@@ -49,6 +49,10 @@ def theano_parse_c_arg(c_arg):
     c_arg = c_arg.replace('npy_uint32', 'unsigned int')
     c_arg = c_arg.replace('npy_uint16', 'unsigned short')
     c_arg = c_arg.replace('npy_uint8', 'unsigned char')
+    return c_arg
+
+def theano_parse_c_arg(c_arg):
+    c_arg = _replace_npy_types(c_arg)
     return pycuda.tools.parse_c_arg(c_arg)
 
 """
@@ -116,7 +120,7 @@ class PycudaElemwiseKernelOp(GpuOp):
 
     def __hash__(self):
         return (hash(type(self)) ^ hash(self.scalar_op) ^
-                hash(self.inplace_pattern))
+                hash_from_dict(self.inplace_pattern))
 
     def make_node(self, *inputs):
         _inputs = [gpu_contiguous(as_cuda_ndarray_variable(i)) for i in inputs]
@@ -202,7 +206,7 @@ class PycudaElemwiseSourceModuleOp(GpuOp):
 
     def __hash__(self):
         return (hash(type(self)) ^ hash(self.scalar_op) ^
-                hash(self.inplace_pattern))
+                hash_from_dict(self.inplace_pattern))
 
     def make_node(self, *inputs):
         _inputs = [gpu_contiguous(as_cuda_ndarray_variable(i)) for i in inputs]
@@ -226,14 +230,12 @@ class PycudaElemwiseSourceModuleOp(GpuOp):
         c_code = self.scalar_op.c_code(out_node, "some_name",
                                        tuple([n + "[i]" for n in in_name]),
                                        tuple(n + "[i]" for n in out_name), {})
-        c_code_param = ", ".join([var.type.dtype_specs()[1] + " *" + name
+        c_code_param = ", ".join([_replace_npy_types(var.type.dtype_specs()[1]) + " *" + name
                                   for var, name in (zip(inputs, in_name) +
                                                     zip(out_node.outputs,
                                                         out_name))] +
                                  ["int size"])
         mod = SourceModule("""
-#include<Python.h>
-#include <numpy/arrayobject.h>
   __global__ void %s(%s)
   {
     int i = (blockIdx.x+blockIdx.y*gridDim.x)*(blockDim.x*blockDim.y);
@@ -250,7 +252,9 @@ class PycudaElemwiseSourceModuleOp(GpuOp):
         #TODO support broadcast!
         #TODO assert all input have the same shape
         z, = out
-        if z[0] is None or z[0].shape != inputs[0].shape:
+        if (z[0] is None or
+            z[0].shape != inputs[0].shape or
+            not z[0].is_c_contiguous()):
             z[0] = theano.sandbox.cuda.CudaNdarray.zeros(inputs[0].shape)
         if inputs[0].shape != inputs[1].shape:
             raise TypeError("PycudaElemwiseSourceModuleOp:"
@@ -316,13 +320,11 @@ class PycudaElemwiseSourceModuleMakeThunkOp(Op):
         c_code = self.scalar_op.c_code(node, "some_name",
                                        tuple([n + "[i]" for n in in_name]),
                                        tuple(n + "[i]" for n in out_name), {})
-        c_code_param = ", ".join([var.type.dtype_specs()[1] + " *" + name
+        c_code_param = ", ".join([_replace_npy_types(var.type.dtype_specs()[1]) + " *" + name
                                   for var, name in
                                   zip(node.inputs, in_name) +
                                   zip(node.outputs, out_name)] + ["int size"])
         mod = SourceModule("""
-#include<Python.h>
-#include <numpy/arrayobject.h>
   __global__ void %s(%s)
   {
     int i = (blockIdx.x+blockIdx.y*gridDim.x)*(blockDim.x*blockDim.y);
@@ -338,7 +340,9 @@ class PycudaElemwiseSourceModuleMakeThunkOp(Op):
 
         def thunk():
             z = outputs[0]
-            if z[0] is None or z[0].shape != inputs[0][0].shape:
+            if (z[0] is None or
+                z[0].shape != inputs[0][0].shape or
+                not z[0].is_c_contiguous()):
                 z[0] = theano.sandbox.cuda.CudaNdarray.zeros(
                     inputs[0][0].shape)
             if inputs[0][0].shape != inputs[1][0].shape:

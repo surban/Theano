@@ -1,6 +1,7 @@
 import os, sys, traceback, warnings
 
 import numpy
+from nose.plugins.skip import SkipTest
 import unittest
 
 import theano
@@ -242,8 +243,8 @@ class TestComputeTestValue(unittest.TestCase):
             except ValueError, e:
                 # Get traceback
                 tb = sys.exc_info()[2]
-                # Get frame info 3 layers up
-                frame_info = traceback.extract_tb(tb)[-4]
+                # Get frame info 4 layers up
+                frame_info = traceback.extract_tb(tb)[-5]
                 # We should be in the "fx" function defined above
                 assert os.path.split(frame_info[0])[1] == 'test_compute_test_value.py'
                 assert frame_info[2] == 'fx'
@@ -287,7 +288,8 @@ class TestComputeTestValue(unittest.TestCase):
                 # The second is a new message in numpy 1.6.
                 assert (str(e).startswith("shape mismatch") or
                         str(e).startswith("operands could not be broadcast "
-                                          "together with shapes"))
+                                          "together with shapes") or
+                        str(e).startswith("could not broadcast input"))
 
         finally:
             theano.config.compute_test_value = orig_compute_test_value
@@ -334,6 +336,8 @@ class TestComputeTestValue(unittest.TestCase):
             theano.config.compute_test_value = orig_compute_test_value
 
     def test_no_perform(self):
+        if not theano.config.cxx:
+            raise SkipTest("G++ not available, so we need to skip this test.")
         class IncOneC(Op):
             """An Op with only a C (c_code) implementation"""
 

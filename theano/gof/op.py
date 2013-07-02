@@ -3,6 +3,7 @@
 The `Op` class is the base interface for all operations
 compatible with `gof`'s :doc:`graph` routines.
 """
+
 __authors__   = "theano-dev"
 __copyright__ = "(c) 2010, Universite de Montreal"
 __license__   = "3-clause BSD License"
@@ -11,17 +12,17 @@ __contact__   = "theano-dev <theano-dev@googlegroups.com>"
 
 __docformat__ = "restructuredtext en"
 
-
 import logging
 import warnings
 
 import theano
 from theano import config
 
-import cc
-import graph
-import utils
-from env import Env
+import theano.gof.cc
+from theano.gof import graph
+from theano.gof import utils
+from theano.gof.cmodule import GCC_compiler
+from theano.gof.fg import FunctionGraph
 
 
 class CLinkerObject(object):
@@ -373,7 +374,16 @@ class PureOp(object):
         `default_output`, but subclasses are free to override this function and ignore
         `default_output`.
 
+        :param inputs: The Op's inputs, forwarded to the call to `make_node()`.
+
+        :param kwargs: Additional keyword arguments to be forwarded to
+            `make_node()` *except* for optional argument `return_list` (which
+            defaults to False). If `return_list` is True, then the returned
+            value is always a list. Otherwise it is either a single Variable
+            when the output of `make_node()` contains a single element, or this
+            output (unchanged) when it contains multiple elements.
         """
+        return_list = kwargs.pop('return_list', False)
         node = self.make_node(*inputs, **kwargs)
         if self.add_stack_trace_on_call:
             self.add_tag_trace(node)
@@ -434,9 +444,14 @@ class PureOp(object):
                     output.tag.test_value = storage_map[output][0]
 
         if self.default_output is not None:
-            return node.outputs[self.default_output]
+            rval = node.outputs[self.default_output]
+            if return_list:
+                rval = [rval]
+            return rval
         else:
-            if len(node.outputs) == 1:
+            if return_list:
+                return list(node.outputs)
+            elif len(node.outputs) == 1:
                 return node.outputs[0]
             else:
                 return node.outputs
@@ -448,7 +463,6 @@ class PureOp(object):
     #########################
     # Python implementation #
     #########################
-
 
     def R_op(self, inputs, eval_points):
         """
@@ -479,7 +493,6 @@ class PureOp(object):
                 "theano-dev mailing list for assistance. If it is your "
                 "own op, implement the R_op method." %
                 (self, self.__class__.__name__))
-
 
     def perform(self, node, inputs, output_storage):
         """
@@ -527,10 +540,10 @@ class Op(utils.object2, PureOp, CLinkerOp):
         # existing Ops get a _op_use_c_code attribute
         obj = object.__new__(cls)
         if not hasattr(obj, '_op_use_c_code'):
-            obj._op_use_c_code = True
+            obj._op_use_c_code = theano.config.cxx
         return obj
 
-    def __init__(self, use_c_code=True):
+    def __init__(self, use_c_code=theano.config.cxx):
         self._op_use_c_code = use_c_code
 
     def make_thunk(self, node, storage_map, compute_map, no_recycling):
@@ -563,12 +576,12 @@ class Op(utils.object2, PureOp, CLinkerOp):
         #logger.debug('Compiling node %i of graph' % node_idx)
         if self._op_use_c_code:
             try:
-                e = Env(*graph.clone(node.inputs, node.outputs))
+                e = FunctionGraph(*graph.clone(node.inputs, node.outputs))
 
                 e_no_recycling = [new_o
                         for (new_o, old_o) in zip(e.outputs, node.outputs)
                         if old_o in no_recycling]
-                cl = cc.CLinker().accept(e,
+                cl = theano.gof.cc.CLinker().accept(e,
                         no_recycling=e_no_recycling)
 
                 logger.debug('Trying CLinker.make_thunk')
@@ -586,6 +599,10 @@ class Op(utils.object2, PureOp, CLinkerOp):
                 rval.outputs = node_output_storage
                 rval.lazy = False
                 return rval
+                # the next line does nothing, but pyflakes is too
+                # stupid to realize the def rval below is not a
+                # redefinition unless I include this
+                del rval
             except (NotImplementedError, utils.MethodNotDefined):
                 logger.debug('Falling back on perform')
 
@@ -731,3 +748,78 @@ We need that to be able not to run debug checks a number of times that is
 exponential in the nesting level of those ops.
 For instance, Scan will be registered here.
 """
+
+
+class OpenMPOp(Op):
+    """All op using OpenMP code should inherit from this Op.
+
+    This op will check that the compiler support correctly OpenMP code.
+    If not, it will print a warning and disable openmp for this Op.
+    Then it will generate the not OpenMP code.
+
+    This is needed as EPD on Windows g++ version spec information tell
+    it support OpenMP, but does not include the OpenMP files.
+
+    We also add the correct compiler flags in c_compile_args.
+
+    """
+    gxx_support_openmp = None
+    """
+    True/False after we tested this.
+    """
+
+    def __init__(self, openmp=None):
+        if openmp is None:
+            openmp = theano.config.openmp
+        self.openmp = openmp
+
+    def c_compile_args(self):
+        self.update_self_openmp()
+        if self.openmp:
+            return ['-fopenmp']
+        return []
+
+    @staticmethod
+    def test_gxx_support():
+        code = """
+        #include <omp.h>
+int main( int argc, const char* argv[] )
+{
+        int res[10];
+
+        for(int i=0; i < 10; i++){
+            res[i] = i;
+        }
+}
+        """
+        default_openmp = GCC_compiler.try_compile_tmp(
+                src_code=code,
+                tmp_prefix='test_omp_',
+                flags=['-fopenmp'],
+                try_run=False)
+        return default_openmp
+
+    def update_self_openmp(self):
+        """
+        Make sure self.openmp is not True if there is no support in gxx
+        """
+        if self.openmp:
+            if OpenMPOp.gxx_support_openmp is None:
+                OpenMPOp.gxx_support_openmp = OpenMPOp.test_gxx_support()
+                if not OpenMPOp.gxx_support_openmp:
+                    #We want to warn only once.
+                    warnings.warn(
+                        "Your g++ compiler fails to compile OpenMP code. We"
+                        " know this happen with some version of the EPD mingw"
+                        " compiler. We disable openmp everywhere in Theano."
+                        " To remove this warning set the theano flags `openmp`"
+                        " to False.",
+                        stacklevel=3)
+            if OpenMPOp.gxx_support_openmp is False:
+                self.openmp = False
+                theano.config.openmp = False
+
+    def make_thunk(self, node, storage_map, compute_map, no_recycling):
+        self.update_self_openmp()
+        return super(OpenMPOp, self).make_thunk(node, storage_map,
+                                                compute_map, no_recycling)

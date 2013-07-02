@@ -5,7 +5,8 @@ import subprocess
 from theano.configparser import (
         AddConfigVar, BoolParam, ConfigParam, EnumStr, IntParam,
         TheanoConfigParser)
-
+from theano.misc.cpucount import cpuCount
+from theano.misc.windows import call_subprocess_Popen
 
 _logger = logging.getLogger('theano.configdefaults')
 
@@ -46,7 +47,8 @@ AddConfigVar('int_division',
 AddConfigVar('device',
         ("Default device for computations. If gpu*, change the default to try "
          "to move computation to it and to put shared variable of float32 "
-         "on it."),
+         "on it. Do not use upper case letters, only lower case even if "
+         "NVIDIA use capital letters."),
         EnumStr('cpu', 'gpu',
             'gpu0', 'gpu1', 'gpu2', 'gpu3',
             'gpu4', 'gpu5', 'gpu6', 'gpu7',
@@ -74,6 +76,11 @@ AddConfigVar('force_device',
         BoolParam(False, allow_override=False),
         in_c_key=False)
 
+AddConfigVar('print_active_device',
+        "Print active device at when the GPU device is initialized.",
+        BoolParam(True, allow_override=False),
+        in_c_key=False)
+
 # Do not add FAST_RUN_NOGC to this list (nor any other ALL CAPS shortcut).
 # The way to get FAST_RUN_NOGC is with the flag 'linker=c|py_nogc'.
 # The old all capital letter way of working is deprecated as it is not
@@ -86,34 +93,62 @@ AddConfigVar('mode',
                 'FAST_COMPILE', 'PROFILE_MODE', 'DEBUG_MODE'),
         in_c_key=False)
 
+enum = EnumStr("g++", "")
+
 # Test whether or not g++ is present: disable C code if it is not.
 # Using the dummy file descriptor below is a workaround for a crash experienced
 # in an unusual Python 2.4.4 Windows environment with the default stdin=None.
 dummy_stdin = open(os.devnull)
 try:
-    subprocess.Popen('g++', stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                     stdin=dummy_stdin.fileno())
+    try:
+        rc = call_subprocess_Popen(['g++', '-v'], stdout=subprocess.PIPE,
+                                   stderr=subprocess.PIPE,
+                                   stdin=dummy_stdin).wait()
+    except OSError:
+        rc = 1
+finally:
+    dummy_stdin.close()
+    del dummy_stdin
+if rc == 0:
     # Keep the default linker the same as the one for the mode FAST_RUN
     AddConfigVar('linker',
                  ("Default linker used if the theano flags mode is Mode "
                   "or ProfileMode"),
-                 EnumStr('c|py', 'py', 'c', 'c|py_nogc', 'c&py',
-                     'vm', 'cvm', 'vm_nogc', 'cvm_nogc'),
+                 EnumStr('cvm', 'c|py', 'py', 'c', 'c|py_nogc', 'c&py',
+                     'vm', 'vm_nogc', 'cvm_nogc'),
                  in_c_key=False)
-except OSError:
+else:
     # g++ is not present, linker should default to python only
     AddConfigVar('linker',
                  ("Default linker used if the theano flags mode is Mode "
                   "or ProfileMode"),
-                 EnumStr('py', 'c|py', 'c', 'c|py_nogc', 'c&py',
-                     'vm', 'cvm', 'vm_nogc', 'cvm_nogc'),
+                 EnumStr('py', 'vm', 'vm_nogc'),
                  in_c_key=False)
     _logger.warning('g++ not detected ! Theano will be unable to execute '
             'optimized C-implementations (for both CPU and GPU) and will '
             'default to Python implementations. Performance will be severely '
             'degraded.')
+    enum = EnumStr("")
 
-del dummy_stdin
+AddConfigVar('cxx',
+             "The C++ compiler to use. Currently only g++ is"
+             " supported, but supporting additional compilers should not be "
+             "too difficult. "
+             "If it is empty, no C++ code is compiled.",
+             enum,
+             in_c_key=False)
+del enum
+
+
+#Keep the default value the same as the one for the mode FAST_RUN
+AddConfigVar('allow_gc',
+             "Do we default to delete intermediate results during Theano"
+             " function calls? Doing so lowers the memory requirement, but"
+             " asks that we reallocate memory at the next function call."
+             " This is implemented for the default linker, but may not work"
+             " for all linkers.",
+             BoolParam(True),
+             in_c_key=False)
 
 #Keep the default optimizer the same as the one for the mode FAST_RUN
 AddConfigVar('optimizer',
@@ -123,9 +158,9 @@ AddConfigVar('optimizer',
         in_c_key=False)
 
 AddConfigVar('on_opt_error',
-        ("What to do when an optimization crashes: warn and skip it, or raise "
-         "the exception"),
-        EnumStr('warn', 'raise'),
+        ("What to do when an optimization crashes: warn and skip it, raise "
+         "the exception, or fall into the pdb debugger."),
+        EnumStr('warn', 'raise', 'pdb'),
         in_c_key=False)
 
 
@@ -159,6 +194,11 @@ AddConfigVar('nocleanup',
         BoolParam(False),
         in_c_key=False)
 
+AddConfigVar('on_unused_input',
+             "What to do if a variable in the 'inputs' list of "
+             " theano.function() is not used in the graph.",
+             EnumStr('raise', 'warn', 'ignore'),
+             in_c_key=False)
 
 # This flag is used when we import Theano to initialize global variables.
 # So changing it after import will not modify these global variables.
@@ -194,7 +234,8 @@ AddConfigVar('op.set_flops',
 
 AddConfigVar('gpuelemwise.sync',
         "when true, wait that the gpu fct finished and check it error code.",
-        BoolParam(True))
+        BoolParam(True),
+        in_c_key=False)
 
 AddConfigVar('traceback.limit',
              "The number of stack to trace. -1 mean all.",
@@ -259,7 +300,7 @@ AddConfigVar('warn.ignore_bug_before',
               "bugs found after that version. "
               "Warning for specific bugs can be configured with specific "
               "[warn] flags."),
-             EnumStr('None', 'all', '0.3', '0.4', '0.4.1', '0.5',
+             EnumStr('0.5', 'None', 'all', '0.3', '0.4', '0.4.1', '0.6',
                      allow_override=False),
              in_c_key=False)
 
@@ -322,6 +363,17 @@ AddConfigVar('warn.gpu_set_subtensor1',
         BoolParam(warn_default('0.6')),
         in_c_key=False)
 
+AddConfigVar('warn.vm_gc_bug',
+        "There was a bug that existed in the default Theano configuration,"
+        " only in the development version between July 5th 2012"
+        " and July 30th 2012. This was not in a released version."
+        " If your code was affected by this bug, a warning"
+        " will be printed during the code execution if you use the"
+        " `linker=vm,vm.lazy=True,warn.vm_gc_bug=True` Theano flags."
+        " This warning is disabled by default as the bug was not released.",
+        BoolParam(False),
+        in_c_key=False)
+
 AddConfigVar('compute_test_value',
         ("If 'True', Theano will run each op at graph build time, using "
          "Constants, SharedVariables and the tag 'test_value' as inputs "
@@ -348,3 +400,44 @@ AddConfigVar('exception_verbosity',
                 C. log_likelihood_h""",
         EnumStr('low', 'high'),
         in_c_key=False)
+
+#Test if the env variable is set
+var = os.getenv('OMP_NUM_THREADS', None)
+if var:
+    try:
+        int(var)
+    except ValueError:
+        raise TypeError("The environment variable OMP_NUM_THREADS"
+                        " should be a number, got '%s'." % var)
+    else:
+        default_openmp = not int(var) == 1
+else:
+    #Check the number of cores availables.
+    count = cpuCount()
+    if count == -1:
+        _logger.warning("We are not able to detect the number of CPU cores."
+                        " We disable openmp by default. To remove this"
+                        " warning, set the environment variable"
+                        " OMP_NUM_THREADS to the number of threads you"
+                        " want theano to use.")
+    default_openmp = count > 1
+
+# Disable it by default for now as currently only the ConvOp supports
+# it, and this causes slowdown by default as we do not disable it for
+# too small convolution.
+default_openmp = False
+
+AddConfigVar('openmp',
+             "Allow (or not) parallel computation on the CPU with OpenMP. "
+             "This is the default value used when creating an Op that "
+             "supports OpenMP parallelization. It is preferable to define it "
+             "via the Theano configuration file ~/.theanorc or with the "
+             "environment variable THEANO_FLAGS. Parallelization is only "
+             "done for some operations that implement it, and even for "
+             "operations that implement parallelism, each operation is free "
+             "to respect this flag or not. You can control the number of "
+             "threads used with the environment variable OMP_NUM_THREADS."
+             " If it is set to 1, we disable openmp in Theano by default.",
+             BoolParam(default_openmp),
+             in_c_key=False,
+         )

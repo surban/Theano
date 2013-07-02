@@ -24,31 +24,28 @@ if cuda_available:
                                      float32_shared_constructor)
 
 
-def mulmod(a, b, c, m):
-    r = numpy.int32((numpy.int64(a)*b + c) % m)
-    if r >= 0:
-        return r
-    else:
-        return r+m
-
 def matVecModM(A, s, m):
     # return (A * s) % m
-    err_orig = numpy.seterr(over='ignore')
-    try:
-        x = numpy.zeros_like(s)
-        for i in xrange(len(x)):
-            for j in xrange(len(s)):
-                x[i] = mulmod(A[i][j], s[j], x[i], m)
-        return x
-    finally:
-        numpy.seterr(**err_orig)
+    x = numpy.zeros_like(s)
+    for i in xrange(len(x)):
+        for j in xrange(len(s)):
+            r = numpy.int32((numpy.int64(A[i][j]) * s[j] + x[i]) % m)
+            if r >= 0:
+                x[i] = r
+            else:
+                x[i] = r + m
+    return x
 
 def multMatVect(v, A, m1, B, m2):
     #multiply the first half of v by A with a modulo of m1
     #and the second half by B with a modulo of m2
-    r = numpy.zeros_like(v)
-    r[:3] = matVecModM(A, v[:3], m1)
-    r[3:] = matVecModM(B, v[3:], m2)
+    err_orig = numpy.seterr(over='ignore')
+    try:
+        r = numpy.zeros_like(v)
+        r[:3] = matVecModM(A, v[:3], m1)
+        r[3:] = matVecModM(B, v[3:], m2)
+    finally:
+        numpy.seterr(**err_orig)
     return r
 
 
@@ -80,6 +77,7 @@ A2p134 = numpy.asarray(
   [[796789021, 1464208080, 607337906],
    [1241679051, 1431130166, 1464208080],
    [1401213391, 1178684362, 1431130166]])
+np_int32_vals = [numpy.int32(i) for i in (0, 7, 9, 15, 16, 22, 24)]
 
 def ff_2p134(rstate):
     return multMatVect(rstate, A1p134, M1, A2p134, M2)
@@ -87,59 +85,55 @@ def ff_2p134(rstate):
 def ff_2p72(rstate):
     return multMatVect(rstate, A1p72, M1, A2p72, M2)
 
+
 def mrg_next_value(rstate, new_rstate):
-    err_orig = numpy.seterr(over='ignore')
-    try:
-        x11, x12, x13, x21, x22, x23 = rstate
-        assert type(x11) == numpy.int32
+    x11, x12, x13, x21, x22, x23 = rstate
+    assert type(x11) == numpy.int32
 
-        i0, i7, i9, i15, i16, i22, i24 = [numpy.int32(i)
-                for i in (0,7, 9, 15, 16, 22, 24)]
+    #i0, i7, i9, i15, i16, i22, i24 = [numpy.int32(i) for i in (0, 7, 9, 15, 16, 22, 24)]
+    i0, i7, i9, i15, i16, i22, i24 = np_int32_vals
+    #first component
+    y1 = (((x12 & MASK12) << i22) + (x12 >> i9)
+        + ((x13 & MASK13) << i7) + (x13 >> i24))
 
-        #first component
-        y1 = (((x12 & MASK12) << i22) + (x12 >> i9)
-            + ((x13 & MASK13) << i7) + (x13 >> i24))
+    assert type(y1) == numpy.int32
+    if (y1 < 0 or y1 >= M1):     #must also check overflow
+        y1 -= M1;
+    y1 += x13;
+    if (y1 < 0 or y1 >= M1):
+        y1 -= M1;
 
-        assert type(y1) == numpy.int32
-        if (y1 < 0 or y1 >= M1):     #must also check overflow
-            y1 -= M1;
-        y1 += x13;
-        if (y1 < 0 or y1 >= M1):
-            y1 -= M1;
+    x13 = x12;
+    x12 = x11;
+    x11 = y1;
 
-        x13 = x12;
-        x12 = x11;
-        x11 = y1;
+    #second component
+    y1 = ((x21 & MASK2) << i15) + (MULT2 * (x21 >> i16));
+    assert type(y1) == numpy.int32
+    if (y1 < 0 or y1 >= M2):
+        y1 -= M2;
+    y2 = ((x23 & MASK2) << i15) + (MULT2 * (x23 >> i16));
+    assert type(y2) == numpy.int32
+    if (y2 < 0 or y2 >= M2):
+        y2 -= M2;
+    y2 += x23;
+    if (y2 < 0 or y2 >= M2):
+        y2 -= M2;
+    y2 += y1;
+    if (y2 < 0 or y2 >= M2):
+        y2 -= M2;
 
-        #second component
-        y1 = ((x21 & MASK2) << i15) + (MULT2 * (x21 >> i16));
-        assert type(y1) == numpy.int32
-        if (y1 < 0 or y1 >= M2):
-            y1 -= M2;
-        y2 = ((x23 & MASK2) << i15) + (MULT2 * (x23 >> i16));
-        assert type(y2) == numpy.int32
-        if (y2 < 0 or y2 >= M2):
-            y2 -= M2;
-        y2 += x23;
-        if (y2 < 0 or y2 >= M2):
-            y2 -= M2;
-        y2 += y1;
-        if (y2 < 0 or y2 >= M2):
-            y2 -= M2;
+    x23 = x22;
+    x22 = x21;
+    x21 = y2;
 
-        x23 = x22;
-        x22 = x21;
-        x21 = y2;
-
-        # Must never return either 0 or M1+1
-        new_rstate[...] = [x11, x12, x13, x21, x22, x23]
-        assert new_rstate.dtype == numpy.int32
-        if (x11 <= x21):
-            return (x11 - x21 + M1) * NORM
-        else:
-            return (x11 - x21) * NORM
-    finally:
-        numpy.seterr(**err_orig)
+    # Must never return either 0 or M1+1
+    new_rstate[...] = [x11, x12, x13, x21, x22, x23]
+    assert new_rstate.dtype == numpy.int32
+    if (x11 <= x21):
+        return (x11 - x21 + M1) * NORM
+    else:
+        return (x11 - x21) * NORM
 
 class mrg_uniform_base(Op):
     def __init__(self, output_type, inplace=False):
@@ -175,6 +169,9 @@ class mrg_uniform_base(Op):
     def grad(self,inputs,ograd):
         return [None for i in inputs]
 
+    def R_op(self, inputs, eval_points):
+        return [None for i in eval_points]
+
 
 class mrg_uniform(mrg_uniform_base):
     #CPU VERSION
@@ -208,9 +205,13 @@ class mrg_uniform(mrg_uniform_base):
 
         rval = numpy.zeros(n_elements, dtype=self.output_type.dtype)
 
-        for i in xrange(n_elements):
-            sample = mrg_next_value(rstate[i%n_streams], rstate[i%n_streams])
-            rval[i] = sample
+        err_orig = numpy.seterr(over='ignore')
+        try:
+            for i in xrange(n_elements):
+                sample = mrg_next_value(rstate[i%n_streams], rstate[i%n_streams])
+                rval[i] = sample
+        finally:
+            numpy.seterr(**err_orig)
 
         o_rstate[0] = node.outputs[0].type.filter(rstate) # send to GPU if necessary
         o_sample[0] = node.outputs[1].type.filter(rval.reshape(size))# send to GPU if necessary
@@ -219,9 +220,9 @@ class mrg_uniform(mrg_uniform_base):
         rstate, size = inp
         o_rstate, o_sample = out
         if self.inplace:
-            o_rstate_requirement = 'NPY_C_CONTIGUOUS|NPY_ALIGNED'
+            o_rstate_requirement = 'NPY_ARRAY_C_CONTIGUOUS|NPY_ARRAY_ALIGNED'
         else:
-            o_rstate_requirement = 'NPY_ENSURECOPY|NPY_C_CONTIGUOUS|NPY_ALIGNED'
+            o_rstate_requirement = 'NPY_ARRAY_ENSURECOPY|NPY_ARRAY_C_CONTIGUOUS|NPY_ARRAY_ALIGNED'
         ndim = self.output_type.ndim
         o_type_num = numpy.asarray(0, dtype=self.output_type.dtype).dtype.num
         fail = sub['fail']
@@ -240,7 +241,7 @@ class mrg_uniform(mrg_uniform_base):
         int n_elements = 1;
         int n_streams = 0;
         int must_alloc_sample = ((NULL == %(o_sample)s)
-                                 || (%(o_sample)s->nd != %(ndim)s)
+                                 || (PyArray_NDIM(%(o_sample)s) != %(ndim)s)
                                  || !(PyArray_ISCONTIGUOUS(%(o_sample)s)));
         %(otype)s * sample_data;
         npy_int32 * state_data;
@@ -260,18 +261,18 @@ class mrg_uniform(mrg_uniform_base):
         const npy_int32 MASK2 = 65535;      //2^16 - 1
         const npy_int32 MULT2 = 21069;
 
-        if (%(size)s->nd != 1)
+        if (PyArray_NDIM(%(size)s) != 1)
         {
             PyErr_SetString(PyExc_ValueError, "size must be vector");
             %(fail)s
         }
-        if (%(size)s->dimensions[0] != %(ndim)s)
+        if (PyArray_DIMS(%(size)s)[0] != %(ndim)s)
         {
             PyErr_Format(PyExc_ValueError, "size must have length %%i (not %%i)",
-                %(ndim)s, int(%(size)s->dimensions[0]));
+                %(ndim)s, int(PyArray_DIMS(%(size)s)[0]));
             %(fail)s
         }
-        if (%(size)s->descr->type_num != PyArray_INT32)
+        if (PyArray_DESCR(%(size)s)->type_num != NPY_INT32)
         {
             PyErr_SetString(PyExc_ValueError, "size must be int32");
             %(fail)s
@@ -280,7 +281,7 @@ class mrg_uniform(mrg_uniform_base):
         {
             odims[i] = ((npy_int32*)(%(size)s->data + %(size)s->strides[0] * i))[0];
             n_elements *= odims[i];
-            must_alloc_sample = must_alloc_sample || (%(o_sample)s->dimensions[i] != odims[i]);
+            must_alloc_sample = must_alloc_sample || (PyArray_DIMS(%(o_sample)s)[i] != odims[i]);
             //fprintf(stderr, "size %%i %%i\\n", i, (int)odims[i]);
         }
         if (must_alloc_sample)
@@ -295,22 +296,22 @@ class mrg_uniform(mrg_uniform_base):
         Py_XDECREF(%(o_rstate)s);
         %(o_rstate)s = (PyArrayObject*)PyArray_FromAny(py_%(rstate)s, NULL, 0, 0, %(o_rstate_requirement)s,NULL);
 
-        if (%(o_rstate)s->nd != 2)
+        if (PyArray_NDIM(%(o_rstate)s) != 2)
         {
             PyErr_SetString(PyExc_ValueError, "rstate must be matrix");
             %(fail)s
         }
-        if (%(o_rstate)s->dimensions[1] != 6)
+        if (PyArray_DIMS(%(o_rstate)s)[1] != 6)
         {
             PyErr_Format(PyExc_ValueError, "rstate must have 6 columns");
             %(fail)s
         }
-        if (%(o_rstate)s->descr->type_num != PyArray_INT32)
+        if (PyArray_DESCR(%(o_rstate)s)->type_num != NPY_INT32)
         {
             PyErr_SetString(PyExc_ValueError, "rstate must be int32");
             %(fail)s
         }
-        n_streams = %(o_rstate)s->dimensions[0];
+        n_streams = PyArray_DIMS(%(o_rstate)s)[0];
 
         sample_data = (%(otype)s *) %(o_sample)s->data;
         state_data = (npy_int32 *) %(o_rstate)s->data;
@@ -451,7 +452,7 @@ class GPU_mrg_uniform(mrg_uniform_base, GpuOp):
                 y2 += x23;
                 y2 -= (y2 < 0 || y2 >= M2) ? M2 : 0;
                 y2 += y1;
-                y2 -= (y2 < 0 or y2 >= M2) ? M2 : 0;
+                y2 -= (y2 < 0 || y2 >= M2) ? M2 : 0;
 
                 x23 = x22;
                 x22 = x21;
@@ -500,20 +501,20 @@ class GPU_mrg_uniform(mrg_uniform_base, GpuOp):
         int must_alloc_sample = ((NULL == %(o_sample)s)
                 || !CudaNdarray_Check(py_%(o_sample)s)
                 || !CudaNdarray_is_c_contiguous(%(o_sample)s)
-                || (%(o_sample)s->nd != %(ndim)s));
+                || (PyArray_NDIM(%(o_sample)s) != %(ndim)s));
 
-        if (%(size)s->nd != 1)
+        if (PyArray_NDIM(%(size)s) != 1)
         {
             PyErr_SetString(PyExc_ValueError, "size must be vector");
             %(fail)s
         }
-        if (%(size)s->dimensions[0] != %(ndim)s)
+        if (PyArray_DIMS(%(size)s)[0] != %(ndim)s)
         {
             PyErr_Format(PyExc_ValueError, "size must have length %%i (not %%i)",
-                %(ndim)s, %(size)s->dimensions[0]);
+                %(ndim)s, PyArray_DIMS(%(size)s)[0]);
             %(fail)s
         }
-        if (%(size)s->descr->type_num != PyArray_INT32)
+        if (PyArray_DESCR(%(size)s)->type_num != NPY_INT32)
         {
             PyErr_SetString(PyExc_ValueError, "size must be int32");
             %(fail)s
@@ -551,7 +552,7 @@ class GPU_mrg_uniform(mrg_uniform_base, GpuOp):
             %(o_rstate)s = (CudaNdarray*)CudaNdarray_Copy(%(rstate)s);
         }
 
-        if (%(o_rstate)s->nd != 1)
+        if (PyArray_NDIM(%(o_rstate)s) != 1)
         {
             PyErr_SetString(PyExc_ValueError, "rstate must be vector");
             %(fail)s;
@@ -594,7 +595,7 @@ class GPU_mrg_uniform(mrg_uniform_base, GpuOp):
         //////// </ code generated by mrg_uniform>
         """ %locals()
     def c_code_cache_version(self):
-        return (6,)
+        return (7,)
 
 
 def guess_n_streams(size, warn=True):
@@ -602,7 +603,7 @@ def guess_n_streams(size, warn=True):
     Return a guess at a good number of streams.
 
     :param warn: If True, warn when a guess cannot be made (in which case
-    we return 30 * 256).
+    we return 60 * 256).
     """
     # TODO: a smart way of choosing the number of streams, see #612.
     # Note that this code was moved out of `MRG_RandomStreams` so that it can
@@ -614,23 +615,27 @@ def guess_n_streams(size, warn=True):
         for s in size:
             r *= s
         if r > 6:
-            r = r/6 # chosen as fastest for rbm_benchmark
-        return r
+            r = r // 6 # chosen as fastest for rbm_benchmark
+
+        # The purpose of sampling from many streams is to be able to use
+        # the GPU to its full capacity.  It just wastes RAM and stream-initialization time to
+        # allocate more streams than necessary for the GPU.
+        # XXX: This number is chosen to be good for 280 and 480 architectures,
+        #      Better would be to use pycuda to query the number of
+        #      processors on the GPU device,
+        #      rather than guessing 60.
+        return min(r, 60 * 256)
     else:
         if warn:
             warnings.warn((
                     "MRG_RandomStreams Can't determine #streams from "
-                    "size (%s), guessing 30*256") % str(size),
+                    "size (%s), guessing 60*256") % str(size),
                     stacklevel=3)
-        return 30 * 256
+        return 60 * 256
 
 
 class MRG_RandomStreams(object):
     """Module component with similar interface to numpy.random (numpy.random.RandomState)"""
-
-    state_updates = []
-    """A list of pairs of the form (input_r, output_r), representing the
-    update rules of all the random states generated by this RandomStreams"""
 
     def updates(self):
         return list(self.state_updates)
@@ -646,6 +651,10 @@ class MRG_RandomStreams(object):
             M2 = 2147462579, and not all 0.
 
         """
+        # A list of pairs of the form (input_r, output_r), representing the
+        # update rules of all the random states generated by this RandomStreams.
+        self.state_updates = []
+
         super(MRG_RandomStreams, self).__init__()
         if isinstance(seed, int):
             if seed == 0:
@@ -684,7 +693,7 @@ class MRG_RandomStreams(object):
         rval = numpy.zeros((n_streams,6), dtype='int32')
         rval[0] = self.rstate
         for i in xrange(1, n_streams):
-            rval[i] = ff_2p72(rval[i-1])
+            rval[i] = ff_2p72(rval[i - 1])
         if inc_rstate:
             self.inc_rstate()
         return rval
@@ -732,21 +741,21 @@ class MRG_RandomStreams(object):
 
         if isinstance(size, tuple):
             msg = "size must be a tuple of int or a Theano variable"
-            assert all([isinstance(i,int) or isinstance(i,Variable)
-                for i in size]), msg
-            if any([isinstance(i, int) and i <= 0 for i in size]):
+            assert all([isinstance(i, (numpy.integer, int, Variable))
+                        for i in size]), msg
+            if any([isinstance(i, (numpy.integer, int)) and i <= 0 for i in size]):
                 raise ValueError(
                     "The specified size contains a dimension with value <= 0",
                     size)
 
         else:
             msg = "size must be a tuple of int or a Theano variable"
-            assert isinstance(size, Variable) and size.ndim==1, msg
+            assert isinstance(size, Variable) and size.ndim == 1, msg
 
         if nstreams is None:
             nstreams = self.n_streams(size)
 
-        if self.use_cuda and dtype=='float32':
+        if self.use_cuda and dtype == 'float32':
             rstates = self.get_substream_rstates(nstreams)
             rstates = rstates.flatten()
             # HACK - we use fact that int32 and float32 have same size to
@@ -754,7 +763,7 @@ class MRG_RandomStreams(object):
             # these *SHOULD NEVER BE USED AS FLOATS*
             tmp_float_buf = numpy.frombuffer(rstates.data, dtype='float32')
             assert tmp_float_buf.shape == rstates.shape
-            assert tmp_float_buf.data[:24] == rstates.data[:24]
+            assert (tmp_float_buf.view('int32') == rstates).all()
             # transfer to device
             node_rstate = float32_shared_constructor(tmp_float_buf)
             assert isinstance(node_rstate.type, CudaNdarrayType)
@@ -770,10 +779,12 @@ class MRG_RandomStreams(object):
             node_rstate = shared(self.get_substream_rstates(nstreams))
             u = self.pretty_return(node_rstate,
                     *mrg_uniform.new(node_rstate, ndim, dtype, size))
-        r = u * (high-low) + low
+        r = u * (high - low) + low
 
         if u.type.broadcastable != r.type.broadcastable:
-            raise NotImplementedError( 'Increase the size to match the broadcasting pattern of `low` and `high` arguments')
+            raise NotImplementedError(
+                    'Increase the size to match the broadcasting pattern of '
+                    '`low` and `high` arguments')
 
         assert r.dtype == dtype
         return  r
@@ -799,9 +810,14 @@ class MRG_RandomStreams(object):
         probably result in [[1,0,0],[0,1,0]].
 
         .. note::
-            `size` and `ndim` are only there keep the same signature as other
+            -`size` and `ndim` are only there keep the same signature as other
             uniform, binomial, normal, etc.
             todo : adapt multinomial to take that into account
+
+            -Does not do any value checking on pvals, i.e. there is no
+             check that the elements are non-negative, less than 1, or
+             sum to 1. passing pvals = [[-2., 2.]] will result in
+             sampling [[0, 0]]
         """
         if pvals is None:
             raise TypeError("You have to specify pvals")
@@ -813,10 +829,18 @@ class MRG_RandomStreams(object):
                     size)
 
         if n == 1 and pvals.ndim == 2:
+            if size is not None:
+                raise ValueError("Provided a size argument to "
+                        "MRG_RandomStreams.multinomial, which does not use "
+                        "the size argument.")
+            if ndim is not None:
+                raise ValueError("Provided an ndim argument to "
+                        "MRG_RandomStreams.multinomial, which does not use "
+                        "the ndim argument.")
             ndim, size, bcast = raw_random._infer_ndim_bcast(
-                    ndim, size, pvals[:,0])
-            assert ndim==1
-            bcast = bcast+(pvals.type.broadcastable[-1],)
+                    ndim, size, pvals[:, 0])
+            assert ndim == 1
+            bcast = bcast + (pvals.type.broadcastable[-1],)
             unis = self.uniform(size=size, ndim=1, nstreams=nstreams)
             op = multinomial.MultinomialFromUniform(dtype)
             return op(pvals, unis)
@@ -824,7 +848,7 @@ class MRG_RandomStreams(object):
             raise NotImplementedError(("MRG_RandomStreams.multinomial only"
                 " implemented with n == 1 and pvals.ndim = 2"))
 
-    def normal(self, size=None, avg=0.0, std=1.0, ndim=None,
+    def normal(self, size, avg=0.0, std=1.0, ndim=None,
                dtype=None, nstreams=None):
         """
         :param size: Can be a list of integers or Theano variables (ex: the
@@ -851,7 +875,7 @@ class MRG_RandomStreams(object):
 
         evened = False
         constant = False
-        if isinstance(size, tuple) and all([isinstance(i,int) for i in size]):
+        if isinstance(size, tuple) and all([isinstance(i, (numpy.integer, int)) for i in size]):
             constant = True
             n_samples = numpy.prod(size)
 
@@ -860,7 +884,7 @@ class MRG_RandomStreams(object):
                 evened = True
         else:
             #if even, don't change, if odd, +1
-            n_samples = prod(size)+(prod(size)%2)
+            n_samples = prod(size) + (prod(size) % 2)
         flattened = self.uniform(size=(n_samples,), dtype=dtype,
                                  nstreams=nstreams)
 
@@ -880,7 +904,7 @@ class MRG_RandomStreams(object):
 
         # so trying this instead
         first_half = sqrt_ln_U1 * cos(numpy.array(2.0 * numpy.pi, dtype=dtype) * U2)
-        second_half = sqrt_ln_U1 * sin(numpy.array(2.0 * numpy.pi, dtype=dtype)*U2)
+        second_half = sqrt_ln_U1 * sin(numpy.array(2.0 * numpy.pi, dtype=dtype) * U2)
         normal_samples = join(0, first_half, second_half)
 
         final_samples = None
@@ -898,6 +922,7 @@ class MRG_RandomStreams(object):
 
         assert final_samples.dtype == dtype
         return final_samples
+
 
 @local_optimizer([None])
 def mrg_random_make_inplace(node):

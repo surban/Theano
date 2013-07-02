@@ -34,3 +34,6 @@ theano/generated_version.py.out
 distribute-*.egg
 distribute-*.tar.gz
 *.suo
+Theano.suo
+*.DS_Store
+*.bak

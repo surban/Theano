@@ -47,7 +47,7 @@ def make_checks(loop_orders, dtypes, sub):
             # tensor is as expected.
             min_nd = max(nonx) + 1
             init += """
-            if (%(var)s->nd < %(min_nd)s) {
+            if (PyArray_NDIM(%(var)s) < %(min_nd)s) {
                 PyErr_SetString(PyExc_ValueError, "Not enough dimensions on input.");
                 %%(fail)s
             }
@@ -67,8 +67,8 @@ def make_checks(loop_orders, dtypes, sub):
                 # jump = stride - adjust
                 jump = "(%s) - (%s)" % ("%(var)s_stride%(index)s" % locals(), adjust)
                 init += """
-                %(var)s_n%(index)s = %(var)s->dimensions[%(index)s];
-                %(var)s_stride%(index)s = %(var)s->strides[%(index)s] / sizeof(%(dtype)s);
+                %(var)s_n%(index)s = PyArray_DIMS(%(var)s)[%(index)s];
+                %(var)s_stride%(index)s = PyArray_STRIDES(%(var)s)[%(index)s] / sizeof(%(dtype)s);
                 %(var)s_jump%(index)s_%(j)s = %(jump)s;
                 //printf("%(var)s_jump%(index)s_%(j)s is:");
                 //std::cout << %(var)s_jump%(index)s_%(j)s << std::endl;
@@ -113,9 +113,13 @@ def make_checks(loop_orders, dtypes, sub):
     return init % sub + check % sub
 
 
-def make_alloc(loop_orders, dtype, sub):
-    """
-    Generate C code to allocate outputs.
+def make_alloc(loop_orders, dtype, sub, fortran='0'):
+    """Generate C code to allocate outputs.
+
+    :param fortran: a string included in the generated code. If it
+        evaludate to non-zero, an ndarray in fortran order will be
+        created, otherwise it will be c order.
+
     """
 
     nd = len(loop_orders[0])
@@ -133,7 +137,6 @@ def make_alloc(loop_orders, dtype, sub):
                 break
         else:
             init_dims += "dims[%(i)s] = 1;\n" % locals()
-            #raise Exception("For each looping dimension, at least one input must have a non-broadcastable dimension.")
 
     # TODO: it would be interesting to allocate the output in such a
     # way that its contiguous dimensions match one of the input's
@@ -146,13 +149,15 @@ def make_alloc(loop_orders, dtype, sub):
         //npy_intp* dims = (npy_intp*)malloc(%(nd)s * sizeof(npy_intp));
         %(init_dims)s
         if (!%(olv)s) {
-            %(olv)s = (PyArrayObject*)PyArray_EMPTY(%(nd)s, dims, type_num_%(olv)s, 0);
+            %(olv)s = (PyArrayObject*)PyArray_EMPTY(%(nd)s, dims,
+                                                    type_num_%(olv)s,
+                                                    %(fortran)s);
         }
         else {
             PyArray_Dims new_dims;
             new_dims.len = %(nd)s;
             new_dims.ptr = dims;
-            PyObject* success = PyArray_Resize(%(olv)s, &new_dims, 0, PyArray_CORDER);
+            PyObject* success = PyArray_Resize(%(olv)s, &new_dims, 0, NPY_CORDER);
             if (!success) {
                 // If we can't resize the ndarray we have we can allocate a new one.
                 PyErr_Clear();
@@ -215,11 +220,11 @@ def make_loop(loop_orders, dtypes, loop_tasks, sub):
         for j, index in enumerate(loop_order):
             if index != 'x':
                 preloops.setdefault(j, "")
-                preloops[j] += ("%%(lv%(i)s)s_iter = (%(dtype)s*)(%%(lv%(i)s)s->data);\n" % locals()) % sub
+                preloops[j] += ("%%(lv%(i)s)s_iter = (%(dtype)s*)(PyArray_DATA(%%(lv%(i)s)s));\n" % locals()) % sub
                 break
         else: # all broadcastable
             preloops.setdefault(0, "")
-            preloops[0] += ("%%(lv%(i)s)s_iter = (%(dtype)s*)(%%(lv%(i)s)s->data);\n" % locals()) % sub
+            preloops[0] += ("%%(lv%(i)s)s_iter = (%(dtype)s*)(PyArray_DATA(%%(lv%(i)s)s));\n" % locals()) % sub
 
     if len(loop_tasks) == 1:
         s = preloops.get(0, "")
@@ -263,7 +268,7 @@ def make_reordered_loop(init_loop_orders, olv_index, dtypes, inner_task, sub):
     for i, index in enumerate(init_loop_orders[olv_index]):
         if index != 'x':
             order_loops += """
-            %(ovar)s_loops_it->first = abs(%(ovar)s->strides[%(index)i]);
+            %(ovar)s_loops_it->first = abs(PyArray_STRIDES(%(ovar)s)[%(index)i]);
             """  % locals()
         else:
             # Stride is 0 when dimension is broadcastable
@@ -375,7 +380,7 @@ def make_reordered_loop(init_loop_orders, olv_index, dtypes, inner_task, sub):
     declare_iter = ""
     for i, dtype in enumerate(dtypes):
         var = sub["lv%i" % i]
-        declare_iter += "%(var)s_iter = (%(dtype)s*)(%(var)s->data);\n" % locals()
+        declare_iter += "%(var)s_iter = (%(dtype)s*)(PyArray_DATA(%(var)s));\n" % locals()
 
     loop = inner_task
     for i in reversed(range(nnested)):

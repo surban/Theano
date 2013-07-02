@@ -23,9 +23,9 @@ from theano.gof import Variable, Constant
 from theano.gof.python25 import maxsize
 from theano.gof.utils import MethodNotDefined
 from theano.configparser import config
-from elemwise import Elemwise, DimShuffle
+from theano.tensor.elemwise import Elemwise, DimShuffle
 from theano import scalar
-import basic as T
+from theano.tensor import basic as T
 from theano import compile  # to register the optimizer built by this file
 
 from theano.gof.python25 import any, all
@@ -33,8 +33,8 @@ from theano.gof.opt import (Optimizer, pre_constant_merge,
                             pre_greedy_local_optimizer)
 from theano.gof.opt import merge_optimizer
 from theano.gof import toolbox, DestroyHandler
-from basic import get_constant_value, ShapeError
-
+from theano.tensor.basic import get_scalar_constant_value, ShapeError, NotScalarConstantError
+from theano.compat.six import StringIO
 
 theano.configparser.AddConfigVar('on_shape_error',
                                  "warn: print a warning and use the default"
@@ -92,15 +92,15 @@ def scalarconsts_rest(inputs):
     nonconsts = []
     for i in inputs:
         try:
-            v = get_constant_value(i)
+            v = get_scalar_constant_value(i)
             consts.append(v)
             origconsts.append(i)
-        except Exception:
+        except NotScalarConstantError:
             nonconsts.append(i)
     return consts, origconsts, nonconsts
 
 
-def broadcast_like(value, template, env, dtype=None):
+def broadcast_like(value, template, fgraph, dtype=None):
     """Return a Variable with the same shape and dtype as the template,
     filled by broadcasting value through it. `value` will be cast as
     necessary.
@@ -109,11 +109,11 @@ def broadcast_like(value, template, env, dtype=None):
     value = T.as_tensor_variable(value)
     if value.type == template.type:
         return value
-    if template not in env.variables:
+    if template not in fgraph.variables:
         raise NotImplementedError('broadcast_like currently requires the '
-                                  'template Variable to be in the env already')
-    if hasattr(env, 'shape_feature'):
-        new_shape = env.shape_feature.shape_of[template]
+                                  'template Variable to be in the fgraph already')
+    if hasattr(fgraph, 'shape_feature'):
+        new_shape = fgraph.shape_feature.shape_of[template]
     else:
         new_shape = template.shape
     if dtype is None:
@@ -125,7 +125,13 @@ def broadcast_like(value, template, env, dtype=None):
                                      if rval.broadcastable[i]
             and not template.broadcastable[i]])
     assert rval.type.dtype == dtype
-    assert rval.type.broadcastable == template.broadcastable
+
+    if rval.type.broadcastable != template.broadcastable:
+        raise AssertionError("rval.type.broadcastable is " +
+                str(rval.type.broadcastable) +
+                " but template.broadcastable is" +
+                str(template.broadcastable))
+
     return rval
 
 
@@ -140,9 +146,9 @@ def inplace_elemwise_optimizer_op(OP):
     We parametrise it to make it work for Elemwise and GpuElemwise op.
     """
     @gof.optimizer
-    def inplace_elemwise_optimizer(env):
+    def inplace_elemwise_optimizer(fgraph):
         """
-        Usage: inplace_elemwise_optimizer.optimize(env)
+        Usage: inplace_elemwise_optimizer.optimize(fgraph)
 
         Attempts to replace all Broadcast ops by versions of them
         that operate inplace. It operates greedily: for each Broadcast
@@ -176,35 +182,35 @@ def inplace_elemwise_optimizer_op(OP):
         # We execute `validate` after this number of change.
         check_each_change = config.tensor.insert_inplace_optimizer_validate_nb
         if check_each_change == -1:
-            if len(env.nodes) > 500:
+            if len(fgraph.apply_nodes) > 500:
                 check_each_change = 10
             else:
                 check_each_change = 1
 
         nb_change_no_validate = 0
-        chk = env.checkpoint()
+        chk = fgraph.checkpoint()
 
-        for node in list(graph.io_toposort(env.inputs, env.outputs)):
+        for node in list(graph.io_toposort(fgraph.inputs, fgraph.outputs)):
             op = node.op
             if not isinstance(op, OP):
                 continue
             baseline = op.inplace_pattern
             protected_inputs = [
-                f.protected for f in node.env._features if
+                f.protected for f in node.fgraph._features if
                 isinstance(f, theano.compile.function_module.Supervisor)]
             protected_inputs = sum(protected_inputs, [])  # flatten the list
-            protected_inputs.extend(env.outputs)
+            protected_inputs.extend(fgraph.outputs)
             candidate_outputs = [i for i in xrange(len(node.outputs))
                                  if i not in baseline]
             # node inputs that are Constant, already destroyed,
-            # env protected inputs and env outputs can't be used as inplace
+            # fgraph protected inputs and fgraph outputs can't be used as inplace
             # target.
             # Remove here as faster.
             candidate_inputs = [i for i in xrange(len(node.inputs))
                                 if i not in baseline.values() \
                                     and not isinstance(node.inputs[i],
                                                        Constant)\
-                                    and not env.destroyers(node.inputs[i])\
+                                    and not fgraph.destroyers(node.inputs[i])\
                                     and node.inputs[i] not in protected_inputs]
 
             verbose = False
@@ -218,8 +224,8 @@ def inplace_elemwise_optimizer_op(OP):
                         candidate_output].type:
                         continue
 
-                    inplace_pattern = dict(baseline, **{candidate_output:
-                                                            candidate_input})
+                    inplace_pattern = dict(baseline)
+                    inplace_pattern[candidate_output] = candidate_input
                     try:
                         if hasattr(op.scalar_op, "make_new_inplace"):
                             new_scal = op.scalar_op.make_new_inplace(
@@ -235,12 +241,12 @@ def inplace_elemwise_optimizer_op(OP):
                             *node.inputs)
 
                         for r, new_r in zip(node.outputs, new.outputs):
-                            env.replace(r, new_r,
+                            fgraph.replace(r, new_r,
                                         reason="inplace_elemwise_optimizer")
                         nb_change_no_validate += 1
                         if nb_change_no_validate >= check_each_change:
-                            env.validate()
-                            chk = env.checkpoint()
+                            fgraph.validate()
+                            chk = fgraph.checkpoint()
                             nb_change_no_validate = 0
                     except (ValueError, TypeError, InconsistencyError), e:
                         if check_each_change != 1 and not raised_warning:
@@ -249,7 +255,7 @@ def inplace_elemwise_optimizer_op(OP):
                                     "performed due to unexpected error:")
                             print >> sys.stderr, e
                             raised_warning = True
-                        env.revert(chk)
+                        fgraph.revert(chk)
                         continue
                     candidate_inputs.remove(candidate_input)
                     node = new
@@ -258,17 +264,17 @@ def inplace_elemwise_optimizer_op(OP):
 
         if nb_change_no_validate > 0:
             try:
-                env.validate()
+                fgraph.validate()
             except Exception:
                 if not raised_warning:
                     print >> sys.stderr, ("Some inplace optimization was not "
                                           "performed due to unexpected error")
-                env.revert(chk)
+                fgraph.revert(chk)
     return inplace_elemwise_optimizer
 
 inplace_elemwise_optimizer = inplace_elemwise_optimizer_op(T.Elemwise)
-
 compile.optdb.register('inplace_opt', inplace_elemwise_optimizer, 75,
+                       'inplace_elemwise_optimizer',
                        'fast_run', 'inplace')
 
 
@@ -322,15 +328,15 @@ def local_0_dot_x(node):
     y = node.inputs[1]
     replace = False
     try:
-        if get_constant_value(x) == 0:
+        if get_scalar_constant_value(x) == 0:
             replace = True
-    except TypeError:
+    except NotScalarConstantError:
         pass
 
     try:
-        if get_constant_value(y) == 0:
+        if get_scalar_constant_value(y) == 0:
             replace = True
-    except TypeError:
+    except NotScalarConstantError:
         pass
 
     if replace:
@@ -410,7 +416,8 @@ def local_lift_transpose_through_dot(node):
     if not (isinstance(node.op, T.DimShuffle)
             and node.op.new_order == (1, 0)):
         return False
-    if not (node.inputs[0].owner and node.inputs[0].owner.op == T.dot):
+    if not (node.inputs[0].owner
+            and isinstance(node.inputs[0].owner.op, T.Dot)):
         return False
     x, y = node.inputs[0].owner.inputs
 
@@ -426,8 +433,11 @@ def dimshuffle_as_view(node):
     new_op = DimShuffle(op.input_broadcastable, op.new_order, inplace=True)
     return [new_op(*node.inputs)]
 
-
-register_specialize(dimshuffle_as_view, 'inplace')
+#Step 60 is the inplace optimization stage.
+compile.optdb.register('dimshuffle_as_view',
+                       TopoOptimizer(dimshuffle_as_view,
+    failure_callback=TopoOptimizer.warn_inplace), 60,
+                       'fast_run', 'inplace')
 register_canonicalize(local_dimshuffle_lift)
 register_specialize(local_dimshuffle_lift)
 
@@ -500,7 +510,7 @@ class MakeVector(T.Op):
                     "The upcast of the inputs to MakeVector should match the "
                     "dtype given in __init__.")
             if not all(self.dtype == T.cast(i, dtype=dtype).dtype
-                       for a in inputs):
+                       for i in inputs):
                 raise TypeError("MakeVector.make_node expected inputs"
                                 " upcastable to %s. got %s" % (
                         self.dtype,
@@ -533,18 +543,44 @@ class MakeVector(T.Op):
             # assume that out has correct dtype. there is no cheap way to check
             out[0][...] = inputs
 
+    def c_code_cache_version(self):
+        return (1,)
+
+    def c_code(self, node, name, inp, out_, sub):
+        out, = out_
+        # Shouldn't use PyArray_TYPE(inp[0]) for the dtype
+        # when len(inp) == 0 (we need to support this case.
+        # So there will be (1 * nb_dtype) + ((nb len(inp) - 1 ))
+        # different c code with the following algo
+        out_shape = len(inp)
+        out_dtype = numpy.dtype(node.outputs[0].dtype).num
+        if len(inp) > 0:
+            assert self.dtype == node.inputs[0].dtype
+            out_dtype = 'PyArray_TYPE(%s)' % inp[0]
+
+        ret = """
+        npy_intp dims[1];
+        dims[0] = %(out_shape)s;
+        %(out)s = (PyArrayObject*)PyArray_EMPTY(1, dims, %(out_dtype)s, 0);
+        """ % locals()
+        for idx, i in enumerate(inp):
+            ret += """
+            *((dtype_%(out)s *)PyArray_GETPTR1(%(out)s, %(idx)s)) = *((dtype_%(out)s *) PyArray_DATA(%(i)s));
+            """ % locals()
+        return ret
+
+    def infer_shape(self, node, ishapes):
+        return [(len(ishapes),)]
+
     def grad(self, inputs, output_gradients):
         # If the output is of an integer dtype, no gradient shall pass
         if 'int' in self.dtype:
-            return [None] * len(inputs)
+            return [ipt.zeros_like().astype(theano.config.floatX)
+                    for ipt in inputs]
 
         grads = []
         for i, inp in enumerate(inputs):
-            if 'int' in inp.dtype:
-                # No gradient wrt integer inputs
-                grads.append(None)
-            else:
-                grads.append(output_gradients[0][i])
+            grads.append(output_gradients[0][i])
         return grads
 
     def R_op(self, inputs, eval_points):
@@ -616,15 +652,15 @@ class Shape_i(T.Op):
         if isinstance(node.inputs[0].type, T.TensorType):
             return """
             if(!%(out)s)
-            %(out)s=(PyArrayObject*)PyArray_ZEROS(0, NULL, PyArray_INT64, 0);
-            ((npy_int64*)PyArray_DATA(%(out)s))[0]=%(x)s->dimensions[%(i)s];
+            %(out)s=(PyArrayObject*)PyArray_ZEROS(0, NULL, NPY_INT64, 0);
+            ((npy_int64*)PyArray_DATA(%(out)s))[0]=PyArray_DIMS(%(x)s)[%(i)s];
             """ % locals()
 
         elif node.inputs[0].type.__class__.__name__ == "CudaNdarrayType":
             #Don't want to import cuda stuff here.
             return """
             if(!%(out)s)
-            %(out)s=(PyArrayObject*)PyArray_ZEROS(0, NULL, PyArray_INT64, 0);
+            %(out)s=(PyArrayObject*)PyArray_ZEROS(0, NULL, NPY_INT64, 0);
             ((npy_int64*)PyArray_DATA(%(out)s))[0]=
                             CudaNdarray_HOST_DIMS(%(x)s)[%(i)s];
             """ % locals()
@@ -633,6 +669,9 @@ class Shape_i(T.Op):
             #      shape_i ops for various types of variables.
             #      Do not continue this madness.
             return super(Shape_i, self).c_code(node, name, (x,), (out,), sub)
+
+    def infer_shape(self, node, input_shapes):
+        return [()]
 
     def grad(self, inp, grads):
         return [None]
@@ -709,7 +748,7 @@ class ShapeFeature(object):
     .. code-block:: python
 
         try:
-            shape_of = node.env.shape_feature.shape_of
+            shape_of = node.fgraph.shape_feature.shape_of
         except AttributeError:
             # This can happen when the mode doesn't include the ShapeFeature.
             return
@@ -794,13 +833,31 @@ class ShapeFeature(object):
         else:
             if not isinstance(s, (tuple, list)):
                 raise TypeError('shapes must be tuple/list', (r, s))
-            if r.ndim != len(s):
-                raise AssertionError(
-                        "Something inferred a shape with %d dimensions "
-                        "for a variable with %d dimensions." % (
-                        len(s), r.ndim))
 
-            shape_vars = [self.unpack(s_i) for s_i in s]
+            if r.ndim != len(s):
+                sio = StringIO()
+                theano.printing.debugprint(r, file=sio, print_type=True)
+                raise AssertionError(
+                    "Something inferred a shape with %d dimensions "
+                    "for a variable with %d dimensions"
+                    " for the variable:\n%s" % (
+                        len(s), r.ndim, sio.getvalue()))
+
+            shape_vars = []
+            for i in range(r.ndim):
+                if (hasattr(r.type, 'broadcastable') and
+                    r.type.broadcastable[i]):
+                    shape_vars.append(self.lscalar_one)
+                else:
+                    shape_vars.append(self.unpack(s[i]))
+            assert all([not hasattr(r.type, "broadcastable") or
+                        not r.type.broadcastable[i] or
+                        # The two following comparison are a speed optimization
+                        # But we never timed this speed optimization!
+                        self.lscalar_one.equals(shape_vars[i]) or
+                        self.lscalar_one.equals(
+                            T.extract_constant(shape_vars[i]))
+                        for i in range(r.ndim)])
             self.shape_of[r] = tuple(shape_vars)
             for sv in shape_vars:
                 self.shape_of_reverse_index.setdefault(sv, set()).add(r)
@@ -842,6 +899,15 @@ class ShapeFeature(object):
                 merged_shape.append(r_shape[i])
             else:
                 merged_shape.append(other_shape[i])
+        assert all([(not hasattr(r.type, "broadcastable") or
+                     not r.type.broadcastable[i] and
+                     not other_r.type.broadcastable[i]) or
+                    # The two following comparison are a speed optimization
+                    # But we never timed this speed optimization!
+                    self.lscalar_one.equals(merged_shape[i]) or
+                    self.lscalar_one.equals(
+                        T.extract_constant(merged_shape[i]))
+                    for i in range(r.ndim)])
         self.shape_of[r] = tuple(merged_shape)
         for sv in self.shape_of[r]:
             self.shape_of_reverse_index.setdefault(sv, set()).add(r)
@@ -858,6 +924,13 @@ class ShapeFeature(object):
                 new_shape.append(self.unpack(s_i))
             else:
                 new_shape.append(s_j)
+        assert all([not hasattr(r.type, "broadcastable") or
+                    not r.type.broadcastable[i] or
+                    # The two following comparison are a speed optimization
+                    # But we never timed this speed optimization!
+                    self.lscalar_one.equals(new_shape[i]) or
+                    self.lscalar_one.equals(T.extract_constant(new_shape[i]))
+                    for i in range(r.ndim)])
         self.shape_of[r] = tuple(new_shape)
         for sv in self.shape_of[r]:
             self.shape_of_reverse_index.setdefault(sv, set()).add(r)
@@ -877,11 +950,11 @@ class ShapeFeature(object):
     # Feature interface
     #
     #
-    def on_attach(self, env):
-        assert not hasattr(env, 'shape_feature')
-        env.shape_feature = self
+    def on_attach(self, fgraph):
+        assert not hasattr(fgraph, 'shape_feature')
+        fgraph.shape_feature = self
         # Must be local to the object as otherwise we reuse the same
-        # variable for multiple env!
+        # variable for multiple fgraph!
         self.lscalar_one = T.constant(1, dtype='int64')
         assert self.lscalar_one.type == T.lscalar
 
@@ -894,10 +967,10 @@ class ShapeFeature(object):
         self.shape_of_reverse_index = {}
         # shape var -> graph v
 
-        for node in env.toposort():
-            self.on_import(env, node)
+        for node in fgraph.toposort():
+            self.on_import(fgraph, node)
 
-    def on_import(self, env, node):
+    def on_import(self, fgraph, node):
         if node.outputs[0] in self.shape_of:
             # this is a revert, not really an import
             for r in node.outputs + node.inputs:
@@ -954,6 +1027,9 @@ class ShapeFeature(object):
         for sh_idx, sh in enumerate(o_shapes):
             if sh is None:
                 continue
+            if not isinstance(sh, (list, tuple)):
+                raise ValueError("infer_shape of %s didn't return a list of"
+                                 " list. It returned '%s'" % (str(node), str(o_shapes)))
             for i, d in enumerate(sh):
                 # Note: we ignore any shape element that is not typed (i.e.,
                 # does not have a 'dtype' attribute). This means there may
@@ -961,7 +1037,8 @@ class ShapeFeature(object):
                 # but this works with `local_useless_subtensor`, so for now we
                 # keep it this way. See #266 for a better long-term fix.
                 if getattr(d, 'dtype', 'int64') != 'int64':
-                    assert d.dtype in theano.tensor.int_dtypes
+                    assert d.dtype in theano.tensor.discrete_dtypes, d.dtype
+                    assert str(d.dtype) != 'uint64'
                     new_shape += sh[len(new_shape):i + 1]
                     new_shape[i] = theano.tensor.cast(d, 'int64')
             if new_shape:
@@ -974,9 +1051,9 @@ class ShapeFeature(object):
         for r, s in izip(node.outputs, o_shapes):
             self.set_shape(r, s)
 
-    def on_change_input(self, env, node, i, r, new_r):
+    def on_change_input(self, fgraph, node, i, r, new_r):
         if new_r not in self.shape_of:
-            # It happen that the env didn't called on_import for some
+            # It happen that the fgraph didn't called on_import for some
             # new_r.  This happen when new_r don't have an
             # owner(i.e. it is a constant or an input of the graph)
             # update_shape suppose that r and new_r are in shape_of.
@@ -1020,15 +1097,15 @@ class ShapeFeature(object):
 
 
 class ShapeOptimizer(Optimizer):
-    """Optimizer that serves to add ShapeFeature as an env feature.
+    """Optimizer that serves to add ShapeFeature as an fgraph feature.
     """
     def __init__(self):
         Optimizer.__init__(self)
 
-    def add_requirements(self, env):
-        env.extend(ShapeFeature())
+    def add_requirements(self, fgraph):
+        fgraph.attach_feature(ShapeFeature())
 
-    def apply(self, env):
+    def apply(self, fgraph):
         pass
 
 # -1 should make it run right before the first merge
@@ -1057,7 +1134,7 @@ def local_fill_to_alloc(node):
             rval = [T.cast(v, node.outputs[0].type.dtype)]
         elif r.type.broadcastable == node.outputs[0].type.broadcastable:
             # we are broadcasting v somehow, but not r
-            rval = [broadcast_like(v, r, node.env, dtype=v.dtype)]
+            rval = [broadcast_like(v, r, node.fgraph, dtype=v.dtype)]
         else:
             # we are broadcasting both v and r,
             # the output shape must be computed
@@ -1076,6 +1153,25 @@ def local_fill_to_alloc(node):
                 'node', node,
                 )  # theano.printing.debugprint(node.outputs[0], file='str'))
         return rval
+
+
+@gof.local_optimizer([T.fill])
+def local_useless_fill(node):
+    """fill(s,v) -> v
+
+    This optimization is only needed in FAST_COMPILE to make the code
+    more readable. Normally, it is done by the local_fill_to_alloc
+    opt.
+
+    """
+    if node.op == T.fill:
+        r, v = node.inputs
+        if v.type == node.outputs[0].type:
+            # this is a useless fill, erase it.
+            return [v]
+compile.optdb['canonicalize'].register('local_useless_fill',
+                                       in2out(local_useless_fill),
+                                       1.1, 'fast_compile')
 
 
 @register_specialize
@@ -1098,10 +1194,10 @@ def local_useless_alloc(node):
 @gof.local_optimizer([T._shape])
 def local_shape_to_shape_i(node):
     if node.op == T._shape:
-        # This optimization needs ShapeOpt and env.shape_feature
-        if not hasattr(node.env, 'shape_feature'):
+        # This optimization needs ShapeOpt and fgraph.shape_feature
+        if not hasattr(node.fgraph, 'shape_feature'):
             return
-        shape_feature = node.env.shape_feature
+        shape_feature = node.fgraph.shape_feature
         return [shape_feature.make_vector_shape(node.inputs[0])]
 
 
@@ -1110,7 +1206,7 @@ def local_shape_to_shape_i(node):
 @gof.local_optimizer([T._shape])
 def local_track_shape_i(node):
     try:
-        shape_feature = node.env.shape_feature
+        shape_feature = node.fgraph.shape_feature
     except AttributeError:
         return
     if node in shape_feature.scheduled:
@@ -1128,7 +1224,7 @@ def local_subtensor_make_vector(node):
     # [a,b,c][0:2] -> [a,b]
     # we can do this for constant indexes
     if isinstance(node.op, T.Subtensor):
-        # This optimization needs ShapeOpt and env.shape_feature
+        # This optimization needs ShapeOpt and fgraph.shape_feature
         x = node.inputs[0]
         if x.owner and x.owner.op == make_vector:
             try:
@@ -1148,9 +1244,12 @@ def local_subtensor_make_vector(node):
             elif isinstance(idx, Variable):
                 # if it is a constant we can do something with it
                 try:
-                    v = get_constant_value(idx)
+                    v = get_scalar_constant_value(idx)
+                    if isinstance(v, numpy.integer):
+                        # Python 2.4 wants to index only with Python integers
+                        v = int(v)
                     return [x.owner.inputs[v]]
-                except Exception:
+                except NotScalarConstantError:
                     pass
             else:
                 # it is a slice of ints and/or Variables
@@ -1286,13 +1385,13 @@ def local_remove_useless_assert(node):
         cond = []
         for c in node.inputs[1:]:
             try:
-                const = get_constant_value(c)
+                const = get_scalar_constant_value(c)
 
                 if 0 != const.ndim or const == 0:
                     #Should we raise an error here? How to be sure it
                     #is not catched?
                     cond.append(c)
-            except TypeError:
+            except NotScalarConstantError:
                 cond.append(c)
 
         if len(cond) == 0:
@@ -1430,7 +1529,7 @@ def local_upcast_elemwise_constant_inputs(node):
     if len(node.outputs) > 1:
         return
     try:
-        shape_i = node.env.shape_feature.shape_i
+        shape_i = node.fgraph.shape_feature.shape_i
     except AttributeError:
         shape_i = None
     if isinstance(node.op, T.Elemwise):
@@ -1448,7 +1547,7 @@ def local_upcast_elemwise_constant_inputs(node):
                 else:
                     try:
                         # works only for scalars
-                        cval_i = get_constant_value(i)
+                        cval_i = get_scalar_constant_value(i)
                         if all(i.broadcastable):
                             new_inputs.append(T.shape_padleft(
                                 T.cast(cval_i, output_dtype),
@@ -1461,7 +1560,7 @@ def local_upcast_elemwise_constant_inputs(node):
                                 *[shape_i(d)(i) for d in xrange(i.ndim)]))
                             #print >> sys.stderr, "AAA",
                             #*[Shape_i(d)(i) for d in xrange(i.ndim)]
-                    except TypeError:
+                    except NotScalarConstantError:
                         #for the case of a non-scalar
                         if isinstance(i, T.TensorConstant):
                             new_inputs.append(T.cast(i, output_dtype))
@@ -1498,10 +1597,10 @@ def local_useless_subtensor(node):
     Remove Subtensor if it takes the full input
     """
     if isinstance(node.op, T.Subtensor):
-        # This optimization needs ShapeOpt and env.shape_feature
-        if not hasattr(node.env, 'shape_feature'):
+        # This optimization needs ShapeOpt and fgraph.shape_feature
+        if not hasattr(node.fgraph, 'shape_feature'):
             return
-        shape_of = node.env.shape_feature.shape_of
+        shape_of = node.fgraph.shape_feature.shape_of
         node_input_idx = 1
         for pos, idx in enumerate(node.op.idx_list):
             if not isinstance(idx, slice):
@@ -1521,11 +1620,11 @@ def local_useless_subtensor(node):
 
             length_pos = shape_of[node.inputs[0]][pos]
             try:
-                length_pos_data = get_constant_value(length_pos)
-            except TypeError:
+                length_pos_data = get_scalar_constant_value(length_pos)
+            except NotScalarConstantError:
                 pass
 
-            if isinstance(idx.stop, int):
+            if isinstance(idx.stop, (int, numpy.integer)):
                 if idx.stop < length_pos_data:
                     return False
             elif isinstance(idx.stop, theano.scalar.Scalar):
@@ -1798,8 +1897,8 @@ def local_subtensor_merge(node):
             # Get the shapes of the vectors !
             try:
                 # try not to introduce new shape into the graph
-                xshape = node.env.shape_feature.shape_of[x]
-                ushape = node.env.shape_feature.shape_of[u]
+                xshape = node.fgraph.shape_feature.shape_of[x]
+                ushape = node.fgraph.shape_feature.shape_of[u]
             except AttributeError:
                 # Following the suggested use of shape_feature which should
                 # consider the case when the compilation mode doesn't
@@ -1882,6 +1981,8 @@ def local_subtensor_of_alloc(node):
 
     nw_val = val[tuple(val_slices)]
     nw_dims += dims[len(slices):]
+    if nw_val.ndim > len(nw_dims):
+        return False
     rval = T.alloc(nw_val, *nw_dims)
     if type(rval) not in (list, tuple):
         rval = [rval]
@@ -2001,9 +2102,9 @@ def local_incsubtensor_of_allocs(node):
         y = node.inputs[1]
         replace = False
         try:
-            if get_constant_value(y) == 0:
+            if get_scalar_constant_value(y) == 0:
                 replace = True
-        except TypeError:
+        except NotScalarConstantError:
             pass
 
         if replace:
@@ -2028,13 +2129,13 @@ def local_setsubtensor_of_allocs(node):
         replace_y = None
 
         try:
-            replace_x = get_constant_value(x)
-        except TypeError:
+            replace_x = get_scalar_constant_value(x)
+        except NotScalarConstantError:
             pass
 
         try:
-            replace_y = get_constant_value(y)
-        except TypeError:
+            replace_y = get_scalar_constant_value(y)
+        except NotScalarConstantError:
             pass
 
         if (replace_x == replace_y and
@@ -2222,24 +2323,24 @@ def local_mul_switch_sink(node):
         if i.owner and i.owner.op == T.switch:
             switch = i.owner
             try:
-                if get_constant_value(switch.inputs[1]) == 0.:
+                if get_scalar_constant_value(switch.inputs[1]) == 0.:
                     listmul = node.inputs[:idx] + node.inputs[idx + 1:]
                     fct = [T.switch(switch.inputs[0], 0,
                                     T.mul(*(listmul + [switch.inputs[2]])))]
                     fct[0].values_eq_approx = fct[
                         0].type.values_eq_approx_remove_nan
                     return fct
-            except TypeError:
+            except NotScalarConstantError:
                 pass
             try:
-                if get_constant_value(switch.inputs[2]) == 0.:
+                if get_scalar_constant_value(switch.inputs[2]) == 0.:
                     listmul = node.inputs[:idx] + node.inputs[idx + 1:]
                     fct = [T.switch(switch.inputs[0],
                                     T.mul(*(listmul + [switch.inputs[1]])), 0)]
                     fct[0].values_eq_approx = fct[
                         0].type.values_eq_approx_remove_nan
                     return fct
-            except TypeError:
+            except NotScalarConstantError:
                 pass
     return False
 
@@ -2264,25 +2365,46 @@ def local_div_switch_sink(node):
     if node.inputs[0].owner and node.inputs[0].owner.op == T.switch:
         switch = node.inputs[0].owner
         try:
-            if get_constant_value(switch.inputs[1]) == 0.:
+            if get_scalar_constant_value(switch.inputs[1]) == 0.:
                 fct = [T.switch(switch.inputs[0], 0,
                                 op(switch.inputs[2], node.inputs[1]))]
                 fct[0].values_eq_approx = fct[
                     0].type.values_eq_approx_remove_nan
                 return fct
-        except TypeError:
+        except NotScalarConstantError:
             pass
         try:
-            if get_constant_value(switch.inputs[2]) == 0.:
+            if get_scalar_constant_value(switch.inputs[2]) == 0.:
                 fct = [T.switch(switch.inputs[0],
                                 op(switch.inputs[1], node.inputs[1]), 0)]
                 fct[0].values_eq_approx = fct[
                     0].type.values_eq_approx_remove_nan
                 return fct
-        except TypeError:
+        except NotScalarConstantError:
             pass
     return False
 
+
+################
+# Flatten Opts #
+################
+@register_canonicalize
+@register_stabilize
+@gof.local_optimizer([])
+def local_flatten_lift(node):
+    """
+    Flatten(UnaryElemwise(x)) -> UnaryElemwise(Flatten(x))
+
+    This optimization is needed by optimization
+    nnet/sigm.py:log1msigm_to_softplus to get applied when there is a flatten.
+    """
+    if (isinstance(node.op, T.Flatten) and
+        node.inputs[0].owner and
+        isinstance(node.inputs[0].owner.op, T.Elemwise) and
+        len(node.inputs[0].owner.inputs) == 1):
+        f = node.op(node.inputs[0].owner.inputs[0])
+        e = node.inputs[0].owner.op(f)
+        return [e]
 
 ##################
 # Reshape opts   #
@@ -2314,6 +2436,26 @@ def local_reshape_chain(node):
         return False
 register_canonicalize(local_reshape_chain)
 
+
+@register_canonicalize
+@register_stabilize
+@gof.local_optimizer([])
+def local_reshape_lift(node):
+    """
+    Reshape(UnaryElemwise(x)) -> UnaryElemwise(Reshape(x))
+
+    This optimization is needed by optimization
+    nnet/sigm.py:log1msigm_to_softplus to get applied when there is a reshape.
+    """
+    if (isinstance(node.op, T.Reshape) and
+        node.inputs[0].owner and
+        isinstance(node.inputs[0].owner.op, T.Elemwise) and
+        len(node.inputs[0].owner.inputs) == 1):
+        r = node.op(node.inputs[0].owner.inputs[0], node.inputs[1])
+        e = node.inputs[0].owner.op(r)
+        return [e]
+
+
 if 0:
     # TODO: Test that this optimziation works.
     @register_canonicalize
@@ -2336,15 +2478,15 @@ if 0:
     @gof.local_optimizer([])
     def local_sum_over_empty(node):
         if isinstance(node.op, T.Sum):
-            # This optimization needs ShapeOpt and env.shape_feature
-            if not hasattr(node.env, 'shape_feature'):
+            # This optimization needs ShapeOpt and fgraph.shape_feature
+            if not hasattr(node.fgraph, 'shape_feature'):
                 return
             y, = node.outputs
-            y_shape = node.env.shape_feature.shape_of[y]
+            y_shape = node.fgraph.shape_feature.shape_of[y]
 
             def tmp(thing):
                 try:
-                    return T.get_constant_value(thing)
+                    return T.get_scalar_constant_value(thing)
                 except (TypeError, ValueError), e:
                     print e, thing.owner.inputs[0]
                     return None
@@ -2671,8 +2813,8 @@ class Canonizer(gof.LocalOptimizer):
         """
         if isinstance(v, Variable):
             try:
-                return get_constant_value(v)
-            except TypeError:
+                return get_scalar_constant_value(v)
+            except NotScalarConstantError:
                 return None
         else:
             return v
@@ -2800,16 +2942,16 @@ class Canonizer(gof.LocalOptimizer):
         # this canonized graph...  if so, we do nothing and wait for
         # them to be transformed.
         def _bypass_dimshuffle(n):
-            if isinstance(n.op, DimShuffle) and len(n.outputs[0].clients) <= 1:
-                return _bypass_dimshuffle(n.outputs[0].clients.__iter__(
-                        ).next()[0])
+            if (isinstance(getattr(n, 'op', None), DimShuffle) and
+                len(n.outputs[0].clients) <= 1):
+                return _bypass_dimshuffle(n.outputs[0].clients[0][0])
             else:
                 return n
         for c, c_idx in out.clients:
             if c == 'output':
                 continue
-            if _bypass_dimshuffle(c).op in [self.main, self.inverse,
-                                            self.reciprocal]:
+            if getattr(_bypass_dimshuffle(c), 'op', '') in [
+                self.main, self.inverse, self.reciprocal]:
                 return False
 
         # Here we make the canonical version of the graph around this node
@@ -3067,7 +3209,7 @@ def local_sum_sum(node):
                 for i in node.op.axis:
                     new_i = i
                     for ii in summed.owner.op.axis:
-                        if i >= ii:
+                        if new_i >= ii:
                             new_i += 1
                     assert new_i not in newaxis
                     newaxis.append(new_i)
@@ -3117,6 +3259,50 @@ def local_cut_useless_reduce(node):
             return [summed]
 
 
+#Enabling this optimization at canonicalization step break this test:
+#theano/tensor/tests/test_opt.py:T_local_reduce.test_local_reduce_broadcast_some_0
+# see gh-790 issue.
+#
+#@register_canonicalize
+@register_specialize
+@gof.local_optimizer([])
+def local_reduce_broadcastable(node):
+    """Remove reduction over broadcastable dimensions"""
+    if isinstance(node.op, T.CAReduce):
+        reduced, = node.inputs
+        odtype = node.outputs[0].dtype
+        if node.op.axis is None:
+            if all(reduced.broadcastable):
+                return [reduced.dimshuffle().astype(odtype)]
+        else:
+            axis = list(node.op.axis)
+            cuttable = [a for a in axis if reduced.broadcastable[a]]
+            if cuttable:
+                # -- we can remove some axes of summation,
+                #    which simplifies the codegen for sum, especially on GPU
+                new_axis = []
+                pattern = []
+                ii = 0
+                for p in range(reduced.ndim):
+                    if p not in cuttable:
+                        if p in axis:
+                            new_axis.append(ii)
+                        pattern.append(p)
+                        ii += 1
+                new_reduced = reduced.dimshuffle(*pattern)
+                if new_axis:
+                    if type(node.op) == theano.tensor.elemwise.CAReduce:
+                        # This happen for tensor.max(), tensor.min()
+                        new_op = node.op.__class__(node.op.scalar_op,
+                                                   axis=new_axis)
+                    else:
+                        new_op = node.op.__class__(axis=new_axis)
+                    return [new_op(new_reduced)]
+                else:
+                    # -- in this case we can remove the reduction completely
+                    return [new_reduced.astype(odtype)]
+
+
 @register_specialize
 @gof.local_optimizer([])
 def local_sum_alloc(node):
@@ -3129,15 +3315,15 @@ def local_sum_alloc(node):
             if (node.op.axis is None or
                 node.op.axis == tuple(range(input.ndim))):
                 try:
-                    val = get_constant_value(input)
+                    val = get_scalar_constant_value(input)
                     assert val.size == 1
                     val = val.reshape(1)[0] * T.mul(*shapes)
                     return [T.cast(val, dtype=node.outputs[0].dtype)]
-                except TypeError:
+                except NotScalarConstantError:
                     pass
             else:
                 try:
-                    val = get_constant_value(input)
+                    val = get_scalar_constant_value(input)
                     assert val.size == 1
                     val = val.reshape(1)[0]
                     to_prod = [shapes[i] for i in xrange(len(shapes))
@@ -3147,7 +3333,7 @@ def local_sum_alloc(node):
                     return [T.alloc(T.cast(val, dtype=node.outputs[0].dtype),
                                     *[shapes[i] for i in xrange(len(shapes))
                                       if i not in node.op.axis])]
-                except TypeError:
+                except NotScalarConstantError:
                     pass
 
 
@@ -3207,8 +3393,8 @@ def local_mul_zero(node):
 
         for i in node.inputs:
             try:
-                value = get_constant_value(i)
-            except TypeError:
+                value = get_scalar_constant_value(i)
+            except NotScalarConstantError:
                 continue
             #print 'MUL by value', value, node.inputs
             if N.all(value == 0):
@@ -3230,7 +3416,7 @@ def local_div_to_inv(node):
             new_out = T.cast(new_out, dtype=out.dtype)
         # The ones could have forced a specific length
         if new_out.type != out.type:
-            new_out = broadcast_like(new_out, out, node.env)
+            new_out = broadcast_like(new_out, out, node.fgraph)
         return [new_out]
     else:
         return False
@@ -3250,9 +3436,9 @@ register_canonicalize(local_inv_canon)
 def local_pow_canonicalize(node):
     if node.op == T.pow:
         if N.all(local_mul_canonizer.get_constant(node.inputs[1]) == 0):
-            return [broadcast_like(1, node.outputs[0], node.env)]
+            return [broadcast_like(1, node.outputs[0], node.fgraph)]
         if N.all(local_mul_canonizer.get_constant(node.inputs[1]) == 1):
-            return [broadcast_like(node.inputs[0], node.outputs[0], node.env)]
+            return [broadcast_like(node.inputs[0], node.outputs[0], node.fgraph)]
     else:
         return False
 register_canonicalize(local_pow_canonicalize)
@@ -3404,7 +3590,7 @@ def local_mul_specialize(node):
                 neg ^= True  # toggles
             elif N.all(y == 0.0):
                 # if we find any zero, we just return right away
-                return [broadcast_like(0, node.outputs[0], node.env)]
+                return [broadcast_like(0, node.outputs[0], node.fgraph)]
             else:
                 new_inputs.append(input)
 
@@ -3421,14 +3607,14 @@ def local_mul_specialize(node):
                     else:
                         rval = T.mul(*new_inputs)
 
-                return [broadcast_like(rval, node.outputs[0], node.env)]
+                return [broadcast_like(rval, node.outputs[0], node.fgraph)]
             else:
                 # there are no variable inputs to mul
                 # N.B. this could have been constant-folded...
                 if neg:
-                    return [broadcast_like(-1, node.outputs[0], node.env)]
+                    return [broadcast_like(-1, node.outputs[0], node.fgraph)]
                 else:
-                    return [broadcast_like(1, node.outputs[0], node.env)]
+                    return [broadcast_like(1, node.outputs[0], node.fgraph)]
 
 register_specialize(local_mul_specialize)
 
@@ -3445,8 +3631,8 @@ def local_add_specialize(node):
         new_inputs = []
         for input in node.inputs:
             try:
-                y = get_constant_value(input)
-            except TypeError:
+                y = get_scalar_constant_value(input)
+            except NotScalarConstantError:
                 y = input
             if numpy.all(y == 0.0):
                 continue
@@ -3539,7 +3725,10 @@ def local_abs_merge(node):
             if i.owner and i.owner.op == T.abs_:
                 inputs.append(i.owner.inputs[0])
             else:
-                const = get_constant_value(i)
+                try:
+                    const = get_scalar_constant_value(i)
+                except NotScalarConstantError:
+                    return False
                 if not (const >= 0).all():
                     return False
                 inputs.append(i)
@@ -3805,9 +3994,9 @@ def _is_1(expr):
     """rtype bool. True iff expr is a constant close to 1
     """
     try:
-        v = get_constant_value(expr)
+        v = get_scalar_constant_value(expr)
         return numpy.allclose(v, 1)
-    except TypeError:
+    except NotScalarConstantError:
         return False
 
 
@@ -3815,9 +4004,9 @@ def _is_minus1(expr):
     """rtype bool. True iff expr is a constant close to -1
     """
     try:
-        v = get_constant_value(expr)
+        v = get_scalar_constant_value(expr)
         return numpy.allclose(v, -1)
-    except TypeError:
+    except NotScalarConstantError:
         return False
 
 #1+erf(x)=>erfc(-x)
@@ -4057,8 +4246,8 @@ def local_grad_log_erfc_neg(node):
         mul_neg = T.mul(*mul_inputs)
 
         try:
-            cst2 = get_constant_value(mul_neg.owner.inputs[0])
-        except TypeError:
+            cst2 = get_scalar_constant_value(mul_neg.owner.inputs[0])
+        except NotScalarConstantError:
             return False
 
         if len(mul_neg.owner.inputs) == 2:
@@ -4084,8 +4273,8 @@ def local_grad_log_erfc_neg(node):
 
             x = erfc_x
             try:
-                cst = get_constant_value(erfc_x.owner.inputs[0])
-            except TypeError:
+                cst = get_scalar_constant_value(erfc_x.owner.inputs[0])
+            except NotScalarConstantError:
                 return False
             if cst2 != -cst * 2:
                 return False
@@ -4376,9 +4565,11 @@ def local_elemwise_fusion_op(OP, max_input_fct=lambda node: 1024):
 
             # We should not check the number of inputs here
             # As fusing op don't always change the number of input.
+            # If a variable is used as multiple into to the same node,
+            # we still want to fusion. So we take the set.
             if (i.owner and
                 isinstance(i.owner.op, OP) and
-                len(i.clients) == 1):
+                len(set([n for n, idx in i.clients])) == 1):
 
                 do_fusion = True
                 try:
@@ -4507,24 +4698,24 @@ class FusionOptimizer(Optimizer):
         Optimizer.__init__(self)
         self.optimizer = local_optimizer
 
-    def add_requirements(self, env):
-        env.extend(toolbox.ReplaceValidate())
-        env.extend(DestroyHandler())
+    def add_requirements(self, fgraph):
+        fgraph.attach_feature(toolbox.ReplaceValidate())
+        fgraph.attach_feature(DestroyHandler())
 
-    def apply(self, env):
+    def apply(self, fgraph):
         did_something = True
         while did_something:
-            nodelist = list(env.toposort())
+            nodelist = list(fgraph.toposort())
             nodelist.reverse()
             did_something = False
             for node in nodelist:
                 # Don't try to fuse node that have already been fused.
-                if node in env.nodes:
+                if node in fgraph.apply_nodes:
                     new_outputs = self.optimizer(node)
                     if new_outputs:
                         assert len(new_outputs) == len(node.outputs)
                         try:
-                            env.replace_all_validate(
+                            fgraph.replace_all_validate(
                                 zip(node.outputs, new_outputs),
                                 reason=self.__class__.__name__)
                             did_something = True

@@ -44,7 +44,7 @@ class OpFromGraph(gof.Op):
         if 'updates' in kwargs:
             raise TypeError('updates are not allowed in kwargs')
 
-        # TODO: the graph may have implicit inputs like Value and
+        # TODO: the graph may have implicit inputs like
         #       SharedVariable instances.
         #       what impact to they have on the validity of this Op?
         self.fn = orig_function(inputs, outputs, **kwargs)
@@ -55,9 +55,12 @@ class OpFromGraph(gof.Op):
 
         if grad_depth > 0:
             output_grads = [t() for t in self.output_types]
-            gd = G.grad_sources_inputs(zip(self.outputs, output_grads),
-                    self.inputs)
-            gs = map(gd.get, self.inputs)
+            # OpFromGraph doesn't implement a connection_pattern, so for now we regard
+            # all inputs and outputs as connected. This will compute the right numerical
+            # value for the gradients but could fail to raise the disconnected inputs error
+            # in some cases.
+            gs = G.grad(cost=None, known_grads=dict(zip(self.outputs, output_grads)),
+                    wrt=self.inputs, disconnected_inputs='ignore')
             self.grad_ops = []
             for g in gs:
                 if g is None:
