@@ -408,9 +408,10 @@ class NVCC_compiler(object):
         elif config.cmodule.compilation_warning and nvcc_stdout:
             print nvcc_stdout
 
-        if nvcc_stdout:
-            # this doesn't happen to my knowledge
-            print >> sys.stderr, "DEBUG: nvcc STDOUT", nvcc_stdout
+        # this displayed lots of "Creating library" messages on my system
+        #if nvcc_stdout:
+        #    # this doesn't happen to my knowledge
+        #    print >> sys.stderr, "DEBUG: nvcc STDOUT", nvcc_stdout
 
         if py_module:
             #touch the __init__ file
