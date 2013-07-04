@@ -8,15 +8,14 @@ import warnings
 import numpy
 
 import theano
-from theano.scan_module import scan_utils, scan_op, scan_opt
 from theano import scalar as scal
-from theano import tensor, compile, gof
+from theano import tensor, gof
 import theano.ifelse
 
 from theano.compile import optdb
 from theano.gof import (local_optimizer, EquilibriumDB, SequenceDB, ProxyDB,
                         Optimizer, toolbox, DestroyHandler,
-                        InconsistencyError, EquilibriumOptimizer)
+                        EquilibriumOptimizer)
 from theano.gof.python25 import all, any
 from theano.sandbox.cuda.basic_ops import *
 from theano.sandbox.cuda.type import CudaNdarrayType
@@ -33,8 +32,10 @@ from theano.sandbox.cuda.nnet import (
         GpuCrossentropySoftmax1HotWithBiasDx,
         GpuSoftmax, GpuSoftmaxWithBias)
 from theano.sandbox.cuda.elemwise import SupportCodeError
+from theano.scalar.basic_scipy import Erfinv
+from theano.sandbox.cuda.elemwise import erfinv_gpu
 from theano.sandbox.cuda.var import CudaNdarrayConstant
-from theano.scan_module import scan_utils, scan_op
+from theano.scan_module import scan_utils, scan_op, scan_opt
 from theano.tensor.blas import _is_real_vector, _is_real_matrix
 
 #optdb.print_summary()  # shows what is currently registered
@@ -177,11 +178,15 @@ def local_gpu_elemwise_0(node):
             if numpy.all([o.type.dtype == 'float32' for o in node.outputs]):
                 # Don't set any inplace pattern.
                 # gpu_inplace_elemwise_optimizer will do it later
-                try:
-                    new_op = GpuElemwise(node.op.scalar_op)
-                except SupportCodeError:
-                    # This happens when scalar_op requires support code
-                    return False
+
+                if isinstance(node.op.scalar_op, Erfinv):
+                    new_op = GpuElemwise(erfinv_gpu)
+                else:
+                    try:
+                        new_op = GpuElemwise(node.op.scalar_op)
+                    except SupportCodeError:
+                        # This happens when scalar_op requires support code
+                        return False
 
                 #   first establish that float32 can store all inputs
                 upcastable = set(['float32', 'int8', 'int16', 'uint8',
@@ -234,11 +239,16 @@ def local_gpu_elemwise_1(node):
             elemwise_node = host_i.owner
             # Don't set any inplace pattern.
             # gpu_inplace_elemwise_optimizer will do it later
-            try:
-                new_op = GpuElemwise(elemwise_node.op.scalar_op)
-            except SupportCodeError:
-                # This happens when scalar_op requires support code
-                return False
+
+            if isinstance(elemwise_node.op.scalar_op, Erfinv):
+                new_op = GpuElemwise(erfinv_gpu)
+            else:
+                try:
+                    new_op = GpuElemwise(elemwise_node.op.scalar_op)
+                except SupportCodeError:
+                    # This happens when scalar_op requires support code
+                    return False
+
             if all([i.dtype == 'float32' for i in elemwise_node.inputs]):
                 gpu_elemwise = new_op(*[gpu_from_host(i)
                                         for i in elemwise_node.inputs])
@@ -279,7 +289,7 @@ def local_gpu_dimshuffle_0(node):
 def local_gpu_specifyShape_0(node):
     """
     specify_shape(host_from_gpu()) -> host_from_gpu(specify_shape)
-    gpu_from_host(specify_shape) -> specifyshape(gpu_from_host)
+    gpu_from_host(specify_shape) -> specify_shape(gpu_from_host)
     """
     if isinstance(node.op, tensor.SpecifyShape):
         input = node.inputs[0]
@@ -587,7 +597,7 @@ def local_gpu_careduce(node):
         scalar_op = node.op.scalar_op
         # currently, only these two ops are supported at all,
         # and max does not support all combinations of axes
-        if node.op.scalar_op in [scal.add, scal.maximum]:
+        if node.op.scalar_op in [scal.add, scal.maximum, scal.minimum]:
             x, = node.inputs
             if x.owner and x.owner.op == host_from_gpu:
                 if node.op.axis is None:
@@ -611,8 +621,8 @@ def local_gpu_careduce(node):
                     # Try to make a simpler pattern based on reshaping
                     # The principle is that if two adjacent dimensions have
                     # the same value in the reduce_mask, then we can reshape
-                    # to make them a single dimension, do the reduction, and then
-                    # reshape to get them back.
+                    # to make them a single dimension, do the reduction, and
+                    # then reshape to get them back.
 
                     shape_of = node.fgraph.shape_feature.shape_of
 
@@ -630,7 +640,7 @@ def local_gpu_careduce(node):
                     new_greduce = GpuCAReduce(new_mask, scalar_op)
                     reshaped_x = x.reshape(tensor.stack(*new_in_shp))
                     gpu_reshaped_x = gpu_from_host(reshaped_x)
-                    reshaped_gpu_inputs = [ gpu_reshaped_x ]
+                    reshaped_gpu_inputs = [gpu_reshaped_x]
                     if new_greduce.supports_c_code(reshaped_gpu_inputs):
                         reduce_reshaped_x = host_from_gpu(
                             new_greduce(gpu_reshaped_x))
@@ -644,11 +654,11 @@ def local_gpu_careduce(node):
                             return [unreshaped_reduce]
                         else:
                             print >> sys.stderr, \
-                                    "WARNING: local_gpu_careduce got type wrong"
+                                "WARNING: local_gpu_careduce got type wrong"
                             return None
 
                         raise Exception(
-                                "GpuCAReduce does not yet implement this pattern:",
+                            "GpuCAReduce does not yet implement this pattern:",
                             pattern)
     return False
 
@@ -1009,6 +1019,7 @@ def local_gpu_conv(node):
                                          float(op.imshp[1])))
                 cstride = int(numpy.ceil(op.imshp_logical[2] /
                                          float(op.imshp[2])))
+
                 def make_graph(img, kern):
                     buf = tensor.alloc(numpy.asarray(0, dtype=img.dtype),
                                        img.shape[0], *op.imshp_logical)
@@ -1016,6 +1027,7 @@ def local_gpu_conv(node):
                                                img)
                     img = gpu_from_host(img)
                     return ret(img, kern)
+
                 return make_graph
         return ret
 
@@ -1333,7 +1345,6 @@ def local_gpualloc(node):
 @register_opt()
 @local_optimizer([tensor.Alloc])
 def local_gpualloc_memset_0(node):
-    replace = False
     if isinstance(node.op, GpuAlloc) and not node.op.memset_0:
         inp = node.inputs[0]
         if (isinstance(inp, CudaNdarrayConstant) and
@@ -1341,6 +1352,27 @@ def local_gpualloc_memset_0(node):
             (numpy.asarray(inp.data) == 0).all()):
             new_out = GpuAlloc(memset_0=True)(*node.inputs)
             return [new_out]
+
+
+@register_opt()
+@local_optimizer([])
+def local_gpu_eye(node):
+    """
+    gpu_from_host(eye) -> gpueye(gpu_from_host)
+
+    eye(host_from_gpu) -> host_from_gpu(gpueye)
+    """
+    if node.op == gpu_from_host:
+        host_input = node.inputs[0]
+        if (host_input.owner and
+            isinstance(host_input.owner.op, tensor.Eye) and
+            host_input.owner.op.dtype == "float32"):
+            return [gpu_eye(*host_input.owner.inputs)]
+    if isinstance(node.op, tensor.Eye) and node.op.dtype == "float32":
+        if numpy.any([(i.owner and i.owner.op == host_from_gpu)
+                      for i in node.inputs]):
+            return [host_from_gpu(gpu_eye(*node.inputs))]
+    return False
 
 
 def safe_to_gpu(x):
@@ -1404,6 +1436,32 @@ def tensor_to_cuda(x):
         return y
     else:
         return x
+
+
+@register_opt()
+@local_optimizer([])
+def local_gpu_extract_diagonal(node):
+    """
+    extract_diagonal(host_from_gpu()) -> host_from_gpu(extract_diagonal)
+    gpu_from_host(extract_diagonal) -> extract_diagonal(gpu_from_host)
+    """
+    from theano.sandbox import linalg
+    if (isinstance(node.op, linalg.ops.ExtractDiag) and
+        isinstance(node.inputs[0].type,
+                   theano.tensor.TensorType)):
+        inp = node.inputs[0]
+        if inp.owner and isinstance(inp.owner.op, HostFromGpu):
+            return [host_from_gpu(linalg.extract_diag(gpu_from_host(inp)))]
+    if node.op == gpu_from_host:
+        host_input = node.inputs[0]
+        if (host_input.owner and
+            isinstance(host_input.owner.op, linalg.ops.ExtractDiag) and
+            isinstance(host_input.owner.inputs[0].type,
+                       theano.tensor.TensorType)):
+            diag_node = host_input.owner
+            return [linalg.extract_diag(
+                gpu_from_host(diag_node.inputs[0]))]
+    return False
 
 
 @register_opt('scan')
@@ -1511,9 +1569,11 @@ def gpuScanOptimization(node):
             local_fgraph = gof.FunctionGraph(tmp_in, tmp_out)
             _cmodule_key = gof.CLinker().cmodule_key_(local_fgraph, [])
             info['gpu_hash'] = hash(_cmodule_key)
+
             def typeConstructor(broadcastable, dtype):
                 assert dtype == 'float32'
                 return CudaNdarrayType(broadcastable=broadcastable)
+
             _outputs = scan_op.Scan(
                 scan_ins,
                 scan_outs,

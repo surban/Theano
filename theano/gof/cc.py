@@ -4,17 +4,28 @@ Defines Linkers that deal with C implementations.
 
 # Python imports
 from copy import copy
-import re  # for set_compiledir
 import os
-import StringIO
 import sys
 from itertools import izip
 
-
 import numpy
 
+from theano.compat import PY3
+from theano.compat.six import StringIO
 
-if sys.version_info[:2] >= (2, 5):
+if PY3:
+    import hashlib
+
+    def hash_from_code(msg):
+        # hashlib.md5() requires an object that supports buffer interface,
+        # but Python 3 (unicode) strings don't.
+        if isinstance(msg, str):
+            msg = msg.encode()
+        # Python 3 does not like module names that start with
+        # a digit.
+        return 'm' + hashlib.md5(msg).hexdigest()
+
+elif sys.version_info[:2] >= (2, 5):
     import hashlib
 
     def hash_from_code(msg):
@@ -44,13 +55,13 @@ AddConfigVar('gcc.cxxflags',
         StrParam(""))
 
 # gof imports
-import graph
-import link
-import utils
+from theano.gof import graph
+from theano.gof import link
+from theano.gof import utils
 
-from compilelock import get_lock, release_lock
+from theano.gof.compilelock import get_lock, release_lock
 
-import cmodule
+from theano.gof import cmodule
 
 
 import logging
@@ -113,8 +124,19 @@ class CodeBlock:
 
 
 def failure_code(sub):
-    """WRITEME"""
-    return "{%(failure_var)s = %(id)s; goto __label_%(id)i;}" % sub
+    """Code contained in sub['fail'], usually substituted for %(fail)s.
+
+    It sets information about current error, then goto the code
+    actually handling the failure, which is defined in struct_gen().
+    """
+    return '''{
+        %(failure_var)s = %(id)s;
+        if (!PyErr_Occurred()) {
+            PyErr_SetString(PyExc_RuntimeError,
+                "Unexpected error in an Op's C code. "
+                "No Python exception was set.");
+            }
+        goto __label_%(id)i;}''' % sub
 
 
 def code_gen(blocks):
@@ -577,7 +599,14 @@ class CLinker(link.Linker):
 ##                                       ivnames + ovnames):
 ##                sub[vname] = symbol[variable]
 
-            name = "node_%i" % node_num
+            # The placeholder will be replaced by a hash of the entire
+            # code (module + support code) in DynamicModule.code.
+            # This ensures that, when defining functions in support code,
+            # we cannot have two different functions, in different modules,
+            # that have the same name.
+            # It was problematic, in particular, on Mac OS X (10.6 and 10.7)
+            # when defining CUDA kernels (with Cuda 4.2 and 5.0). See gh-1172.
+            name = "node_<<<<HASH_PLACEHOLDER>>>>_%i" % node_num
             isyms = [symbol[r] for r in node.inputs]
             osyms = [symbol[r] for r in node.outputs]
 
@@ -631,24 +660,15 @@ class CLinker(link.Linker):
         args += ["storage_%s" % symbol[variable] for variable
                  in utils.uniq(self.inputs + self.outputs + self.orphans)]
 
+        # <<<<HASH_PLACEHOLDER>>>> will be replaced by a hash of the whole
+        # code in the file, including support code, in DynamicModule.code.
+        struct_name = '__struct_compiled_op_%s' % '<<<<HASH_PLACEHOLDER>>>>'
         struct_code = struct_gen(args, init_blocks, blocks,
                                  dict(failure_var=failure_var,
-                                      name="<<<<NAME>>>>"))
-
-        # TODO: still needed? We do not use weave anymore.
-        # The hash calculated on the code identifies it so weave can
-        # cache properly.  (the hash has to be used outside of the
-        # support code because weave does not consider changes in the
-        # support code)
-        hash = hash_from_code(struct_code)
-
-        struct_name = '__struct_compiled_op_%s' % hash
-        #struct_code %= dict(name = struct_name)
-        struct_code = re.sub("<<<<NAME>>>>", struct_name, struct_code)
+                                      name=struct_name))
 
         self.struct_code = struct_code
         self.struct_name = struct_name
-        self.hash = hash
         self.args = args
         self.r2symbol = symbol
         self.init_blocks = init_blocks
@@ -913,6 +933,7 @@ class CLinker(link.Linker):
             keep_lock=keep_lock)
 
         res = _CThunk(cthunk, init_tasks, tasks, error_storage)
+        res.nodes = self.node_order
         return res, in_storage, out_storage
 
     def cmodule_key(self):
@@ -1192,7 +1213,7 @@ class CLinker(link.Linker):
             _logger.debug("LOCATION %s", str(location))
             try:
                 module = c_compiler.compile_str(
-                    module_name=mod.name,
+                    module_name=mod.code_hash,
                     src_code=src_code,
                     location=location,
                     include_dirs=self.header_dirs(),
@@ -1212,9 +1233,8 @@ class CLinker(link.Linker):
         for our fgraph.
         """
         self.code_gen()
-        module_name = self.hash
 
-        mod = cmodule.DynamicModule(module_name)
+        mod = cmodule.DynamicModule()
 
         # The code of instantiate
         # the 1 is for error_storage
@@ -1227,19 +1247,25 @@ class CLinker(link.Linker):
 
         # Static methods that can run and destroy the struct built by
         # instantiate.
-        static = """
+        if PY3:
+            static = """
+        int {struct_name}_executor({struct_name} *self) {{
+            return self->run();
+        }}
+
+        void {struct_name}_destructor(PyObject *capsule) {{
+            {struct_name} *self = ({struct_name} *)PyCapsule_GetContext(capsule);
+            delete self;
+        }}
+        """.format(struct_name=self.struct_name)
+        else:
+            static = """
         int %(struct_name)s_executor(%(struct_name)s* self) {
             return self->run();
         }
 
         void %(struct_name)s_destructor(void* executor, void* self) {
-            //printf("doing cleanup\\n");
-            //fflush(stdout);
-            // ((%(struct_name)s*)self)->cleanup();
-            // free(self);
             delete ((%(struct_name)s*)self);
-            //printf("done cleanup\\n");
-            //fflush(stdout);
         }
         """ % dict(struct_name=self.struct_name)
 
@@ -1295,7 +1321,7 @@ class CLinker(link.Linker):
         return ret
 
     def instantiate_code(self, n_args):
-        code = StringIO.StringIO()
+        code = StringIO()
         struct_name = self.struct_name
         print >> code, "static PyObject * instantiate(PyObject * self, PyObject *argtuple) {"
         print >> code, '  assert(PyTuple_Check(argtuple));'
@@ -1305,7 +1331,17 @@ class CLinker(link.Linker):
         print >> code, '  }'
         print >> code, '  %(struct_name)s* struct_ptr = new %(struct_name)s();' % locals()
         print >> code, '  struct_ptr->init(', ','.join('PyTuple_GET_ITEM(argtuple, %i)' % n for n in xrange(n_args)), ');'
-        print >> code, '  PyObject* thunk = PyCObject_FromVoidPtrAndDesc((void*)(&%(struct_name)s_executor), struct_ptr, %(struct_name)s_destructor);' % locals()
+        if PY3:
+            print >> code, """\
+    PyObject* thunk = PyCapsule_New((void*)(&{struct_name}_executor), NULL, {struct_name}_destructor);
+    if (thunk != NULL && PyCapsule_SetContext(thunk, struct_ptr) != 0) {{
+        PyErr_Clear();
+        Py_DECREF(thunk);
+        thunk = NULL;
+    }}
+""".format(**locals())
+        else:
+            print >> code, '  PyObject* thunk = PyCObject_FromVoidPtrAndDesc((void*)(&%(struct_name)s_executor), struct_ptr, %(struct_name)s_destructor);' % locals()
         print >> code, "  return thunk; }"
         return code.getvalue()
 
@@ -1356,11 +1392,9 @@ class _CThunk(object):
                 trace = ()
             try:
                 exc_type, _exc_value, exc_trace = self.error_storage
-                if hasattr(task, "outputs"):
-                    exc_value = exc_type(_exc_value, task, task.outputs)
-                else:
-                    exc_value = exc_type(_exc_value, task)
+                self.position_of_error = self.nodes.index(task)
                 # this can be used to retrieve the location the Op was declared
+                exc_value = exc_type(_exc_value)
                 exc_value.__thunk_trace__ = trace
             except Exception:
                 print >> sys.stderr, ('ERROR retrieving error_storage.'
@@ -1467,8 +1501,7 @@ class OpWiseCLinker(link.LocalLinker):
                 finally:
                     node.op._op_use_c_code = old_value
 
-            for node_idx, node in enumerate(order):
-
+            for node in order:
                 if self.allow_gc:
                     post_thunk_old_storage.append([storage_map[input]
                         for input in node.inputs

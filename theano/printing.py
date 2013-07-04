@@ -6,7 +6,6 @@ in a graph(Print Op)
 from copy import copy
 import logging
 import os
-import StringIO
 import sys
 # Not available on all platforms
 hashlib = None
@@ -24,9 +23,10 @@ except ImportError:
     pydot_imported = False
 
 import theano
-import gof
+from theano import gof
 from theano import config
-from gof import Op, Apply
+from theano.compat.six import StringIO
+from theano.gof import Op, Apply
 from theano.gof.python25 import any
 from theano.compile import Function, debugmode
 from theano.compile.profilemode import ProfileMode
@@ -74,7 +74,7 @@ def debugprint(obj, depth=-1, print_type=False,
 
     """
     if file == 'str':
-        _file = StringIO.StringIO()
+        _file = StringIO()
     elif file is None:
         _file = sys.stdout
     else:
@@ -478,14 +478,15 @@ default_colorCodes = {'GpuFromHost': 'red',
               'Scan': 'yellow',
               'Shape': 'cyan',
               'IfElse': 'magenta',
-              'Elemwise': '#FFAABB',
-              'Subtensor': '#FFAAFF'}
+              'Elemwise': '#FFAABB',  # dark pink
+              'Subtensor': '#FFAAFF',  # purple
+              'Alloc': '#FFAA22'}  # orange
 
 
 def pydotprint(fct, outfile=None,
                compact=True, format='png', with_ids=False,
                high_contrast=True, cond_highlight=None, colorCodes=None,
-               max_label_size=50, scan_graphs=False,
+               max_label_size=70, scan_graphs=False,
                var_with_name_simple=False,
                print_output_file=True,
                assert_nb_all_strings=-1

@@ -23,7 +23,7 @@ import theano
 from theano.compile import function, Param, Out
 from theano import compile
 from theano import gradient
-from theano.gof.python25 import any
+from theano.gof.python25 import any, OrderedDict
 from theano.gof import PureOp, Apply
 from theano import gof
 from theano.tensor import TensorType
@@ -33,8 +33,8 @@ from theano.gradient import grad_undefined
 from theano.gradient import DisconnectedType
 from theano.compile.profiling import ScanProfileStats
 
-import scan_utils
-from scan_utils import safe_new, forced_replace
+from theano.scan_module import scan_utils
+from theano.scan_module.scan_utils import safe_new, forced_replace
 
 # Logging function for sending warning or info
 _logger = logging.getLogger('theano.scan_module.scan_op')
@@ -192,19 +192,18 @@ class Scan(PureOp):
     def make_node(self, *inputs):
         """
         Conventions:
-            inner_? - the variable corresponding to ? in the inner function
+            inner_X - the variable corresponding to X in the inner function
                       of scan (the lambda function executed at every time
                       step)
-            outer_? - the variable corresponding to ? in the outer graph,
+            outer_X - the variable corresponding to X in the outer graph,
                       i.e. the main graph (where the scan op lives)
-            inner_?_out - the variable representing the new value of ? after
+            inner_X_out - the variable representing the new value of X after
                           executing one step of scan (i.e. outputs given by
                           the inner function)
         """
         assert numpy.all(isinstance(i, gof.Variable) for i in inputs)
         # Check that the number of inputs to the Scan node corresponds to
         # the number of inputs of the inner function of scan
-
         n_outer_ins = len(inputs) - len(self.outer_nitsot(inputs)) - 1
         n_inner_ins = (len(self.inner_seqs(self.inputs)) +
                        len(self.mitmot_taps()) +
@@ -215,7 +214,7 @@ class Scan(PureOp):
         assert n_outer_ins == n_inner_ins, \
                 ("The number of inputs given to the inner function of scan"
                  " does not match the number of inputs given to scan.")
-
+        new_inputs = [inputs[0]]
         # assert dtype is consistent
         err_msg1 = ('When compiling the inner function of scan the '
                     'following error has been encountered: The '
@@ -228,49 +227,42 @@ class Scan(PureOp):
                    )
         err_msg2 = ('When compiling the inner function of scan the '
                     'following error has been encountered: The '
-                    'initial state (outputs_info in scan nomenclature)'
+                    'initial state (outputs_info in scan nomenclature) '
                     'of variable %s (argument number %d)'
                     ' has dtype %s and %d dimension(s), while the result '
                     'of the inner function for this output has dtype %s '
                     'and %d dimension(s). This could happen if the inner '
                     'graph of scan results in an upcast or downcast. '
                     'Please make sure that you use dtypes consistently')
-        # TODO make the assert exact
-        # TODO assert the type(dtype, nbdim of self.inputs and
-        #      inputs correspond)
-        #assert len(inputs) >= len(self.inputs)
-        #if self.info['as_while']:
-        #    assert len(inputs) == len(self.inputs) + 2 + \
-        #       self.info["n_nit_sot"]
-        #else:
-        #    assert len(inputs) == len(self.inputs) + 1 + \
-        #       self.info["n_nit_sot"]
-        # Flags that indicate which inputs are vectors
 
-        self.vector_seqs = [seq.ndim == 1 for seq in
-                             inputs[1:1 + self.n_seqs]]
-        self.vector_outs = [arg.ndim == 1 for arg in
-                             inputs[1 + self.n_seqs: (1 + self.n_seqs +
-                                                    self.n_outs)]]
-        self.vector_outs += [False] * self.n_nit_sot
+        def format(var, as_var):
+            """ This functions ensures that ``out`` has the same dtype as
+            ``inp`` as well as calling filter_variable to make sure they are
+            both TensorType or CudaNdarrayType. It internally deals with the
+            corner case where inp.ndim + 1 = out.ndim
+            """
+            if not hasattr(var, 'dtype'):
+                return var
+            rval = var
+            if rval.type.dtype != as_var.type.dtype:
+                rval = rval.astype(as_var.type.dtype)
+            if rval.ndim == as_var.ndim:
+                rval = as_var.type.filter_variable(rval)
+            else:
+                tmp = as_var.type.__class__(
+                    broadcastable=tuple(var.broadcastable[:1])+\
+                                  tuple(as_var.broadcastable),
+                    dtype=as_var.dtype)
+                rval = tmp.filter_variable(rval)
+            return rval
 
         # Check if input sequences and variables representing a slice of
         # them have the same dtype
         argoffset = 0
-        for idx, (inner_seq, outer_seq) in enumerate(
-                                    zip(self.inner_seqs(self.inputs),
-                                        self.outer_seqs(inputs))):
-            if inner_seq.type.dtype != outer_seq[0].type.dtype:
-                assert isinstance(idx, int)
+        for inner_seq, outer_seq in zip(self.inner_seqs(self.inputs),
+                                        self.outer_seqs(inputs)):
+            new_inputs.append(format(outer_seq, as_var=inner_seq))
 
-                raise ValueError(err_msg1 % ('sequence',
-                                             str(outer_seq),
-                                             idx,
-                                             outer_seq.type.dtype,
-                                             outer_seq.ndim,
-                                             str(inner_seq),
-                                             inner_seq.type.dtype,
-                                             inner_seq.ndim))
         argoffset += len(self.outer_seqs(inputs))
         # Check that this 3 things have the same dtype for mit_mot:
         #   - initial state of the output
@@ -280,10 +272,12 @@ class Scan(PureOp):
         opos = 0
         inner_mitmot = self.inner_mitmot(self.inputs)
         inner_mitmot_outs = self.inner_mitmot_outs(self.outputs)
-        for idx, (itaps, otaps, outer_mitmot) in enumerate(
+        for idx, (itaps, otaps, _outer_mitmot) in enumerate(
                                      zip(self.mitmot_taps(),
                                          self.mitmot_out_taps(),
                                          self.outer_mitmot(inputs))):
+            outer_mitmot = format(_outer_mitmot, as_var=inner_mitmot[ipos])
+            new_inputs.append(outer_mitmot)
             for k in xrange(len(itaps)):
                 if (inner_mitmot[ipos + k].type.dtype !=
                     outer_mitmot.type.dtype or
@@ -316,13 +310,16 @@ class Scan(PureOp):
         # Same checks as above but for outputs of type mit_sot
         ipos = 0
         inner_mitsots = self.inner_mitsot(self.inputs)
-        for idx, (itaps, outer_mitsot, inner_mitsot_out) in enumerate(
+        for idx, (itaps, _outer_mitsot, inner_mitsot_out) in enumerate(
             zip(self.mitsot_taps(),
                 self.outer_mitsot(inputs),
                 self.inner_mitsot_outs(self.outputs))):
+            outer_mitsot = format(_outer_mitsot, as_var=inner_mitsots[ipos])
+            new_inputs.append(outer_mitsot)
+
             for k in xrange(len(itaps)):
                 if (inner_mitsots[ipos + k].type.dtype != \
-                        outer_mitsot.type.dtype or
+                    outer_mitsot.type.dtype or
                     inner_mitsots[ipos + k].ndim != outer_mitsot.ndim - 1):
                     raise ValueError(err_msg1 % ('initial state (outputs_info'
                                                ' in scan nomenclature) ',
@@ -346,12 +343,13 @@ class Scan(PureOp):
 
         argoffset += len(self.outer_mitsot(inputs))
         # Same checks as above but for outputs of type sit_sot
-        for idx, (inner_sitsot, outer_sitsot, inner_sitsot_out) in enumerate(
+        for idx, (inner_sitsot, _outer_sitsot, inner_sitsot_out) in enumerate(
             zip(self.inner_sitsot(self.inputs),
                 self.outer_sitsot(inputs),
                 self.inner_sitsot_outs(self.outputs))):
-            if (inner_sitsot.type.dtype != outer_sitsot.type.dtype or
-                inner_sitsot.ndim != outer_sitsot.ndim - 1):
+            outer_sitsot = format(_outer_sitsot, as_var=inner_sitsot)
+            new_inputs.append(outer_sitsot)
+            if (inner_sitsot.ndim != outer_sitsot.ndim - 1):
                 raise ValueError(err_msg1 % ('initial state (outputs_info'
                                            ' in scan nomenclature) ',
                                 str(outer_sitsot),
@@ -374,10 +372,12 @@ class Scan(PureOp):
         argoffset += len(self.outer_sitsot(inputs))
         # Check that the shared variable and their update rule have the same
         # dtype. Maybe even same type ?!
-        for idx, (inner_shared, inner_shared_out, outer_shared) in enumerate(
+        for idx, (inner_shared, inner_shared_out, _outer_shared) in enumerate(
             zip(self.inner_shared(self.inputs),
                 self.inner_shared_outs(self.outputs),
                 self.outer_shared(inputs))):
+            outer_shared = format(_outer_shared, as_var=inner_shared)
+            new_inputs.append(outer_shared)
             if (hasattr(outer_shared, 'dtype') and
                 (outer_shared.dtype != inner_shared_out.dtype or
                  outer_shared.ndim != inner_shared_out.ndim)):
@@ -400,13 +400,25 @@ class Scan(PureOp):
                                            str(inner_shared),
                                            inner_shared.dtype,
                                            inner_shared.ndim))
-        for inner_nonseq, outer_nonseq in zip(
+        # We do not need to call `format` on outer_nisot arguments.
+        # outer_nitsot stands for no input tap single output tap. This means
+        # these are states that do not feed anything back in the recurrent
+        # computation, and hence they do not have an initial state. The scan
+        # node however receives an input for each such argument, the input
+        # in this case is just a int saying how many steps of this output we
+        # need to store. This input does not have the same dtype, nor is it the same
+        # type of tensor as the output, it is always a scalar int.
+        new_inputs += self.outer_nitsot(inputs)
+        for inner_nonseq, _outer_nonseq in zip(
                             self.inner_non_seqs(self.inputs),
                             self.outer_non_seqs(inputs)):
+            outer_nonseq = format(_outer_nonseq, as_var=inner_nonseq)
+            new_inputs.append(outer_nonseq)
             if inner_nonseq.type != outer_nonseq.type:
                 raise ValueError(('Argument %s given to scan node does not'
                                  ' match its correspondance %s') %
                                   (str(outer_nonseq), str(inner_nonseq)))
+
         for outer_nitsot in self.outer_nitsot(inputs):
             # For every nit_sot input we get as input a int/uint that
             # depicts the size in memory for that sequence. This feature is
@@ -415,9 +427,16 @@ class Scan(PureOp):
                 outer_nitsot.ndim != 0):
                 raise ValueError('For output %s you need to provide a '
                                  'scalar int !', str(outer_nitsot))
+        assert len(new_inputs) == len(inputs)
+        self.vector_seqs = [seq.ndim == 1 for seq in
+                             new_inputs[1:1 + self.n_seqs]]
+        self.vector_outs = [arg.ndim == 1 for arg in
+                             new_inputs[1 + self.n_seqs: (1 + self.n_seqs +
+                                                    self.n_outs)]]
+        self.vector_outs += [False] * self.n_nit_sot
 
         apply_node = Apply(self,
-                           inputs,
+                           new_inputs,
                            [t() for t in self.output_types])
         return apply_node
 
@@ -426,9 +445,9 @@ class Scan(PureOp):
         if not type(self) == type(other):
             return False
         if not 'destroy_map' in self.info:
-            self.info['destroy_map'] = {}
+            self.info['destroy_map'] = OrderedDict()
         if not 'destroy_map' in other.info:
-            other.info['destroy_map'] = {}
+            other.info['destroy_map'] = OrderedDict()
         keys_to_check = ['truncate_gradient', 'profile',
                          'n_seqs', 'tap_array', 'name',
                          'as_while', 'n_mit_sot', 'destroy_map',
@@ -472,7 +491,7 @@ class Scan(PureOp):
             name = 'for'
         aux_txt = '%s'
         if getattr(self, 'destroy_map', None) is None:
-            self.destroy_map = {}
+            self.destroy_map = OrderedDict()
         if len(self.destroy_map.keys()) > 0:
             # Check if all outputs are inplace
             if (sorted(self.destroy_map.keys()) == \
@@ -852,7 +871,7 @@ class Scan(PureOp):
         pos = [(-self.mintaps[idx]) % store_steps[idx] for idx
                          in xrange(self.n_outs + self.n_nit_sot)]
         if not getattr(self, 'destroy_map', None):
-            self.destroy_map = {}
+            self.destroy_map = OrderedDict()
         # 2.1 Create storage space for outputs
         for idx in xrange(self.n_outs):
             if idx in self.destroy_map:
@@ -955,10 +974,18 @@ class Scan(PureOp):
                 fn()
             except Exception:
                 if hasattr(fn, 'position_of_error'):
-                    # this is a new vm-provided function
-                    # the C VM needs this because the exception manipulation
+                    # this is a new vm-provided function or c linker
+                    # they need this because the exception manipulation
                     # done by raise_with_op is not implemented in C.
-                    gof.vm.raise_with_op(fn.nodes[fn.position_of_error])
+                    if hasattr(self.fn, 'thunks'):
+                        # For the CVM
+                        gof.vm.raise_with_op(self.fn.nodes[self.fn.position_of_error],
+                                             self.fn.thunks[self.fn.position_of_error])
+                    else:
+                        # For the c linker
+                        # We don't have access from python to all the temps values
+                        # So for now, we just don't print the extra shapes/strides info
+                        gof.vm.raise_with_op(self.fn.nodes[self.fn.position_of_error])
                 else:
                     # old-style linkers raise their own exceptions
                     raise
@@ -1138,7 +1165,7 @@ class Scan(PureOp):
         # Non-sequences have a direct equivalent from self.inputs in
         # node.inputs
         inner_non_sequences = self.inputs[len(seqs_shape) + len(outs_shape):]
-        out_equivalent = {}
+        out_equivalent = OrderedDict()
         for in_ns, out_ns in izip(inner_non_sequences, node.inputs[offset:]):
             out_equivalent[in_ns] = out_ns
         if self.as_while:
@@ -1199,6 +1226,9 @@ class Scan(PureOp):
         return scan_outs
 
     def get_input_pos(self, output_index):
+        """ For a given ``output_index``, an index in the inner outputs of
+        scan, find a corresponding first index in the inner inputs of scan
+        """
         ipos = self.n_seqs
         opos = output_index
         for otaps, itaps in zip(self.mitmot_out_taps(), self.mitmot_taps()):
@@ -1219,6 +1249,9 @@ class Scan(PureOp):
             return -1
 
     def get_output_pos(self, input_index):
+        """ For a given ``input_index``, an index in the inner inputs of
+        scan, find a corresponding first index in the inner outputs of scan
+        """
         ipos = input_index
         opos = 0
         for otaps, itaps in zip(self.mitmot_out_taps(), self.mitmot_taps()):
@@ -1239,6 +1272,9 @@ class Scan(PureOp):
             return -1
 
     def get_output_slice_idx(self, output_index):
+        """ For an ``output_index``, an index in the outter ouputs of scan,
+        find a corresponding index in the inner outputs of scan.
+        """
         ipos = 0
         opos = output_index
         for otaps in zip(self.mitmot_out_taps()):
@@ -1257,7 +1293,7 @@ class Scan(PureOp):
 
         def compute_gradient(y, g_y, diff_inputs):
             rval = []
-            gmp = {}
+            gmp = OrderedDict()
             consider_inps = [x for x in theano.gof.graph.inputs([y])
                              if x in diff_inputs]
             for x in consider_inps:
@@ -1268,6 +1304,8 @@ class Scan(PureOp):
                     # It means the gradient is undefined (which implies
                     # is connected)
                     gmp[x] = x
+                except gradient.DisconnectedInputError:
+                    gmp[x] = None
             return [gmp.get(p, None) for p in diff_inputs]
 
         def _get_inner_outs(oidx):
@@ -1325,10 +1363,15 @@ class Scan(PureOp):
                             # Note that we do not care about the output of
                             # this compute gradient. We just care to see if
                             # it is None or not. (i.e. disconnected or not)
-                            tmp = compute_gradient(
-                                inner_out,
-                                safe_new(inner_out, dtype='float64'),
-                                ils)
+                            try:
+                                old = theano.config.compute_test_value
+                                theano.config.compute_test_value = 'off'
+                                tmp = compute_gradient(
+                                    inner_out,
+                                    safe_new(inner_out, dtype='float64'),
+                                    ils)
+                            finally:
+                                theano.config.compute_test_value = old
                         else:
                             # It should be undefined not disconnected
                             tmp = ils
@@ -1337,6 +1380,7 @@ class Scan(PureOp):
         # Applying Floyd-Warshall to find all paths connecting inputs to
         # outputs. Note that if `x` is an input to `y_t` and `y_tm1` is an
         # input to `z_t` then `x` is an input to `z_t`.
+
         n_outs = len(node.outputs)
         for steps in xrange(n_outs):
             for iidx in xrange(n_outs):
@@ -1385,6 +1429,7 @@ class Scan(PureOp):
                         self.inner_nitsot_outs(self_outputs))
         scan_node = outs[0].owner
         connection_pattern = self.connection_pattern(scan_node)
+
         def get_inp_idx(iidx):
             if iidx < self.n_seqs:
                 return 1 + iidx
@@ -1424,15 +1469,17 @@ class Scan(PureOp):
                         "has type " + str(g_y.type))
 
             odx = get_out_idx(self_outputs.index(y))
-            wrt  = [x for  x in theano.gof.graph.inputs([y])
-                    if (x in diff_inputs) and
-                    (connection_pattern[get_inp_idx(self_inputs.index(x))][odx])]
-            grads =  gradient.grad(
-                    cost = None,
-                    known_grads = {y : g_y },
-                    wrt=wrt, consider_constant=wrt,
-                    disconnected_inputs='ignore',
-                    return_disconnected='None')
+            wrt = [x for x in theano.gof.graph.inputs([y])
+                   if (x in diff_inputs) and
+                   (connection_pattern[
+                       get_inp_idx(self_inputs.index(x))][odx])]
+            grads = gradient.grad(
+                cost=None,
+                known_grads={y: g_y},
+                wrt=wrt,
+                consider_constant=wrt,
+                disconnected_inputs='ignore',
+                return_disconnected='None')
             gmp = dict(zip(wrt, grads))
             rval = [gmp.get(p, None) for p in diff_inputs]
             return rval
@@ -1444,7 +1491,7 @@ class Scan(PureOp):
 
             # We are looking for x[t-1] for a given x[t]
             if idx >= self.n_mit_mot_outs:
-                Xt_placeholder = Xt.type()
+                Xt_placeholder = safe_new(Xt)
                 Xts.append(Xt_placeholder)
             if Xt not in self.inner_nitsot_outs(self_outputs):
                 # What we do here is loop through dC_douts and collect all
@@ -1500,12 +1547,12 @@ class Scan(PureOp):
         for pos, x in enumerate(dC_dinps_t[self.n_seqs:]):
             opos = self.get_output_pos(pos)
             if opos >= 0:
-                dC_dXtm1s.append(dC_dXts[opos].type())
+                dC_dXtm1s.append(safe_new(dC_dXts[opos]))
                 if x.dtype != dC_dXts[opos].dtype:
                     dC_dinps_t[pos + self.n_seqs] = \
                             x.astype(dC_dXts[opos].dtype)
             else:
-                dC_dXtm1s.append(x.type())
+                dC_dXtm1s.append(safe_new(x))
         for dx, dC_dXtm1 in enumerate(dC_dXtm1s):
             dC_dinps_t[dx + self.n_seqs] += dC_dXtm1
         # Construct scan op
@@ -1695,7 +1742,7 @@ class Scan(PureOp):
         new_tap_array = mitmot_inp_taps + [[-1] for k in
                                            xrange(n_sitsot_outs)]
 
-        info = {}
+        info = OrderedDict()
         info['n_seqs'] = len(outer_inp_seqs)
         info['n_mit_sot'] = 0
         info['tap_array'] = new_tap_array
@@ -1709,7 +1756,7 @@ class Scan(PureOp):
         info['n_nit_sot'] = n_nit_sot
         info['as_while'] = False
         info['profile'] = self.profile
-        info['destroy_map'] = {}
+        info['destroy_map'] = OrderedDict()
         if self.name:
             info['name'] = 'grad_of_' + self.name
         else:
@@ -1852,7 +1899,7 @@ class Scan(PureOp):
         # The only exception is the eval point for the number of sequences, and
         # evan point for the number of nit_sot which I think should just be
         # ignored (?)
-        info = {}
+        info = OrderedDict()
         info['n_seqs'] = self.n_seqs * 2
         info['n_mit_sot'] = self.n_mit_sot * 2
         info['n_sit_sot'] = self.n_sit_sot * 2
@@ -1869,7 +1916,7 @@ class Scan(PureOp):
             info['name'] = None
         info['mode'] = self.mode
         info['mit_mot_out_slices'] = self.mit_mot_out_slices * 2
-        info['destroy_map'] = {}
+        info['destroy_map'] = OrderedDict()
         new_tap_array = []
         b = 0
         e = self.n_mit_mot

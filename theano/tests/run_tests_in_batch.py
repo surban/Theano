@@ -103,7 +103,7 @@ def main(stdout=None, stderr=None, argv=None, theano_nose=None,
                 theano_nose = path
                 break
     if theano_nose is None:
-        raise Exception("Not able to find theano-nose")
+        raise Exception("Unable to find theano-nose")
     if batch_size is None:
         batch_size = 100
     stdout_backup = sys.stdout
@@ -155,6 +155,8 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
     data = cPickle.load(open(noseids_file, 'rb'))
     ids = data['ids']
     n_tests = len(ids)
+    if n_tests == 0:
+        raise Exception("0 test selected")
     assert n_tests == max(ids)
 
     # Standard batch testing is called for
@@ -276,8 +278,7 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
                     # test name in display
                     # (see class 'DisabDocString' in file theano-nose)
                     stderr=subprocess.PIPE,
-                    stdout=dummy_out.fileno(),
-                    stdin=dummy_in.fileno())
+                    stdout=dummy_out.fileno())
 
                 # recovering and processing data from pipe
                 err = proc.stderr.read()

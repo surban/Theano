@@ -16,7 +16,7 @@ import numpy
 
 import theano
 from theano.tensor import (as_tensor_variable, blas, get_scalar_constant_value,
-                           patternbroadcast)
+                           patternbroadcast, NotScalarConstantError)
 from theano import OpenMPOp, config
 from theano.gof import Apply
 from theano.gof.python25 import any
@@ -36,33 +36,39 @@ _logger = logging.getLogger("theano.tensor.nnet.conv")
 
 def conv2d(input, filters, image_shape=None, filter_shape=None,
            border_mode='valid', subsample=(1, 1), **kargs):
-    """This function will build the symbolic graph for convolving a stack of input
-    images with a set of filters. The implementation is modelled after
-    Convolutional Neural Networks (CNN). It is simply a wrapper to the ConvOp but
-    provides a much cleaner interface.
+    """This function will build the symbolic graph for convolving a stack of
+    input images with a set of filters. The implementation is modelled after
+    Convolutional Neural Networks (CNN). It is simply a wrapper to the ConvOp
+    but provides a much cleaner interface.
 
     :type input: symbolic 4D tensor
-    :param input: mini-batch of feature map stacks, of shape image_shape.
+    :param input: mini-batch of feature map stacks, of shape
+                  (batch size, stack size, nb row, nb col)
+                  see the optional parameter image_shape
 
     :type filters: symbolic 4D tensor
-    :param filters: set of filters used in CNN layer of shape filter_shape
+    :param filters: set of filters used in CNN layer of shape
+                    (nb filters, stack size, nb row, nb col)
+                    see the optional parameter filter_shape
 
     :param border_mode:
        'valid'-- only apply filter to complete patches of the image. Generates
                  output of shape: image_shape - filter_shape + 1
-       'full' -- zero-pads image to multiple of filter shape to generate output of
-                 shape: image_shape + filter_shape - 1
+       'full' -- zero-pads image to multiple of filter shape to generate output
+                 of shape: image_shape + filter_shape - 1
 
     :type subsample: tuple of len 2
     :param subsample: factor by which to subsample the output
 
-    :type image_shape: tuple of len 4 of int or Constant variable
-    :param image_shape: (batch size, stack size, nb row, nb col)
-                        Optional, used for optimization.
-    :type filter_shape: tuple of len 4 of int or Constant variable
-    :param filter_shape: (nb filters, stack size, nb row, nb col)
-                         Optional, used for optimization.
-
+    :type image_shape: None, tuple/list of len 4 of int or Constant variable
+    :param image_shape: The shape of the input parameter.
+                        Optional, used for optimization like loop unrolling
+                        You can put None for any element of the list
+                        to tell that this element is not constant.
+    :type filter_shape: None, tuple/list of len 4 of int or Constant variable
+    :param filter_shape: Optional, used for optimization like loop unrolling
+                         You can put None for any element of the list
+                         to tell that this element is not constant.
     :param kwargs: kwargs are passed onto ConvOp.
                    Can be used to set the following:
                    unroll_batch, unroll_kern, unroll_patch,
@@ -90,16 +96,30 @@ def conv2d(input, filters, image_shape=None, filter_shape=None,
         image_shape = list(image_shape)
         for i in xrange(len(image_shape)):
             if image_shape[i] is not None:
-                image_shape[i] = get_scalar_constant_value(
-                    as_tensor_variable(image_shape[i]))
+                try:
+                    image_shape[i] = get_scalar_constant_value(
+                        as_tensor_variable(image_shape[i]))
+                except NotScalarConstantError, e:
+                    raise NotScalarConstantError(
+                        "The convolution need that the shape"
+                        " information are constant values. We got"
+                        " %s for the image_shape parameter" %
+                        image_shape[i])
                 assert str(image_shape[i].dtype).startswith('int')
                 image_shape[i] = int(image_shape[i])
     if filter_shape is not None:
         filter_shape = list(filter_shape)
         for i in xrange(len(filter_shape)):
             if filter_shape[i] is not None:
-                filter_shape[i] = get_scalar_constant_value(
-                    as_tensor_variable(filter_shape[i]))
+                try:
+                    filter_shape[i] = get_scalar_constant_value(
+                        as_tensor_variable(filter_shape[i]))
+                except NotScalarConstantError, e:
+                    raise NotScalarConstantError(
+                        "The convolution need that the shape"
+                        " information are constant values. We got"
+                        " %s for the filter_shape "
+                        "parameter" % filter_shape[i])
                 assert str(filter_shape[i].dtype).startswith('int')
                 filter_shape[i] = int(filter_shape[i])
 
@@ -354,7 +374,7 @@ class ConvOp(OpenMPOp):
         all_shape = imshp is not None and kshp is not None and \
                     nkern is not None and bsize is not None
 
-        if (unroll_batch > 0 or unroll_kern > 0) and not all_shape:
+        if (unroll_batch or unroll_kern) and not all_shape:
             raise Exception("In ConvOp, when using unroll_batch and"
                             " unroll_nkern, all shape are needed")
 
@@ -409,8 +429,8 @@ class ConvOp(OpenMPOp):
         if self.unroll_kern and not self.unroll_batch:
             self.unroll_batch = 1
 
-        #downcast unroll_batch if not a divisor of batch size
-        if self.unroll_batch > 0 and self.bsize % self.unroll_batch != 0:
+        # downcast unroll_batch if not a divisor of batch size
+        if self.unroll_batch is not None and self.unroll_batch > 0 and self.bsize % self.unroll_batch != 0:
 
             if self.bsize <= self.unroll_batch:
                 self.unroll_batch = self.bsize
@@ -430,7 +450,7 @@ class ConvOp(OpenMPOp):
                 self.unroll_batch = new
 
         #downcast unroll_kern if not a divisor of nb of kernel
-        if self.unroll_kern > 0 and self.nkern % self.unroll_kern != 0:
+        if self.unroll_kern is not None and self.unroll_kern > 0 and self.nkern % self.unroll_kern != 0:
 
             if self.nkern <= self.unroll_kern:
                 self.unroll_kern = self.nkern
@@ -965,7 +985,7 @@ class ConvOp(OpenMPOp):
         return ['<numpy/noprefix.h>', '<iostream>', '<sstream>']
 
     def c_code_cache_version(self):
-        return (10, self.openmp)
+        return (10, self.openmp, blas.blas_header_version())
 
     def c_support_code(self):
         return """
@@ -1217,7 +1237,8 @@ if(kerns_dim[3] %% %(self_kshp1)s!=0){
                 _logger.debug("return unroll patch version. all_shape=%s",
                               all_shape)
             return _conv_op_code_unroll_patch % d
-        if self.unroll_batch > 0 or self.unroll_kern > 0:
+        if ((self.unroll_batch is not None and self.unroll_batch > 0) or
+            (self.unroll_kern is not None and self.unroll_kern > 0)):
             assert self.unroll_batch > 0
             assert self.unroll_kern > 0
             if self.verbose:

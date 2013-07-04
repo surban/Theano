@@ -51,7 +51,7 @@ class Conv3D(theano.Op):
         return "Conv3D"
 
     def c_code_cache_version(self):
-        return (3,)
+        return (3, blas_header_text.version)
 
 
     def make_node(self, V, W, b, d):
@@ -560,7 +560,7 @@ conv3D = Conv3D()
 :param b: bias, shape == (W.shape[0],)
 :param d: strides when moving the filter over the input(dx, dy, dt)
 
-:note: The order of dimensions do not correspond with the one in `conv2d`.
+:note: The order of dimensions does not correspond to the one in `conv2d`.
        This is for optimization.
 """
 

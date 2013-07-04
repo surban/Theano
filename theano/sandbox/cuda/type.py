@@ -1,7 +1,6 @@
 """Provide CudaNdarrayType
 """
 import os
-import StringIO
 import copy_reg
 
 import numpy
@@ -10,6 +9,7 @@ import theano
 from theano import Type, Variable
 from theano import tensor, config
 from theano import scalar as scal
+from theano.compat.six import StringIO
 
 try:
     # We must do those import to be able to create the full doc when nvcc
@@ -274,7 +274,7 @@ class CudaNdarrayType(Type):
         return "%(name)s = NULL;" % locals()
 
     def c_extract(self, name, sub):
-        sio = StringIO.StringIO()
+        sio = StringIO()
         fail = sub['fail']
         nd = self.ndim
         print >> sio, """
@@ -288,7 +288,9 @@ class CudaNdarrayType(Type):
             //std::cerr << "c_extract " << %(name)s << '\\n';
             if (%(name)s->nd != %(nd)s)
             {
-                PyErr_Format(PyExc_RuntimeError, "Some CudaNdarray has rank %%i, it was supposed to have rank %(nd)s", %(name)s->nd);
+                PyErr_Format(PyExc_RuntimeError,
+                             "c_extract: Some CudaNdarray has rank %%i, it was supposed to have rank %(nd)s",
+                             %(name)s->nd);
                 %(name)s = NULL;
                 %(fail)s;
             }
@@ -299,7 +301,9 @@ class CudaNdarrayType(Type):
                 print >> sio, """
             if (CudaNdarray_HOST_DIMS(%(name)s)[%(i)s] != 1)
             {
-                PyErr_Format(PyExc_RuntimeError, "Some CudaNdarray has dim %%i on broadcastable dimension %%i", CudaNdarray_HOST_DIMS(%(name)s)[%(i)s], %(i)s);
+                PyErr_Format(PyExc_RuntimeError,
+                             "c_extract: Some CudaNdarray has dim %%i on broadcastable dimension %%i",
+                             CudaNdarray_HOST_DIMS(%(name)s)[%(i)s], %(i)s);
                 %(name)s = NULL;
                 %(fail)s;
             }
@@ -309,7 +313,9 @@ class CudaNdarrayType(Type):
             if (CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s])
             {
                 //std::cerr << "c_extract bad stride detected...\\n";
-                PyErr_Format(PyExc_RuntimeError, "Some CudaNdarray has a nonzero stride %%i on a broadcastable dimension %%i", CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s], %(i)s);
+                PyErr_Format(PyExc_RuntimeError,
+                             "c_extract: Some CudaNdarray has a nonzero stride %%i on a broadcastable dimension %%i",
+                             CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s], %(i)s);
                 %(name)s = NULL;
                 %(fail)s;
             }
@@ -410,6 +416,15 @@ class CudaNdarrayType(Type):
 
     def c_compile_args(self):
         return []
+
+    def get_shape_info(self, obj):
+        return obj.shape
+
+    def get_size(self, shape_info):
+        if shape_info:
+            return numpy.prod(shape_info) * numpy.dtype(self.dtype).itemsize
+        else:  # a scalar
+            return numpy.dtype(self.dtype).itemsize
 
 theano.compile.ops.expandable_types += (CudaNdarrayType,)
 

@@ -15,8 +15,8 @@ import numpy
 import theano
 from theano import gof
 from theano.gof.python25 import partial
-import mode as mode_module
-from io import In, SymbolicInput, SymbolicInputKit, SymbolicOutput
+import theano.compile.mode
+from theano.compile.io import In, SymbolicInput, SymbolicInputKit, SymbolicOutput
 from theano.compile.ops import deep_copy_op, view_op
 
 import logging
@@ -580,10 +580,18 @@ class Function(object):
             outputs = self.fn()
         except Exception:
             if hasattr(self.fn, 'position_of_error'):
-                # this is a new vm-provided function
-                # the C VM needs this because the exception manipulation
+                # this is a new vm-provided function or c linker
+                # they need this because the exception manipulation
                 # done by raise_with_op is not implemented in C.
-                gof.vm.raise_with_op(self.fn.nodes[self.fn.position_of_error])
+                if hasattr(self.fn, 'thunks'):
+                    # For the CVM
+                    gof.vm.raise_with_op(self.fn.nodes[self.fn.position_of_error],
+                                         self.fn.thunks[self.fn.position_of_error])
+                else:
+                    # For the c linker
+                    # We don't have access from python to all the temps values
+                    # So for now, we just don't print the extra shapes/strides info
+                    gof.vm.raise_with_op(self.fn.nodes[self.fn.position_of_error])
             else:
                 # old-style linkers raise their own exceptions
                 raise
@@ -781,7 +789,6 @@ class SanityCheckFunction(Function):
         return variables
 
 
-
 ###
 ### FunctionMaker
 ###
@@ -813,12 +820,12 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
         view_tree_set(alias_root(fgraph.outputs[i]), views_of_output_i)
         copied = False
         # do not allow outputs to be aliased
-        for j in xrange(i+1, len(fgraph.outputs)):
+        for j in xrange(i + 1, len(fgraph.outputs)):
             # We could don't put deep copy if both outputs have borrow==True
             # and not(wrapped_outputs[i].borrow and wrapped_outputs[j].borrow):
             if fgraph.outputs[j] in views_of_output_i:
                 if wrapped_outputs[i].borrow and wrapped_outputs[j].borrow:
-                    fgraph.change_input('output',i, view_op(fgraph.outputs[i]),
+                    fgraph.change_input('output', i, view_op(fgraph.outputs[i]),
                                      reason=reason)
                 else:
                     fgraph.change_input('output', i, deep_copy_op(fgraph.outputs[i]),
@@ -831,7 +838,8 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
                 # do not allow outputs to be aliased to an inputs (j), unless
                 # a) that j'th input has been 'destroyed' by e.g. in-place computations
                 # b) that j'th input is a shared variable that is also being updated
-                if hasattr(fgraph,'get_destroyers_of') and fgraph.get_destroyers_of(input_j):
+                if (hasattr(fgraph, 'get_destroyers_of') and
+                    fgraph.get_destroyers_of(input_j)):
                     continue
                 if input_j in updated_fgraph_inputs:
                     continue
@@ -840,7 +848,7 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
                     if input_j in fgraph.inputs:
                         j = fgraph.inputs.index(input_j)
                         if wrapped_outputs[i].borrow and wrapped_inputs[j].borrow:
-                            fgraph.change_input('output',i, view_op(fgraph.outputs[i]),
+                            fgraph.change_input('output', i, view_op(fgraph.outputs[i]),
                                              reason="insert_deepcopy")
                             break
                         else:
@@ -848,7 +856,7 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
                                              reason="insert_deepcopy")
                             break
                     elif wrapped_outputs[i].borrow:
-                        fgraph.change_input('output',i, view_op(fgraph.outputs[i]),
+                        fgraph.change_input('output', i, view_op(fgraph.outputs[i]),
                                          reason="insert_deepcopy")
                         break
                     else:
@@ -857,6 +865,8 @@ def insert_deepcopy(fgraph, wrapped_inputs, wrapped_outputs):
                         break
 
 NODEFAULT = ['NODEFAULT']
+
+
 class FunctionMaker(object):
     """`FunctionMaker` is the class to `create` `Function` instances.
 
@@ -876,7 +886,7 @@ class FunctionMaker(object):
         elif isinstance(input, (list, tuple)):
             # (r, u) -> SymbolicInput(variable=r, update=u)
             if len(input) == 2:
-                return SymbolicInput(input[0], update = input[1])
+                return SymbolicInput(input[0], update=input[1])
             else:
                 raise TypeError("Expected two elements in the list or tuple.", input)
         else:
@@ -899,7 +909,7 @@ class FunctionMaker(object):
                 stacklevel=2)
         return self.fgraph
 
-    def env_setter(self,value):
+    def env_setter(self, value):
         warnings.warn("FunctionMaker.env is deprecated, it has been renamed 'fgraph'",
                 stacklevel=2)
         self.fgraph = value
@@ -911,7 +921,6 @@ class FunctionMaker(object):
 
     env = property(env_getter, env_setter, env_deleter)
 
-
     @staticmethod
     def wrap_out(output):
         if isinstance(output, SymbolicOutput):
@@ -922,7 +931,7 @@ class FunctionMaker(object):
             raise TypeError("Unknown output type: %s (%s)", type(output), output)
 
     def __init__(self, inputs, outputs,
-            mode = None, accept_inplace = False, function_builder = Function,
+            mode=None, accept_inplace=False, function_builder=Function,
             profile=None, on_unused_input=None):
         """
         :type inputs: a list of SymbolicInput instances
@@ -945,7 +954,7 @@ class FunctionMaker(object):
                 - 'ignore': do not do anything
                 - None: Use the value in the Theano flags on_unused_input
         """
-        mode = mode_module.get_mode(mode)
+        mode = theano.compile.mode.get_mode(mode)
 
         # figure out which profile object to use (if any)
         # to help with forward-porting ProfileMode,
@@ -1025,7 +1034,7 @@ class FunctionMaker(object):
         # initialize the linker
         if not hasattr(linker, 'accept'):
             raise ValueError("'linker' parameter of FunctionFactory should be a Linker with an accept method " \
-                             "or one of %s" % mode_module.predefined_linkers.keys())
+                             "or one of %s" % theano.compile.mode.predefined_linkers.keys())
 
         #the 'no_borrow' outputs are the ones for which that we can't return the internal storage pointer.
         assert len(fgraph.outputs) == len(outputs + additional_outputs)
@@ -1274,7 +1283,7 @@ def orig_function(inputs, outputs, mode=None, accept_inplace=False,
     # instance if necessary:
 
     t1 = time.time()
-    mode = mode_module.get_mode(mode)
+    mode = theano.compile.mode.get_mode(mode)
 
     inputs = map(convert_function_input, inputs)
     if outputs is not None:
@@ -1286,48 +1295,7 @@ def orig_function(inputs, outputs, mode=None, accept_inplace=False,
     defaults = [getattr(input, 'value', None) for input in inputs]
 
     if isinstance(mode, (list, tuple)):  # "mode comparison" semantics
-        _logger.warning('Passing multiple modes is deprecated (20091019)')
-        if not mode:
-            raise ValueError("Please provide at least one mode.")
-        elif len(mode) == 1:
-            fn = FunctionMaker(
-                    inputs,
-                    outputs,
-                    mode[0],
-                    accept_inplace=accept_inplace,
-                    profile=profile,
-                    on_unused_input=on_unused_input).create(defaults)
-        else:
-            if profile:
-                raise NotImplementedError('profiling not implemented in this '
-                                          'kind of mode')
-            #return a different kind of function
-
-            def dup_defaults():
-                # TODO This may need to be changed to use containers as
-                # defaults.
-                retval = []
-                for default in defaults:
-                    if isinstance(default, gof.Container):
-                        retval += [copy.copy(default.value)]
-                    else:
-                        retval += [copy.copy(default)]
-                return retval
-                #backport
-                #return [copy.copy(default.value)
-                #        if isinstance(default, gof.Container) else
-                #        copy.copy(default)
-                #        for default in defaults]
-            makers = [FunctionMaker(inputs, outputs, m,
-                                    accept_inplace=accept_inplace)
-                      for m in mode[1:]]
-            fns = [maker.create(dup_defaults(), trustme=True)
-                   for maker in makers]
-            builder = partial(SanityCheckFunction, fns, check_equal)
-            maker1 = FunctionMaker(inputs, outputs, mode[0],
-                                   accept_inplace=accept_inplace,
-                                   function_builder=builder)
-            fn = maker1.create(defaults)
+        raise Exception("We do not support the passing of multiple modes")
     else:
         Maker = getattr(mode, 'function_maker', FunctionMaker)
         fn = Maker(inputs,

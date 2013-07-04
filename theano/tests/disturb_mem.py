@@ -1,5 +1,4 @@
 __authors__ = "Ian Goodfellow"
-__copyright__ = "Copyright 2010-2012, Universite de Montreal"
 __credits__ = ["Ian Goodfellow"]
 __license__ = "3-clause BSD"
 __maintainer__ = "Ian Goodfellow"
@@ -18,5 +17,5 @@ def disturb_mem():
     ms = now.microsecond
     ms = int(ms)
     n = ms % 1000
-    m = ms / 1000
+    m = ms // 1000
     l = [[0]*m for i in xrange(n)]

@@ -57,9 +57,9 @@ from theano.compile import ops
 from theano.gof.python25 import OrderedDict
 
 
-import scan_op
-import scan_utils
-from scan_utils import safe_new, traverse
+from theano.scan_module import scan_op
+from theano.scan_module import scan_utils
+from theano.scan_module.scan_utils import safe_new, traverse
 
 # Logging function for sending warning or info
 _logger = logging.getLogger('theano.scan_module.scan')
@@ -785,8 +785,7 @@ def scan(fn,
                    not isinstance(x, SharedVariable) and
                    not isinstance(x, gof.Constant)),
         gof.graph.inputs(fake_outputs))
-    extra_inputs = filter(lambda x: x not in args + fake_nonseqs,
-                                    all_inputs)
+    extra_inputs = [x for x in all_inputs if x not in args + fake_nonseqs]
     non_seqs += extra_inputs
     ## Note we do not use all_inputs directly since the order of variables
     ## in args is quite important

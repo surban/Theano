@@ -5,7 +5,8 @@ import numpy
 
 from theano.gof import Op, Apply
 
-from theano.tensor import as_tensor_variable, dot, DimShuffle
+from theano.tensor import as_tensor_variable, dot, DimShuffle, Dot
+from theano.tensor.blas import Dot22
 from theano import tensor
 import theano.tensor
 from theano.tensor.opt import (register_stabilize,
@@ -227,7 +228,7 @@ def is_positive(v):
 def inv_as_solve(node):
     if not imported_scipy:
         return False
-    if node.op == dot:
+    if isinstance(node.op, (Dot, Dot22)):
         l, r = node.inputs
         if l.owner and l.owner.op == matrix_inverse:
             return [solve(l.owner.inputs[0], r)]
@@ -381,6 +382,7 @@ class Cholesky(Op):
         assert imported_scipy, (
             "Scipy not available. Scipy is needed for the Cholesky op")
         x = as_tensor_variable(x)
+        assert x.ndim == 2
         return Apply(self, [x], [x.type()])
 
     def perform(self, node, inputs, outputs):
@@ -427,6 +429,9 @@ class CholeskyGrad(Op):
         x = as_tensor_variable(x)
         l = as_tensor_variable(l)
         dz = as_tensor_variable(dz)
+        assert x.ndim == 2
+        assert l.ndim == 2
+        assert dz.ndim == 2
         assert l.owner.op.lower == self.lower, (
             "lower/upper mismatch between Cholesky op and CholeskyGrad op"
         )
@@ -510,6 +515,7 @@ class MatrixPinv(Op):
 
     def make_node(self, x):
         x = as_tensor_variable(x)
+        assert x.ndim == 2
         return Apply(self, [x], [x.type()])
 
     def perform(self, node, (x,), (z, )):
@@ -558,6 +564,7 @@ class MatrixInverse(Op):
 
     def make_node(self, x):
         x = as_tensor_variable(x)
+        assert x.ndim == 2
         return Apply(self, [x], [x.type()])
 
     def perform(self, node, (x,), (z, )):
@@ -646,6 +653,8 @@ class Solve(Op):
             "Scipy not available. Scipy is needed for the Solve op")
         A = as_tensor_variable(A)
         b = as_tensor_variable(b)
+        assert A.ndim == 2
+        assert b.ndim in [1, 2]
         otype = tensor.tensor(
                 broadcastable=b.broadcastable,
                 dtype=(A * b).dtype)
@@ -675,7 +684,10 @@ solve = Solve()  # general solve
 
 
 class ExtractDiag(Op):
-    """ Return the diagonal of a matrix. """
+    """ Return the diagonal of a matrix.
+
+    :note: work on the GPU.
+    """
     def __init__(self, view=False):
         self.view = view
         if self.view:
@@ -688,10 +700,15 @@ class ExtractDiag(Op):
         return hash(type(self)) ^ hash(self.view)
 
     def make_node(self, _x):
-        x = as_tensor_variable(_x)
+        if not isinstance(_x, theano.Variable):
+            x = as_tensor_variable(_x)
+        else:
+            x = _x
+
         if x.type.ndim != 2:
             raise TypeError('ExtractDiag only works on matrices', _x)
-        return Apply(self, [x], [tensor.vector(dtype=x.type.dtype)])
+        return Apply(self, [x], [x.type.__class__(broadcastable=(False,),
+                                                  dtype=x.type.dtype)()])
 
     def perform(self, node, ins, outs):
         """ For some reason numpy.diag(x) is really slow, so we
@@ -788,6 +805,7 @@ class Det(Op):
     """
     def make_node(self, x):
         x = as_tensor_variable(x)
+        assert x.ndim == 2
         o = theano.tensor.scalar(dtype=x.dtype)
         return Apply(self, [x], [o])
 
@@ -852,8 +870,11 @@ class A_Xinv_b(Op):
         assert imported_scipy, (
             "Scipy not available. Scipy is needed for the A_Xinv_b op")
         a = as_tensor_variable(a)
-        b = as_tensor_variable(b)
         X = as_tensor_variable(X)
+        b = as_tensor_variable(b)
+        assert a.ndim == 2
+        assert X.ndim == 2
+        assert b.ndim == 2
         o = theano.tensor.matrix(dtype=x.dtype)
         return Apply(self, [a, X, b], [o])
 

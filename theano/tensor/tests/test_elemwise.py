@@ -1,16 +1,13 @@
 import cPickle
 from copy import copy
 from itertools import imap
-import time
 import unittest
 
 import numpy
 from nose.plugins.skip import SkipTest
-from numpy.testing import dec
 
 import theano
 from theano.gof.python25 import all, any
-from theano.gof import Variable, Op
 from theano import gof, scalar, config
 
 from theano import tensor
@@ -92,14 +89,16 @@ class test_DimShuffle(unittest_tools.InferShapeTester):
             adtens = TensorType('float64', ib)('x')
             adtens_val = numpy.ones(xsh)
             self._compile_and_check([adtens],
-                            [DimShuffle(ib, shuffle)(adtens)],
-                            [adtens_val], DimShuffle)
+                                    [DimShuffle(ib, shuffle)(adtens)],
+                                    [adtens_val], DimShuffle,
+                                    warn=False)
 
     def test_too_big_rank(self):
         x = tensor.dscalar()
         y = x.dimshuffle(('x',) * (numpy.MAXDIMS + 1))
         self.assertRaises(ValueError, y.eval, {x: 0})
-                          
+
+
 class test_Broadcast(unittest.TestCase):
     def setUp(self):
         unittest_tools.seed_rng()
@@ -469,7 +468,6 @@ class test_Prod(unittest.TestCase):
         # (and special cases: 1 zero in the row, more than 1 zero in the row)
         x_val = numpy.asarray([[1, 2, 3], [4, 5, 6], [7, 8, 9]],
              dtype='float32')
-        x = theano.tensor.dmatrix()
         # now with verify_grad
         unittest_tools.verify_grad(Prod(axis=1), [x_val], mode=self.mode)
 
@@ -619,11 +617,12 @@ class T_sum_dtype(unittest.TestCase):
         Test the default dtype of a sum().
         """
         # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [0], [1], [0, 1]]
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
         for idx, dtype in enumerate(imap(str, theano.scalar.all_types)):
             axis = axes[idx % len(axes)]
-            x = tensor.matrix(dtype=dtype).sum(axis=axis)
-            assert x.dtype == dict(
+            x = tensor.matrix(dtype=dtype)
+            s = x.sum(axis=axis)
+            assert s.dtype == dict(
                     int8='int64',
                     int16='int64',
                     int32='int64',
@@ -631,13 +630,40 @@ class T_sum_dtype(unittest.TestCase):
                     uint16='uint64',
                     uint32='uint64',
                     ).get(dtype, dtype)
+            f = theano.function([x], s)
+            data = numpy.random.rand(3, 4) * 10
+            data = data.astype(dtype)
+            f(data)
+
+    def test_sum_default_acc_dtype(self):
+        ##Test the default acc_dtype of a sum().
+        # We try multiple axis combinations even though axis should not matter.
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
+        for idx, dtype in enumerate(imap(str, theano.scalar.all_types)):
+            axis = axes[idx % len(axes)]
+            x = tensor.matrix(dtype=dtype)
+            s = x.sum(axis=axis)
+            assert s.owner.op.acc_dtype == dict(
+                    int8='int64',
+                    int16='int64',
+                    int32='int64',
+                    uint8='uint64',
+                    uint16='uint64',
+                    uint32='uint64',
+                    float32='float64',
+                    complex64='complex128',
+                    ).get(dtype, dtype)
+            f = theano.function([x], s)
+            data = numpy.random.rand(3, 4) * 10
+            data = data.astype(dtype)
+            f(data)
 
     def test_sum_custom_dtype(self):
         """
         Test the ability to provide your own output dtype for a sum.
         """
         # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [0], [1], [0, 1]]
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
         idx = 0
         for input_dtype in imap(str, theano.scalar.all_types):
             x = tensor.matrix(dtype=input_dtype)
@@ -650,26 +676,66 @@ class T_sum_dtype(unittest.TestCase):
                     continue
 
                 axis = axes[idx % len(axes)]
+                sum_var = x.sum(dtype=output_dtype, axis=axis)
+                assert sum_var.dtype == output_dtype
+
+                f = theano.function([x], sum_var)
+                data = numpy.random.rand(3, 4) * 10
+                data = data.astype(input_dtype)
+                f(data)
+                if "complex" in input_dtype:
+                    continue
+                # Check that we can take the gradient
+                tensor.grad(sum_var.sum(), x,
+                            disconnected_inputs='ignore')
+                idx += 1
+
+    def test_sum_custom_acc_dtype(self):
+        """
+        Test the ability to provide your own accumulator dtype for a sum.
+        """
+        # We try multiple axis combinations even though axis should not matter.
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
+        idx = 0
+        for input_dtype in imap(str, theano.scalar.all_types):
+            x = tensor.matrix(dtype=input_dtype)
+            for acc_dtype in imap(str, theano.scalar.all_types):
+                # If the accumulator is a complex, the gradient of the sum will
+                # cast the complex to the input dtype. We can't call the normal
+                # cast on a complex to a not complex as this is ambiguous.
+                if (not input_dtype.startswith('complex') and
+                    acc_dtype.startswith('complex')):
+                    continue
+
+                axis = axes[idx % len(axes)]
                 # If output_dtype would force a downcast, we expect a TypeError
                 # We always allow int/uint inputs with float/complex outputs.
-                upcasted_dtype = scalar.upcast(input_dtype, output_dtype)
-                if (output_dtype == upcasted_dtype or
+                upcasted_dtype = scalar.upcast(input_dtype, acc_dtype)
+                if (acc_dtype == upcasted_dtype or
                         (input_dtype in tensor.discrete_dtypes and
-                            output_dtype in tensor.continuous_dtypes)
+                            acc_dtype in tensor.continuous_dtypes)
                         ):
-                    sum_var = x.sum(dtype=output_dtype, axis=axis)
-                    assert sum_var.dtype == output_dtype
+                    sum_var = x.sum(acc_dtype=acc_dtype, axis=axis)
+                    assert sum_var.owner.op.acc_dtype == acc_dtype
 
                     if "complex" in input_dtype:
                         continue
                     # Check that we can take the gradient
-                    grad_var = tensor.grad(sum_var.sum(), x,
-                            disconnected_inputs='ignore')
+                    tensor.grad(sum_var.sum(), x,
+                                disconnected_inputs='ignore')
                 else:
                     self.assertRaises(TypeError,
-                            x.sum, dtype=output_dtype, axis=axis)
+                            x.sum, acc_dtype=acc_dtype, axis=axis)
 
                 idx += 1
+
+    def test_sum_precision(self):
+        # Check that the default accumulator precision is sufficient
+        x = theano.shared(numpy.asarray([1e8, 1, -1e8], dtype='float32'))
+        s = x.sum()
+        f = theano.function([], s)
+        s_val = f()
+        assert numpy.allclose(s_val, 1)
 
 
 class T_mean_dtype(unittest.TestCase):
@@ -678,45 +744,59 @@ class T_mean_dtype(unittest.TestCase):
         Test the default dtype of a mean().
         """
         # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [0], [1], [0, 1]]
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
         for idx, dtype in enumerate(imap(str, theano.scalar.all_types)):
             axis = axes[idx % len(axes)]
-            x = tensor.matrix(dtype=dtype).mean(axis=axis)
-            if dtype in tensor.discrete_dtypes:
-                assert x.dtype == 'float64'
+            x = tensor.matrix(dtype=dtype)
+            m = x.mean(axis=axis)
+            if dtype in tensor.discrete_dtypes and axis != []:
+                assert m.dtype == 'float64'
             else:
-                assert x.dtype == dtype, (x, x.dtype, dtype)
+                assert m.dtype == dtype, (m, m.dtype, dtype)
+            f = theano.function([x], m)
+            data = numpy.random.rand(3, 4) * 10
+            data = data.astype(dtype)
+            f(data)
 
     def test_mean_custom_dtype(self):
-
         """
         Test the ability to provide your own output dtype for a mean.
         """
         # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [0], [1], [0, 1]]
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
         idx = 0
         for input_dtype in imap(str, theano.scalar.all_types):
             x = tensor.matrix(dtype=input_dtype)
             for sum_dtype in imap(str, theano.scalar.all_types):
                 axis = axes[idx % len(axes)]
-                # If the inner sum cannot be created, it will raise a TypeError.
+                # If the inner sum cannot be created, it will raise a
+                # TypeError.
                 try:
                     mean_var = x.mean(dtype=sum_dtype, axis=axis)
                 except TypeError:
                     pass
                 else:
                     # Executed if no TypeError was raised
-                    if sum_dtype in tensor.discrete_dtypes:
-                        assert mean_var.dtype == 'float64', (mean_var.dtype, sum_dtype)
+                    if sum_dtype in tensor.discrete_dtypes and axis != []:
+                        assert mean_var.dtype == 'float64', (
+                                (mean_var.dtype, sum_dtype))
                     else:
-                        assert mean_var.dtype == sum_dtype, (mean_var.dtype, sum_dtype)
-
+                        assert mean_var.dtype == sum_dtype, (
+                                (mean_var.dtype, sum_dtype))
+                    if (('complex' in input_dtype or
+                         'complex' in sum_dtype) and
+                        input_dtype != sum_dtype):
+                        continue
+                    f = theano.function([x], mean_var)
+                    data = numpy.random.rand(3, 4) * 10
+                    data = data.astype(input_dtype)
+                    f(data)
                     # Check that we can take the gradient, when implemented
                     if "complex" in mean_var.dtype:
                         continue
                     try:
-                        grad_var = tensor.grad(mean_var.sum(), x,
-                                disconnected_inputs='ignore')
+                        tensor.grad(mean_var.sum(), x,
+                                    disconnected_inputs='ignore')
                     except NotImplementedError:
                         # TrueDiv does not seem to have a gradient when
                         # the numerator is complex.
@@ -727,6 +807,14 @@ class T_mean_dtype(unittest.TestCase):
 
                 idx += 1
 
+    def test_mean_precision(self):
+        # Check that the default accumulator precision is sufficient
+        x = theano.shared(numpy.asarray([1e8, 1, -1e8], dtype='float32'))
+        m = x.mean()
+        f = theano.function([], m)
+        m_val = f()
+        assert numpy.allclose(m_val, 1. / 3)
+
 
 class T_prod_dtype(unittest.TestCase):
     def test_prod_default_dtype(self):
@@ -734,11 +822,12 @@ class T_prod_dtype(unittest.TestCase):
         Test the default dtype of a prod().
         """
         # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [0], [1], [0, 1]]
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
         for idx, dtype in enumerate(imap(str, theano.scalar.all_types)):
             axis = axes[idx % len(axes)]
-            x = tensor.matrix(dtype=dtype).prod(axis=axis)
-            assert x.dtype == dict(
+            x = tensor.matrix(dtype=dtype)
+            p = x.prod(axis=axis)
+            assert p.dtype == dict(
                     int8='int64',
                     int16='int64',
                     int32='int64',
@@ -746,36 +835,104 @@ class T_prod_dtype(unittest.TestCase):
                     uint16='uint64',
                     uint32='uint64',
                     ).get(dtype, dtype)
+            f = theano.function([x], p)
+            data = numpy.random.rand(3, 4) * 10
+            data = data.astype(dtype)
+            f(data)
+
+    def test_prod_default_acc_dtype(self):
+        """
+        Test the default acc_dtype of a prod().
+        """
+        # We try multiple axis combinations even though axis should not matter.
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
+        for idx, dtype in enumerate(imap(str, theano.scalar.all_types)):
+            axis = axes[idx % len(axes)]
+            x = tensor.matrix(dtype=dtype)
+            p = x.prod(axis=axis)
+            assert p.owner.op.acc_dtype == dict(
+                    int8='int64',
+                    int16='int64',
+                    int32='int64',
+                    uint8='uint64',
+                    uint16='uint64',
+                    uint32='uint64',
+                    float32='float64',
+                    complex64='complex128',
+                    ).get(dtype, dtype)
+            f = theano.function([x], p)
+            data = numpy.random.rand(3, 4) * 10
+            data = data.astype(dtype)
+            f(data)
 
     def test_prod_custom_dtype(self):
         """
         Test the ability to provide your own output dtype for a prod.
         """
         # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [0], [1], [0, 1]]
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
         idx = 0
         for input_dtype in imap(str, theano.scalar.all_types):
             x = tensor.matrix(dtype=input_dtype)
             for output_dtype in imap(str, theano.scalar.all_types):
                 axis = axes[idx % len(axes)]
-                # If output_dtype would force a downcast, we expect a TypeError
-                # We always allow int/uint inputs with float/complex outputs.
-                upcasted_dtype = scalar.upcast(input_dtype, output_dtype)
-                if (output_dtype == upcasted_dtype or
-                        (input_dtype in tensor.discrete_dtypes and
-                            output_dtype in tensor.continuous_dtypes)
-                        ):
-                    prod_var = x.prod(dtype=output_dtype, axis=axis)
-                    assert prod_var.dtype == output_dtype
+                idx += 1
+                prod_var = x.prod(dtype=output_dtype, axis=axis)
+                assert prod_var.dtype == output_dtype
 
-                    if "complex" in output_dtype:
+                if (('complex' in output_dtype or
+                    'complex' in input_dtype) and
+                    input_dtype != output_dtype):
+                    continue
+
+                f = theano.function([x], prod_var)
+                data = numpy.random.rand(3, 4) * 10
+                data = data.astype(input_dtype)
+                f(data)
+
+                if "complex" in output_dtype or "complex" in input_dtype:
+                    continue
+                # Check that we can take the gradient
+                tensor.grad(prod_var.sum(), x,
+                            disconnected_inputs='ignore')
+
+    def test_prod_custom_acc_dtype(self):
+        """
+        Test the ability to provide your own acc_dtype for a prod.
+        """
+        # We try multiple axis combinations even though axis should not matter.
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
+        idx = 0
+        for input_dtype in imap(str, theano.scalar.all_types):
+            x = tensor.matrix(dtype=input_dtype)
+            for acc_dtype in imap(str, theano.scalar.all_types):
+                axis = axes[idx % len(axes)]
+                # If acc_dtype would force a downcast, we expect a TypeError
+                # We always allow int/uint inputs with float/complex outputs.
+                upcasted_dtype = scalar.upcast(input_dtype, acc_dtype)
+                if (acc_dtype == upcasted_dtype or
+                        (input_dtype in tensor.discrete_dtypes and
+                            acc_dtype in tensor.continuous_dtypes)
+                        ):
+                    prod_var = x.prod(acc_dtype=acc_dtype, axis=axis)
+                    assert prod_var.owner.op.acc_dtype == acc_dtype
+
+                    if (acc_dtype.startswith('complex') and
+                        input_dtype != acc_dtype):
+                        continue
+                    f = theano.function([x], prod_var)
+                    data = numpy.random.rand(3, 4) * 10
+                    data = data.astype(input_dtype)
+                    f(data)
+
+                    if "complex" in acc_dtype:
                         continue
                     # Check that we can take the gradient
-                    grad_var = tensor.grad(prod_var.sum(), x,
-                            disconnected_inputs='ignore')
+                    tensor.grad(prod_var.sum(), x,
+                                disconnected_inputs='ignore')
                 else:
                     self.assertRaises(TypeError,
-                            x.prod, dtype=output_dtype, axis=axis)
+                            x.prod, acc_dtype=acc_dtype, axis=axis)
 
                 idx += 1
 
@@ -786,7 +943,7 @@ class T_prod_without_zeros_dtype(unittest.TestCase):
         Test the default dtype of a ProdWithoutZeros().
         """
         # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [0], [1], [0, 1]]
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
         for idx, dtype in enumerate(imap(str, theano.scalar.all_types)):
             axis = axes[idx % len(axes)]
             x = ProdWithoutZeros(axis=axis)(tensor.matrix(dtype=dtype))
@@ -799,30 +956,89 @@ class T_prod_without_zeros_dtype(unittest.TestCase):
                     uint32='uint64',
                     ).get(dtype, dtype)
 
-    def test_prod_without_zeros_custom_dtype(self):
+    def test_prod_without_zeros_default_acc_dtype(self):
         """
-        Test the ability to provide your own output dtype for a ProdWithoutZeros().
+        Test the default dtype of a ProdWithoutZeros().
         """
         # We try multiple axis combinations even though axis should not matter.
-        axes = [None, 0, 1, [0], [1], [0, 1]]
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
+        for idx, dtype in enumerate(imap(str, theano.scalar.all_types)):
+            axis = axes[idx % len(axes)]
+            x = tensor.matrix(dtype=dtype)
+            p = ProdWithoutZeros(axis=axis)(x)
+            assert p.owner.op.acc_dtype == dict(
+                    int8='int64',
+                    int16='int64',
+                    int32='int64',
+                    uint8='uint64',
+                    uint16='uint64',
+                    uint32='uint64',
+                    float32='float64',
+                    complex64='complex128'
+                    ).get(dtype, dtype)
+
+            if 'complex' in dtype:
+                continue
+            f = theano.function([x], p)
+            data = numpy.random.rand(2, 3) * 3
+            data = data.astype(dtype)
+            f(data)
+
+    def test_prod_without_zeros_custom_dtype(self):
+        """
+        Test ability to provide your own output dtype for a ProdWithoutZeros().
+        """
+        # We try multiple axis combinations even though axis should not matter.
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
         idx = 0
         for input_dtype in imap(str, theano.scalar.all_types):
             x = tensor.matrix(dtype=input_dtype)
             for output_dtype in imap(str, theano.scalar.all_types):
                 axis = axes[idx % len(axes)]
-                # If output_dtype would force a downcast, we expect a TypeError
+                prod_woz_var = ProdWithoutZeros(
+                        axis=axis, dtype=output_dtype)(x)
+                assert prod_woz_var.dtype == output_dtype
+                idx += 1
+                if ('complex' in output_dtype or
+                    'complex' in input_dtype):
+                    continue
+                f = theano.function([x], prod_woz_var)
+                data = numpy.random.rand(2, 3) * 3
+                data = data.astype(input_dtype)
+                f(data)
+
+    def test_prod_without_zeros_custom_acc_dtype(self):
+        """
+        Test ability to provide your own acc_dtype for a ProdWithoutZeros().
+        """
+        # We try multiple axis combinations even though axis should not matter.
+        axes = [None, 0, 1, [], [0], [1], [0, 1]]
+        idx = 0
+        for input_dtype in imap(str, theano.scalar.all_types):
+            x = tensor.matrix(dtype=input_dtype)
+            for acc_dtype in imap(str, theano.scalar.all_types):
+                axis = axes[idx % len(axes)]
+                # If acc_dtype would force a downcast, we expect a TypeError
                 # We always allow int/uint inputs with float/complex outputs.
-                upcasted_dtype = scalar.upcast(input_dtype, output_dtype)
-                if (output_dtype == upcasted_dtype or
+                upcasted_dtype = scalar.upcast(input_dtype, acc_dtype)
+                if (acc_dtype == upcasted_dtype or
                         (input_dtype in tensor.discrete_dtypes and
-                            output_dtype in tensor.continuous_dtypes)
+                            acc_dtype in tensor.continuous_dtypes)
                         ):
                     prod_woz_var = ProdWithoutZeros(
-                            axis=axis, dtype=output_dtype)(x)
-                    assert prod_woz_var.dtype == output_dtype
+                            axis=axis, acc_dtype=acc_dtype)(x)
+                    assert prod_woz_var.owner.op.acc_dtype == acc_dtype
+
+                    if (acc_dtype.startswith('complex') and
+                        input_dtype != acc_dtype):
+                        continue
+                    f = theano.function([x], prod_woz_var)
+                    data = numpy.random.rand(2, 3) * 3
+                    data = data.astype(input_dtype)
+                    f(data)
                 else:
                     self.assertRaises(TypeError,
-                            ProdWithoutZeros(axis=axis, dtype=output_dtype),
+                            ProdWithoutZeros(axis=axis, acc_dtype=acc_dtype),
                             x)
 
                 idx += 1
@@ -851,6 +1067,16 @@ class TestElemwise(unittest_tools.InferShapeTester):
                             [Elemwise(scalar.add)(t_left, t_right)],
                             [t_left_val, t_right_val], Elemwise)
 
+    def test_input_dimensions_overflow(self):
+        # Elemwise.perform used to compute the product
+        # of input shapes to check if there was a zero in them,
+        # it overflowed in this case.
+        a, b, c, d, e, f = tensor.vectors('abcdef')
+        s = a + b + c + d + e + f
+        g = theano.function([a, b, c, d, e, f], s,
+                             mode=theano.compile.Mode(linker='py'))
+        g(*[numpy.zeros(2 ** 11, config.floatX) for i in range(6)])
+
 
 def test_gt_grad():
     """A user test that failed.
@@ -865,7 +1091,8 @@ def test_gt_grad():
     T = theano.tensor
 
     input_ = T.vector(dtype=floatX)
-    random_values = numpy.random.RandomState(1234).uniform(low=-1, high=1, size=(2,2))
+    random_values = numpy.random.RandomState(1234).uniform(
+                                                low=-1, high=1, size=(2, 2))
     W_values = numpy.asarray(random_values, dtype=floatX)
     W = theano.shared(value=W_values, name='weights')
     correct_score = T.dot(input_, W)
@@ -887,15 +1114,17 @@ if __name__ == '__main__':
     unittest.TextTestRunner().run(suite)
 """
 
+
 def test_clip_grad():
 
     # test the gradient of clip
-    def func(x,y,z):
-        return theano.tensor.clip(x,y,z)
+    def func(x, y, z):
+        return theano.tensor.clip(x, y, z)
     # use an x value less than y, an x value between y and z, and an x value
     # greater than z
     unittest_tools.verify_grad(func,
-            [ numpy.asarray([-1.,0.5,2.]), 0., 1.])
+            [numpy.asarray([-1., 0.5, 2.]), 0., 1.])
+
 
 def test_clip_grad_int():
 
@@ -903,8 +1132,38 @@ def test_clip_grad_int():
     x = tensor.iscalar()
     y = tensor.iscalar()
     z = tensor.iscalar()
-    c = tensor.clip(x,y,z)
+    c = tensor.clip(x, y, z)
     tensor.grad(c, [x, y, z])
+
+
+def test_not_implemented_elemwise_grad():
+    """
+    Regression test for unimplemented gradient in an Elemwise Op.
+    """
+
+    class TestOp(scalar.ScalarOp):
+
+        def __init__(self):
+            self.output_types_preference = scalar.upgrade_to_float
+
+        def impl(self, n, x):
+            return x * n
+
+        def grad(self, (n, x), (gz,)):
+            dy_dx = n
+            return [theano.gradient.grad_not_implemented(self, 0, n),
+                    gz * dy_dx]
+
+    test_op = tensor.Elemwise(TestOp())
+    x = tensor.scalar()
+    # The call to `grad` used to crash.
+    tensor.grad(test_op(2, x), x)
+    # Verify that trying to use the not implemented gradient fails.
+    try:
+        tensor.grad(test_op(x, 2), x)
+        assert False
+    except theano.gradient.NullTypeGradError:
+        pass
 
 
 if __name__ == '__main__':

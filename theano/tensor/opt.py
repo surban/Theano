@@ -23,9 +23,9 @@ from theano.gof import Variable, Constant
 from theano.gof.python25 import maxsize
 from theano.gof.utils import MethodNotDefined
 from theano.configparser import config
-from elemwise import Elemwise, DimShuffle
+from theano.tensor.elemwise import Elemwise, DimShuffle
 from theano import scalar
-import basic as T
+from theano.tensor import basic as T
 from theano import compile  # to register the optimizer built by this file
 
 from theano.gof.python25 import any, all
@@ -33,8 +33,8 @@ from theano.gof.opt import (Optimizer, pre_constant_merge,
                             pre_greedy_local_optimizer)
 from theano.gof.opt import merge_optimizer
 from theano.gof import toolbox, DestroyHandler
-from basic import get_scalar_constant_value, ShapeError, NotScalarConstantError
-
+from theano.tensor.basic import get_scalar_constant_value, ShapeError, NotScalarConstantError
+from theano.compat.six import StringIO
 
 theano.configparser.AddConfigVar('on_shape_error',
                                  "warn: print a warning and use the default"
@@ -224,8 +224,8 @@ def inplace_elemwise_optimizer_op(OP):
                         candidate_output].type:
                         continue
 
-                    inplace_pattern = dict(baseline, **{candidate_output:
-                                                            candidate_input})
+                    inplace_pattern = dict(baseline)
+                    inplace_pattern[candidate_output] = candidate_input
                     try:
                         if hasattr(op.scalar_op, "make_new_inplace"):
                             new_scal = op.scalar_op.make_new_inplace(
@@ -273,8 +273,8 @@ def inplace_elemwise_optimizer_op(OP):
     return inplace_elemwise_optimizer
 
 inplace_elemwise_optimizer = inplace_elemwise_optimizer_op(T.Elemwise)
-
 compile.optdb.register('inplace_opt', inplace_elemwise_optimizer, 75,
+                       'inplace_elemwise_optimizer',
                        'fast_run', 'inplace')
 
 
@@ -510,7 +510,7 @@ class MakeVector(T.Op):
                     "The upcast of the inputs to MakeVector should match the "
                     "dtype given in __init__.")
             if not all(self.dtype == T.cast(i, dtype=dtype).dtype
-                       for a in inputs):
+                       for i in inputs):
                 raise TypeError("MakeVector.make_node expected inputs"
                                 " upcastable to %s. got %s" % (
                         self.dtype,
@@ -542,6 +542,32 @@ class MakeVector(T.Op):
         else:
             # assume that out has correct dtype. there is no cheap way to check
             out[0][...] = inputs
+
+    def c_code_cache_version(self):
+        return (1,)
+
+    def c_code(self, node, name, inp, out_, sub):
+        out, = out_
+        # Shouldn't use PyArray_TYPE(inp[0]) for the dtype
+        # when len(inp) == 0 (we need to support this case.
+        # So there will be (1 * nb_dtype) + ((nb len(inp) - 1 ))
+        # different c code with the following algo
+        out_shape = len(inp)
+        out_dtype = numpy.dtype(node.outputs[0].dtype).num
+        if len(inp) > 0:
+            assert self.dtype == node.inputs[0].dtype
+            out_dtype = 'PyArray_TYPE(%s)' % inp[0]
+
+        ret = """
+        npy_intp dims[1];
+        dims[0] = %(out_shape)s;
+        %(out)s = (PyArrayObject*)PyArray_EMPTY(1, dims, %(out_dtype)s, 0);
+        """ % locals()
+        for idx, i in enumerate(inp):
+            ret += """
+            *((dtype_%(out)s *)PyArray_GETPTR1(%(out)s, %(idx)s)) = *((dtype_%(out)s *) PyArray_DATA(%(i)s));
+            """ % locals()
+        return ret
 
     def infer_shape(self, node, ishapes):
         return [(len(ishapes),)]
@@ -807,11 +833,15 @@ class ShapeFeature(object):
         else:
             if not isinstance(s, (tuple, list)):
                 raise TypeError('shapes must be tuple/list', (r, s))
+
             if r.ndim != len(s):
+                sio = StringIO()
+                theano.printing.debugprint(r, file=sio, print_type=True)
                 raise AssertionError(
-                        "Something inferred a shape with %d dimensions "
-                        "for a variable with %d dimensions." % (
-                        len(s), r.ndim))
+                    "Something inferred a shape with %d dimensions "
+                    "for a variable with %d dimensions"
+                    " for the variable:\n%s" % (
+                        len(s), r.ndim, sio.getvalue()))
 
             shape_vars = []
             for i in range(r.ndim):
@@ -1594,7 +1624,7 @@ def local_useless_subtensor(node):
             except NotScalarConstantError:
                 pass
 
-            if isinstance(idx.stop, int):
+            if isinstance(idx.stop, (int, numpy.integer)):
                 if idx.stop < length_pos_data:
                     return False
             elif isinstance(idx.stop, theano.scalar.Scalar):
@@ -2355,6 +2385,27 @@ def local_div_switch_sink(node):
     return False
 
 
+################
+# Flatten Opts #
+################
+@register_canonicalize
+@register_stabilize
+@gof.local_optimizer([])
+def local_flatten_lift(node):
+    """
+    Flatten(UnaryElemwise(x)) -> UnaryElemwise(Flatten(x))
+
+    This optimization is needed by optimization
+    nnet/sigm.py:log1msigm_to_softplus to get applied when there is a flatten.
+    """
+    if (isinstance(node.op, T.Flatten) and
+        node.inputs[0].owner and
+        isinstance(node.inputs[0].owner.op, T.Elemwise) and
+        len(node.inputs[0].owner.inputs) == 1):
+        f = node.op(node.inputs[0].owner.inputs[0])
+        e = node.inputs[0].owner.op(f)
+        return [e]
+
 ##################
 # Reshape opts   #
 ##################
@@ -2384,6 +2435,26 @@ def local_reshape_chain(node):
     else:
         return False
 register_canonicalize(local_reshape_chain)
+
+
+@register_canonicalize
+@register_stabilize
+@gof.local_optimizer([])
+def local_reshape_lift(node):
+    """
+    Reshape(UnaryElemwise(x)) -> UnaryElemwise(Reshape(x))
+
+    This optimization is needed by optimization
+    nnet/sigm.py:log1msigm_to_softplus to get applied when there is a reshape.
+    """
+    if (isinstance(node.op, T.Reshape) and
+        node.inputs[0].owner and
+        isinstance(node.inputs[0].owner.op, T.Elemwise) and
+        len(node.inputs[0].owner.inputs) == 1):
+        r = node.op(node.inputs[0].owner.inputs[0], node.inputs[1])
+        e = node.inputs[0].owner.op(r)
+        return [e]
+
 
 if 0:
     # TODO: Test that this optimziation works.
@@ -3138,7 +3209,7 @@ def local_sum_sum(node):
                 for i in node.op.axis:
                     new_i = i
                     for ii in summed.owner.op.axis:
-                        if i >= ii:
+                        if new_i >= ii:
                             new_i += 1
                     assert new_i not in newaxis
                     newaxis.append(new_i)
@@ -3654,7 +3725,10 @@ def local_abs_merge(node):
             if i.owner and i.owner.op == T.abs_:
                 inputs.append(i.owner.inputs[0])
             else:
-                const = get_scalar_constant_value(i)
+                try:
+                    const = get_scalar_constant_value(i)
+                except NotScalarConstantError:
+                    return False
                 if not (const >= 0).all():
                     return False
                 inputs.append(i)

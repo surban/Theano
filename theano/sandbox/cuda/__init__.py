@@ -6,9 +6,8 @@ import shutil
 import stat
 import sys
 
-import numpy
-
 import theano
+from theano.compat import get_unbound_function
 from theano.compile import optdb
 from theano.gof.cmodule import get_lib_extension
 from theano.gof.compilelock import get_lock, release_lock
@@ -28,7 +27,8 @@ AddConfigVar('cuda.root',
         linker directives.  Default: environment variable "CUDA_ROOT"
         or else "AUTO".
         """,
-        StrParam(os.getenv('CUDA_ROOT', "AUTO")))
+        StrParam(os.getenv('CUDA_ROOT', "AUTO")),
+        in_c_key=False)
 
 AddConfigVar('pycuda.init',
         """If True, always initialize PyCUDA when Theano want to
@@ -38,7 +38,8 @@ AddConfigVar('pycuda.init',
            manually by importing theano.misc.pycuda_init before theano
            initialize the GPU device.
              """,
-        BoolParam(False))
+        BoolParam(False),
+        in_c_key=False)
 
 if config.cuda.root == "AUTO":
     # set nvcc_path correctly and get the version
@@ -115,19 +116,6 @@ def try_import():
     return True
 
 
-# Add the theano cache directory's cuda_ndarray subdirectory to the
-# list of places that are hard-coded into compiled modules' runtime
-# library search list.  This works in conjunction with
-# nvcc_compiler.NVCC_compiler.compile_str which adds this folder during
-# compilation with -L and also adds -lcuda_ndarray when compiling
-# modules.
-nvcc_compiler.add_standard_rpath(cuda_ndarray_loc)
-
-compile_cuda_ndarray = True
-
-if not compile_cuda_ndarray:
-    compile_cuda_ndarray = not try_import()
-
 if not nvcc_compiler.is_nvcc_available() or not theano.config.cxx:
     # It can happen that the file cuda_ndarray.so is already compiled
     # but nvcc is not available. In that case we need to disable the CUDA
@@ -135,6 +123,21 @@ if not nvcc_compiler.is_nvcc_available() or not theano.config.cxx:
     # use already compiled GPU op and not the others.
     # Also, if cxx is not available, we need to disable all GPU code.
     set_cuda_disabled()
+    compile_cuda_ndarray = False
+elif not config.device.startswith('gpu') and config.force_device:
+    # We where asked to NEVER use the GPU
+    set_cuda_disabled()
+    compile_cuda_ndarray = False
+else:
+    # Add the theano cache directory's cuda_ndarray subdirectory to the
+    # list of places that are hard-coded into compiled modules' runtime
+    # library search list.  This works in conjunction with
+    # nvcc_compiler.NVCC_compiler.compile_str which adds this folder during
+    # compilation with -L and also adds -lcuda_ndarray when compiling
+    # modules.
+    nvcc_compiler.add_standard_rpath(cuda_ndarray_loc)
+    compile_cuda_ndarray = not try_import()
+
 
 if compile_cuda_ndarray and cuda_available:
     get_lock()
@@ -243,7 +246,8 @@ class GpuOp(theano.gof.Op):
         return super(GpuOp, self).make_thunk(node, storage_map,
                                              compute_map, no_recycling)
 
-theano.compile.debugmode.default_make_thunk.append(GpuOp.make_thunk.im_func)
+theano.compile.debugmode.default_make_thunk.append(
+                                        get_unbound_function(GpuOp.make_thunk))
 
 # We must do those import to be able to create the full doc when
 # nvcc is not available
@@ -270,16 +274,18 @@ if cuda_available:
     shared_constructor = float32_shared_constructor
 
     import basic_ops
-    from basic_ops import (GpuFromHost, HostFromGpu, GpuElemwise,
-                           GpuDimShuffle, GpuCAReduce, GpuReshape, GpuContiguous,
-                           GpuSubtensor, GpuIncSubtensor,
-                           GpuAdvancedSubtensor1, GpuAdvancedIncSubtensor1,
-                           GpuFlatten, GpuShape, GpuAlloc,
-                           GpuJoin, fscalar, fvector, fmatrix, frow, fcol,
-                           ftensor3, ftensor4,
-                           scalar, vector, matrix, row, col,
-                           tensor3, tensor4)
-    from basic_ops import host_from_gpu, gpu_from_host, as_cuda_array
+    from basic_ops import (
+            GpuFromHost, HostFromGpu, GpuElemwise,
+            GpuDimShuffle, GpuCAReduce, GpuReshape, GpuContiguous,
+            GpuSubtensor, GpuIncSubtensor,
+            GpuAdvancedSubtensor1, GpuAdvancedIncSubtensor1,
+            GpuFlatten, GpuShape, GpuAlloc,
+            GpuJoin, fscalar, fvector, fmatrix, frow, fcol,
+            ftensor3, ftensor4,
+            scalar, vector, matrix, row, col,
+            tensor3, tensor4)
+    from basic_ops import (host_from_gpu, gpu_from_host,
+            as_cuda_array, as_cuda_ndarray_variable)
     import opt
     import cuda_ndarray
     from rng_curand import CURAND_RandomStreams
@@ -380,23 +386,19 @@ def use(device,
                                  " the Theano mailing list to tell us about"
                                  " this new GPU as we don't know any with"
                                  " this property")
-            if move_shared_float32_to_gpu:
-                handle_shared_float32(True)
-
-            if enable_cuda:
-                cuda_enabled = True
 
             if config.print_active_device:
-                print >> sys.stderr, "Using gpu device %d: %s" %(
+                print >> sys.stderr, "Using gpu device %d: %s" % (
                         active_device_number(), active_device_name())
             if device_properties(use.device_number)['regsPerBlock'] < 16384:
                 # We will try to use too much register per bloc at many places
                 # when there is only 8k register per multi-processor.
-                _logger.warning("You are probably using an old GPU."
-                                " We didn't optimize nor we support those GPU."
-                                " This mean GPU code will be slow AND will"
-                                " crash when we try to use feature/properties"
-                                " that your GPU don't support.")
+                _logger.warning(
+                        "You are probably using an old GPU, that Theano"
+                        " does not support."
+                        " This means GPU code will most likely be slow AND may"
+                        " crash when we try to use features"
+                        " that your GPU does not support.")
 
         except (EnvironmentError, ValueError, RuntimeError), e:
             _logger.error(("ERROR: Not using GPU."
@@ -408,10 +410,16 @@ def use(device,
                             " No fallback to the cpu or other gpu device."),)
                 raise
 
-    elif use.device_number != device:
+    elif use.device_number != device and device != 'gpu':
         _logger.warning(("Ignoring call to use(%s), GPU number %i "
             "is already in use."),
             str(device), use.device_number)
+
+    if move_shared_float32_to_gpu:
+        handle_shared_float32(True)
+
+    if enable_cuda:
+        cuda_enabled = True
 
     if default_to_move_computation_to_gpu:
         optdb.add_tags('gpu_opt',
@@ -433,15 +441,36 @@ def use(device,
 use.device_number = None
 
 
+def unuse():
+    """
+    This undo what was done by the call to
+
+    use('gpu[0-9]', default_to_move_computation_to_gpu=True,
+        move_shared_float32_to_gpu=True,
+        enable_cuda=True)
+
+    This is used in Pylearn2 tests to enable/disable the GPU when needed.
+
+    After this call, the rest of Theano think the GPU shouldn't be used by default.
+    """
+    global cuda_enabled
+    cuda_enabled = False
+    handle_shared_float32(False)
+    optdb.remove_tags('gpu_opt',
+                   'fast_run',
+                   'inplace')
+    optdb.remove_tags('gpu_after_fusion',
+                   'fast_run',
+                   'inplace')
+
+
 def handle_shared_float32(tf):
     """Set the default shared type for float32 tensor to CudaNdarrayType
 
     This function is intended to be called from use(gpu_index), not directly.
     """
     if tf:
-        import theano.compile
         theano.compile.shared_constructor(float32_shared_constructor)
-
     else:
         theano.compile.shared_constructor(float32_shared_constructor, True)
         assert (float32_shared_constructor not in

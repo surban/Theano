@@ -1,10 +1,10 @@
-import StringIO
 import sys
 
-from python25 import DefaultOrderedDict
+from theano.gof.python25 import DefaultOrderedDict
 
 import numpy
-import opt
+from theano.compat.six import StringIO
+from theano.gof import opt
 from theano.configparser import AddConfigVar, FloatParam
 from theano import config
 AddConfigVar('optdb.position_cutoff',
@@ -65,6 +65,16 @@ multiple time in a DB. Tryed to register "%s" again under the new name "%s".
                 raise ValueError('The tag of the object collides with a name.',
                                  obj, tag)
             self.__db__[tag].add(obj)
+
+    def remove_tags(self, name, *tags):
+        obj = self.__db__[name]
+        assert len(obj) == 1
+        obj = obj.copy().pop()
+        for tag in tags:
+            if tag in self._names:
+                raise ValueError('The tag of the object collides with a name.',
+                                 obj, tag)
+            self.__db__[tag].remove(obj)
 
     def __query__(self, q):
         if not isinstance(q, Query):
@@ -248,7 +258,7 @@ class SequenceDB(DB):
         print >> stream, "  db", self.__db__
 
     def __str__(self):
-        sio = StringIO.StringIO()
+        sio = StringIO()
         self.print_summary(sio)
         return sio.getvalue()
 

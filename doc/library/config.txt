@@ -126,8 +126,13 @@ import theano and print the config variable, as in:
 
     Default: ``False``
 
-    If ``True``, we raise an error if we cannot use the specified :attr:`device`.
-    If ``False``, we fall back to the CPU.
+    If ``True`` and ``device=gpu*``, we raise an error if we cannot
+    use the specified :attr:`device`. If ``True`` and ``device=cpu``,
+    we disable the GPU.  If ``False`` and ``device=gpu*``, and if the
+    specified device cannot be used, we warn and fall back to the CPU.
+
+    This is useful to run Theano's tests on a computer with a GPU, but
+    without running the GPU tests.
 
     This flag's value cannot be modified during the program execution.
 
@@ -266,7 +271,16 @@ import theano and print the config variable, as in:
 
     Default False
 
-    Do the vm/cvm linkers profile the execution of Theano functions?
+    Do the vm/cvm linkers profile the execution time of Theano functions?
+
+.. attribute:: profile_memory
+
+    Bool value: either True or False
+
+    Default False
+
+    Do the vm/cvm linkers profile the memory usage of Theano functions?
+    It only works when profile=True.
 
 .. attribute:: profile_optimizer
 
@@ -275,6 +289,26 @@ import theano and print the config variable, as in:
     Default False
 
     Do the vm/cvm linkers profile the optimization phase when compiling a Theano function?
+    It only works when profile=True.
+
+.. attribute:: profiling.n_apply
+
+    Positive int value, default: 20.
+
+    The number of Apply nodes to print in the profiler output
+
+.. attribute:: profiling.n_ops
+
+    Positive int value, default: 20.
+
+    The number of Ops to print in the profiler output
+
+.. attribute:: profiling.min_memory_size
+
+    Positive int value, default: 1024.
+
+    For the memory profile, do not print Apply nodes if the size
+    of their outputs (in bytes) is lower than this.
 
 .. attribute:: config.lib.amdlibm
 
@@ -305,13 +339,13 @@ import theano and print the config variable, as in:
 
 .. attribute:: on_opt_error
 
-    String value: 'warn' or 'raise'
+    String value: 'warn', 'raise' or 'pdb'
 
     Default: 'warn'
 
     When a crash occurs while trying to apply some optimization, either warn
-    the user and skip this optimization ('warn'), or raise the exception
-    ('raise').
+    the user and skip this optimization ('warn'), raise the exception
+    ('raise'), or fall into the pdb debugger ('pdb').
 
 .. attribute:: on_shape_error
 
@@ -364,7 +398,7 @@ import theano and print the config variable, as in:
 
 .. attribute:: compiledir_format
 
-    Default: "compiledir_%(platform)s-%(processor)s-%(python_version)s"
+    Default: "compiledir_%(platform)s-%(processor)s-%(python_version)s-%(python_bitwidth)s"
 
     This is a Python format string that specifies the subdirectory
     of ``config.base_compiledir`` in which to store platform-dependent
@@ -405,17 +439,18 @@ import theano and print the config variable, as in:
 .. attribute:: config.cxx
 
 
-    Default: 'g++' if g++ is present. '' Otherwise.
+    Default: 'g++' if g++ is present. Empty string otherwise.
 
-    Tell the c++ compiler to use. If empty, don't compile c++ code.
-    We automatically detect if g++ is present and disable it if not
-    present.
+    Indicates which C++ compiler to use. If empty, no C++ code is compiled.
+    Theano automatically detects whether g++ is present and disables
+    C++ compilation when it is not.
 
     We print a warning if we detect that g++ is not present. It is
-    recommended to run with c++ compilation as Theano will be much
+    recommended to run with C++ compilation as Theano will be much
     slower otherwise.
 
-    Currently only g++ is supported, but supporting others is easy.
+    Currently only g++ is supported, but supporting other compilers should
+    not be too difficult.
 
 .. attribute:: optimizer_excluding
 
@@ -631,12 +666,12 @@ import theano and print the config variable, as in:
 
     Bool value, default: False
 
-    If True, will remove -O* parameter passed to g++.
-    This is useful to debug in gdb module compiled by Theano.
+    If True, will remove the -O* parameter passed to g++.
+    This is useful to debug in gdb modules compiled by Theano.
     The parameter -g is passed by default to g++.
 
 .. attribute:: cmodule.compilation_warning
 
     Bool value, default: False
 
-    If True, will print compilation warning.
+    If True, will print compilation warnings.

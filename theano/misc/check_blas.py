@@ -43,6 +43,11 @@ def execute(execute=True, verbose=True, M=2000, N=2000, K=2000,
         print '    blas.ldflags=', theano.config.blas.ldflags
         print '    compiledir=', theano.config.compiledir
         print '    floatX=', theano.config.floatX
+        print '    device=', theano.config.device
+        print 'Some OS information:'
+        print '    sys.platform=', sys.platform
+        print '    sys.version=', sys.version
+        print '    sys.prefix=', sys.prefix
         print 'Some environment variables:'
         print '    MKL_NUM_THREADS=', os.getenv('MKL_NUM_THREADS')
         print '    OMP_NUM_THREADS=', os.getenv('OMP_NUM_THREADS')
@@ -67,12 +72,13 @@ def execute(execute=True, verbose=True, M=2000, N=2000, K=2000,
                                  order=order))
     c = theano.shared(numpy.ones((M, K), dtype=theano.config.floatX,
                                  order=order))
-    f = theano.function([], updates=[(c, 0.4 * c + .8 * T.dot(a, b))],
-                        mode=theano.compile.ProfileMode())
+    f = theano.function([], updates=[(c, 0.4 * c + .8 * T.dot(a, b))])
 
     if any([x.op.__class__.__name__ == 'Gemm' for x in
             f.maker.fgraph.toposort()]):
-        c_impl = f.profile.apply_cimpl.values()
+        c_impl = [hasattr(thunk, 'cthunk')
+                  for node, thunk in zip(f.fn.nodes, f.fn.thunks)
+                  if node.op.__class__.__name__ == "Gemm"]
         assert len(c_impl) == 1
         if c_impl[0]:
             impl = 'CPU (with direct Theano binding to blas)'
@@ -197,25 +203,29 @@ if __name__ == "__main__":
 
         cuda version      5.0    4.2    4.1    4.0    3.2    3.0   # note
         gpu
+        K20m/ECC          0.07s
+        K20/NOECC         0.07s
         M2070             0.25s         0.27s         0.32s
         M2050(Amazon)     0.25s
         C2075                    0.25s
         C1060                                         0.46s
 
-        GTX680                   0.154s               0.218s
-        GTX580                   0.164s               0.203s
-        GTX480                   0.192s               0.237s 0.27s
-        GTX470                   0.238s               0.297s 0.34s
-        GTX660                   0.24s
-        GTX560                   0.30s
-        GTX460            0.37s                0.45s
-        GTX285                   0.452s        0.452s        0.40s # cuda 3.0 seam faster? driver version?
-        GTX550Ti                               0.57s
-        GT520                    2.68s                3.06s
-        520M                                          3.19s        # with bumblebee on Ubuntu 12.04
-        GT220                                         3.80s
-        GT210                                  6.35s
-        8500GT                                               10.68s
+        GTX Titan(D15U-50)0.06s  don't work
+        GTX 680           0.12s  0.154s               0.218s
+        GTX 580           0.16s  0.164s               0.203s
+        GTX 480           0.19s  0.192s               0.237s 0.27s
+        GTX 470           0.23s  0.238s               0.297s 0.34s
+        GTX 660           0.20s  0.23s
+        GTX 560                  0.30s
+        GTX 650 Ti        0.27s
+        GTX 460           0.37s                0.45s
+        GTX 285                  0.452s        0.452s        0.40s # cuda 3.0 seems faster? driver version?
+        GTX 550 Ti                             0.57s
+        GT 520                   2.68s                3.06s
+        520M              2.44s                       3.19s        # with bumblebee on Ubuntu 12.04
+        GT 220                                        3.80s
+        GT 210                                 6.35s
+        8500 GT                                              10.68s
         """
 
     t, impl = execute(not options.print_only, not options.quiet,

@@ -48,7 +48,10 @@ def safe_new(x, tag='', dtype=None):
         nw_name = None
     if isinstance(x, theano.Constant):
         if dtype and x.dtype != dtype:
-            return x.clone().astype(dtype)
+            casted_x = x.astype(dtype)
+            nwx = x.__class__(casted_x.type, x.data, x.name)
+            nwx.tag = copy(x.tag)
+            return nwx
         else:
             return x.clone()
     # Note, as_tensor_variable will convert the Scalar into a
@@ -70,6 +73,8 @@ def safe_new(x, tag='', dtype=None):
             # ndarrays
             pass
     nw_x = x.type()
+    if dtype and nw_x.dtype != dtype:
+        nw_x = nw_x.astype(dtype).type()
     nw_x.name = nw_name
     # Preserve test values so that the 'compute_test_value' option can be used.
     # The test value is deep-copied to ensure there can be no interactions
@@ -81,9 +86,6 @@ def safe_new(x, tag='', dtype=None):
         except AttributeError:
             # This means `x` has no test value.
             pass
-
-    if dtype and nw_x.dtype != dtype:
-        nw_x = nw_x.astype(dtype)
 
     return nw_x
 
@@ -105,7 +107,7 @@ class until(object):
         assert self.condition.ndim == 0
 
 
-def traverse(out, x, x_copy, d):
+def traverse(out, x, x_copy, d, visited=None):
     ''' Function used by scan to parse the tree and figure out which nodes
     it needs to replace. There are two options :
         1) x and x_copy or on host, then you would replace x with x_copy
@@ -114,6 +116,15 @@ def traverse(out, x, x_copy, d):
     This happens because initially shared variables are on GPU .. which is
     fine for the main computational graph but confuses things a bit for the
     inner graph of scan '''
+    # ``visited`` is a set of nodes that are already known and don't need to be
+    # checked again, speeding up the traversal of multiply-connected graphs.
+    # if a ``visited`` set is given, it will be updated in-place so the callee
+    # knows which nodes we have seen.
+    if visited is None:
+        visited = set()
+    if out in visited:
+        return d
+    visited.add(out)
     import theano.sandbox.cuda as cuda
     if out == x:
         d[out] = cuda.gpu_from_host(x_copy)
@@ -127,7 +138,7 @@ def traverse(out, x, x_copy, d):
         return d
     else:
         for inp in out.owner.inputs:
-            d = traverse(inp, x, x_copy, d)
+            d = traverse(inp, x, x_copy, d, visited)
         return d
 
 
@@ -169,14 +180,33 @@ def clone(output,
         shared variables still use the same underlying storage, so they
         will always have the same value.
     """
+    if isinstance(replace, dict):
+        items = replace.items()
+    elif isinstance(replace, (list, tuple)):
+        items = replace
+    elif replace is None:
+        items = []
+    else:
+        raise ValueError(("replace is neither a dictionary, list, "
+                          "tuple or None ! The value provided is %s,"
+                          "of type %s")%(str(replace), str(type(replace))))
+    tmp_replace = [(x, x.type()) for x, y in items]
+    new_replace = [(x, y) for ((_, x), (_, y)) in zip(tmp_replace,
+                                                           items)]
+    _, _outs, _ = rebuild_collect_shared(output,
+                                         [],
+                                         tmp_replace,
+                                         [],
+                                         strict,
+                                         copy_inputs)
 
-    inps, outs, other_stuff = rebuild_collect_shared(output,
-                                                     [],
-                                                     replace,
-                                                     [],
-                                                     strict,
-                                                     copy_inputs
-                                                     )
+    _, outs, _ = rebuild_collect_shared(_outs,
+                                        [],
+                                        new_replace,
+                                        [],
+                                        strict,
+                                        copy_inputs)
+
     return outs
 
 
@@ -202,7 +232,8 @@ def get_updates_and_outputs(ls):
     def is_updates(elem):
         if isinstance(elem, dict):
             # Make sure the updates will be applied in a deterministic order
-            if not isinstance(elem, gof.python25.OrderedDict):
+            if (not isinstance(elem, gof.python25.OrderedDict) and
+                len(elem) > 1):
                 warnings.warn("Expected OrderedDict or OrderedUpdates, got "\
                         + str(type(elem)) + ". This can make your script non-"
                         "deterministic.")
@@ -492,7 +523,7 @@ class Validator(object):
         if invalid is None:
             invalid = []
         if valid_equivalent is None:
-            valid_equivalent = {}
+            valid_equivalent = OrderedDict()
 
         # Nodes that are valid to have in the graph computing outputs
         self.valid = set(valid)
@@ -605,7 +636,7 @@ def compress_outs(op, not_required, inputs):
     means removing its inputs from the inner funciton and from the
     node inputs, and changing the dictionary.
     '''
-    info = {}
+    info = OrderedDict()
     info['tap_array'] = []
     info['n_seqs'] = op.info['n_seqs']
     info['n_mit_mot'] = 0
@@ -625,7 +656,7 @@ def compress_outs(op, not_required, inputs):
     op_inputs = op.inputs[:op.n_seqs]
     op_outputs = []
     node_inputs = inputs[:op.n_seqs + 1]
-    map_old_new = {}
+    map_old_new = OrderedDict()
 
     offset = 0
     ni_offset = op.n_seqs + 1
@@ -760,7 +791,7 @@ def reconstruct_graph(inputs, outputs, tag=None):
     if tag is None:
         tag = ''
     nw_inputs = [safe_new(x, tag) for x in inputs]
-    givens = {}
+    givens = OrderedDict()
     for nw_x, x in izip(nw_inputs, inputs):
         givens[x] = nw_x
     allinputs = theano.gof.graph.inputs(outputs)
@@ -880,7 +911,7 @@ class scan_args(object):
         p += n_shared_outs
         q += n_shared_outs
 
-        self.other_info = dict()
+        self.other_info = OrderedDict()
         for k in ('truncate_gradient', 'name', 'mode', 'destroy_map',
                   'gpu', 'as_while', 'profile'):
             if k in info:
@@ -914,7 +945,7 @@ class scan_args(object):
                                            self.outer_out_nit_sot +
                                            self.outer_out_shared))
 
-    info = property(lambda self: dict(
+    info = property(lambda self: OrderedDict(
             n_seqs=len(self.outer_in_seqs),
             n_mit_mot=len(self.outer_in_mit_mot),
             n_mit_sot=len(self.outer_in_mit_sot),
@@ -968,7 +999,13 @@ def forced_replace(out, x, y):
     if out is None:
         return None
 
-    def traverse(graph, x):
+    # ``visited`` is a set of nodes that are already known and don't need to be
+    # checked again, speeding up the traversal of multiply-connected graphs.
+    visited = set()
+    def local_traverse(graph, x):
+        if graph in visited:
+            return []
+        visited.add(graph)
         if equal_computations([graph], [x]):
             return [graph]
         elif not graph.owner:
@@ -976,7 +1013,7 @@ def forced_replace(out, x, y):
         else:
             rval = []
             for inp in graph.owner.inputs:
-                rval += traverse(inp, x)
+                rval += local_traverse(inp, x)
             return rval
-    to_replace = traverse(out, x)
-    return clone(out, replace=dict((v, y) for v in to_replace))
+    to_replace = local_traverse(out, x)
+    return clone(out, replace=OrderedDict((v, y) for v in to_replace))

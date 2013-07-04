@@ -7,12 +7,13 @@ __docformat__ = "restructuredtext en"
 
 import copy, sys, copy_reg, gc
 from itertools import izip
-from StringIO import StringIO
 
 import numpy
 
 import theano
 from theano import gof
+from theano.compat import get_unbound_function
+from theano.compat.six import StringIO
 from theano.gof import FunctionGraph,graph, utils, link, ops_with_inner_function
 from theano.gof.link import raise_with_op
 from theano.gof.cc import CLinker
@@ -530,7 +531,7 @@ def char_from_number(number):
         remainder = number % base
         new_char = chr(ord('A') + remainder)
         rval = new_char + rval
-        number /= base
+        number //= base
 
     return rval
 
@@ -885,8 +886,8 @@ def _lessbroken_deepcopy(a):
     """
     :param a: any object
 
-    Returns a copy of `a` that shares no internal storage with the original.
-    A deep copy.
+    Returns a copy of `a` that shares no internal storage with the original
+    (a deep copy).
     This function handles numpy arrays specially, because copy.deepcopy()
     called on a 0-d array will return a numpy scalar, not an array.
     """
@@ -1563,8 +1564,8 @@ class _VariableEquivalenceTracker(object):
 #List of default version of make thunk.
 #This is needed to know if the user overrided it.
 #The GpuOp will be added here when theano.sandbox.cuda is imported.
-default_make_thunk = [theano.gof.Op.make_thunk.im_func,
-                      theano.gof.OpenMPOp.make_thunk.im_func]
+default_make_thunk = [get_unbound_function(theano.gof.Op.make_thunk),
+                      get_unbound_function(theano.gof.OpenMPOp.make_thunk)]
 
 
 class _Linker(gof.link.LocalLinker):
@@ -1907,7 +1908,7 @@ class _Linker(gof.link.LocalLinker):
                         try:
                             thunk_c()
                         except Exception:
-                            raise_with_op(node)
+                            raise_with_op(node, thunk_c)
 
                         for r in node.outputs:
                             # check output values for type-correctness
@@ -1957,7 +1958,7 @@ class _Linker(gof.link.LocalLinker):
                                 try:
                                     thunk_c()
                                 except Exception:
-                                    raise_with_op(node)
+                                    raise_with_op(node, thunk_c)
                             _logger.debug(
                                     '%i - calling _check_preallocated_output '
                                     'with thunk_c', i)
@@ -2198,10 +2199,10 @@ class _Maker(FunctionMaker):  # inheritance buys a few helper functions
                     raise StochasticOrder(infolog.getvalue())
                 else:
                     if self.verbose:
-                        print >> sys.stderr, "OPTCHECK: optimization", i, "of", len(li), "events was stable."
+                        print >> sys.stderr, "OPTCHECK: optimization", i, \
+                                 "of", len(li), "events was stable."
             else:
                 fgraph0 = fgraph
-
 
         del fgraph0
         self.fgraph = fgraph
@@ -2209,11 +2210,18 @@ class _Maker(FunctionMaker):  # inheritance buys a few helper functions
 
         linker = _Linker(self)
 
+        # the 'no_borrow' outputs are the ones for which that we can't return
+        # the internal storage pointer.
 
-        #the 'no_borrow' outputs are the ones for which that we can't return the internal storage pointer.
-        no_borrow = [output for output, spec in zip(fgraph.outputs, outputs+additional_outputs) if not spec.borrow]
+        no_borrow = [
+                output
+                for output, spec in izip(fgraph.outputs,
+                                         outputs + additional_outputs)
+                if not spec.borrow]
         if no_borrow:
-            self.linker = linker.accept(fgraph, no_recycling = infer_reuse_pattern(fgraph, no_borrow))
+            self.linker = linker.accept(
+                    fgraph,
+                    no_recycling=infer_reuse_pattern(fgraph, no_borrow))
         else:
             self.linker = linker.accept(fgraph)
 

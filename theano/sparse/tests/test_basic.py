@@ -24,7 +24,7 @@ from theano.sparse.basic import _is_dense, _is_sparse, _mtypes
 from theano.sparse.basic import _is_dense_variable, _is_sparse_variable
 from theano.sparse import (
     verify_grad_sparse, as_sparse_variable,
-    CSC, CSR, CSM, CSMProperties, csm_properties,
+    CSC, CSM, CSMProperties, csm_properties,
     SparseType, CSMGrad,
     StructuredDot,
     StructuredDotGradCSC, StructuredDotGradCSR,
@@ -34,12 +34,12 @@ from theano.sparse import (
     Dot, Usmm, sp_ones_like, GetItemScalar,
     SparseFromDense,
     Cast, cast, HStack, VStack, AddSSData, add_s_s_data,
-    structured_sigmoid, structured_exp, structured_log,
-    structured_pow, structured_minimum, structured_maximum, structured_add,
-    MulSV, mul_s_v, StructuredAddSV, structured_add_s_v,
+    structured_minimum, structured_maximum, structured_add,
+     mul_s_v, structured_add_s_v,
     SamplingDot, sampling_dot,
     Diag, diag, SquareDiagonal, square_diagonal,
-    EnsureSortedIndices, ensure_sorted_indices, clean)
+    EnsureSortedIndices, ensure_sorted_indices, clean,
+    ConstructSparseFromList, construct_sparse_from_list)
 
 # Probability distributions are currently tested in test_sp2.py
 #from theano.sparse import (
@@ -402,6 +402,21 @@ class SparseInferShapeTester(utt.InferShapeTester):
 
                                 csc_from_dense.__class__)
 
+    def test_sparse_from_list(self):
+        x = tensor.matrix('x')
+        vals = tensor.matrix('vals')
+        ilist = tensor.lvector('ilist')
+
+        out = construct_sparse_from_list(x, vals, ilist)
+        self._compile_and_check(
+                [x, vals, ilist],
+                [out],
+                [numpy.zeros((40, 10), dtype=config.floatX),
+                 numpy.random.randn(12, 10).astype(config.floatX),
+                 numpy.random.randint(low=0, high=40, size=(12,))],
+                ConstructSparseFromList
+                )
+
 
 class T_AddMul(unittest.TestCase):
     def testAddSS(self):
@@ -491,8 +506,8 @@ class T_AddMul(unittest.TestCase):
             elif op is mul:
                 self.assertTrue(_is_sparse_variable(apb))
                 self.assertTrue(numpy.all(val.todense() == (b.multiply(a))))
-                self.assertTrue(numpy.all(val.todense() == numpy.array([[1, 0],
-[9, 0], [0, 36]])))
+                self.assertTrue(numpy.all(val.todense() == numpy.array(
+                    [[1, 0], [9, 0], [0, 36]])))
 
     def _testDS(self, op, array1=numpy.array([[1., 0], [3, 0], [0, 6]]),
                 array2=numpy.asarray([[0, 2.], [0, 4], [5, 0]])):
@@ -1027,8 +1042,9 @@ class test_structureddot(unittest.TestCase):
                                      overhead_tol)
 
 
-class DotTests(unittest.TestCase):
+class DotTests(utt.InferShapeTester):
     def setUp(self):
+        super(DotTests, self).setUp()
         x_size = (10, 100)
         y_size = (100, 1000)
         utt.seed_rng()
@@ -1043,48 +1059,47 @@ class DotTests(unittest.TestCase):
             numpy.random.binomial(1, 0.5, y_size), dtype=theano.config.floatX)
         self.y_csc = scipy.sparse.csc_matrix(
             numpy.random.binomial(1, 0.5, y_size), dtype=theano.config.floatX)
+        self.v_10 = numpy.asarray(numpy.random.uniform(-1, 1, 10),
+                                  dtype=theano.config.floatX)
+        self.v_100 = numpy.asarray(numpy.random.uniform(-1, 1, 100),
+                                  dtype=theano.config.floatX)
 
     def test_csr_dense(self):
         x = theano.sparse.csr_matrix('x')
         y = theano.tensor.matrix('y')
+        v = theano.tensor.vector('v')
 
-        f_a = theano.function([x, y], theano.sparse.dot(x, y))
-        f_b = lambda x, y: x * y
+        for (x, y, x_v, y_v) in [(x, y, self.x_csr, self.y),
+                                 (x, v, self.x_csr, self.v_100),
+                                 (v, x, self.v_10, self.x_csr)]:
+            f_a = theano.function([x, y], theano.sparse.dot(x, y))
+            f_b = lambda x, y: x * y
 
-        assert _allclose(f_a(self.x_csr, self.y), f_b(self.x_csr, self.y))
+            assert _allclose(f_a(x_v, y_v), f_b(x_v, y_v))
 
-        # Test infer_shape
-        f_a = theano.function([x, y], theano.sparse.dot(x, y).shape)
-        f_b = lambda x, y: (x * y).shape
-        assert numpy.all(f_a(self.x_csr, self.y) == f_b(self.x_csr, self.y))
-        topo = f_a.maker.fgraph.toposort()
-        if theano.config.mode != 'FAST_COMPILE':
-            nb = 0
-        else:
-            nb = 1
-        assert sum([isinstance(node.op, (Dot, Usmm, UsmmCscDense))
-                    for node in topo]) == nb
+            # Test infer_shape
+            self._compile_and_check([x, y], [theano.sparse.dot(x, y)],
+                                    [x_v, y_v],
+                                    (Dot, Usmm, UsmmCscDense))
 
     def test_csc_dense(self):
         x = theano.sparse.csc_matrix('x')
         y = theano.tensor.matrix('y')
+        v = theano.tensor.vector('v')
 
-        f_a = theano.function([x, y], theano.sparse.dot(x, y))
-        f_b = lambda x, y: x * y
+        for (x, y, x_v, y_v) in [(x, y, self.x_csc, self.y),
+                                 (x, v, self.x_csc, self.v_100),
+                                 (v, x, self.v_10, self.x_csc)]:
 
-        assert _allclose(f_a(self.x_csc, self.y), f_b(self.x_csc, self.y))
+            f_a = theano.function([x, y], theano.sparse.dot(x, y))
+            f_b = lambda x, y: x * y
 
-        # Test infer_shape
-        f_a = theano.function([x, y], theano.sparse.dot(x, y).shape)
-        f_b = lambda x, y: (x * y).shape
-        assert numpy.all(f_a(self.x_csc, self.y) == f_b(self.x_csc, self.y))
-        topo = f_a.maker.fgraph.toposort()
-        if theano.config.mode != 'FAST_COMPILE':
-            nb = 0
-        else:
-            nb = 1
-        assert sum([isinstance(node.op, (Dot, Usmm, UsmmCscDense))
-                    for node in topo]) == nb
+            assert _allclose(f_a(x_v, y_v), f_b(x_v, y_v))
+
+            # Test infer_shape
+            self._compile_and_check([x, y], [theano.sparse.dot(x, y)],
+                                    [x_v, y_v],
+                                    (Dot, Usmm, UsmmCscDense))
 
     def test_sparse_sparse(self):
         for d1, d2 in [('float32', 'float32'),
@@ -1256,9 +1271,9 @@ class UsmmTests(unittest.TestCase):
                         isinstance(topo[2].op.scalar_op, theano.scalar.Mul))
                 assert (isinstance(topo[3].op, theano.tensor.Elemwise) and
                         isinstance(topo[3].op.scalar_op, theano.scalar.Sub))
-            elif (y.type.dtype == up and format1 == 'csc' and format2 == 'dense'
-                and not fast_compile and theano.config.cxx and
-                up in ('float32', 'float64')):
+            elif (y.type.dtype == up and format1 == 'csc'
+                    and format2 == 'dense' and not fast_compile
+                    and theano.config.cxx and up in ('float32', 'float64')):
                 # The op UsmmCscDense should be inserted
                 assert (sum([isinstance(node.op, tensor.Elemwise) and
                              isinstance(node.op.scalar_op,
@@ -1615,7 +1630,8 @@ class DiagTester(utt.InferShapeTester):
             self._compile_and_check(variable,
                                     [self.op(*variable)],
                                     data,
-                                    self.op_class)
+                                    self.op_class,
+                                    warn=False)
 
     def test_grad(self):
         for format in sparse.sparse_formats:
@@ -1773,11 +1789,13 @@ class Remove0Tester(utt.InferShapeTester):
             if theano.config.mode not in ['FAST_COMPILE']:
                 # list of apply nodes in the optimized graph.
                 nodes = f.maker.fgraph.toposort()
-                v = [True for node in nodes]
-                if isinstance(node.op, Remove0) and node.op.inplace:
-                    assert len(v), \
-                    'Inplacing optimization should have been applied.'
-
+                # Check there isn't any Remove0 instance not inplace.
+                assert not any([isinstance(node.op, Remove0) and
+                                not node.op.inplace for node in nodes]), (
+                       'Inplace optimization should have been applied')
+                # Check there is at least one Remove0 inplace.
+                assert any([isinstance(node.op, Remove0) and node.op.inplace
+                            for node in nodes])
             # checking
             # makes sense to change its name
             target = mat
@@ -2061,11 +2079,7 @@ class CastTester(utt.InferShapeTester):
                     verify_grad_sparse(Cast(o_dtype), data, eps=eps)
 
 
-class _HVStackTester(utt.InferShapeTester):
-    """Test for both HStack and VStack.
-
-    """
-    nb = 3  # Number of sparse matrix to stack
+def _format_info(nb):
     x = {}
     mat = {}
 
@@ -2077,6 +2091,15 @@ class _HVStackTester(utt.InferShapeTester):
         mat[format] = [spa(numpy.random.random_integers(5, size=(3, 4)) - 1,
                            dtype=theano.config.floatX)
                        for t in range(nb)]
+    return x, mat
+
+
+class _HVStackTester(utt.InferShapeTester):
+    """Test for both HStack and VStack.
+
+    """
+    nb = 3  # Number of sparse matrix to stack
+    x, mat = _format_info(nb)
 
     def test_op(self):
         for format in sparse.sparse_formats:
@@ -2185,7 +2208,7 @@ class AddSSDataTester(utt.InferShapeTester):
 
 
 def elemwise_checker(op, expected_f, gap=None, test_dtypes=None,
-                     grad_test=True, name=None):
+                     grad_test=True, name=None, gap_grad=None):
     """Return the appropriate test class for the elemwise on sparse.
 
     :param op: Op to test.
@@ -2203,6 +2226,8 @@ def elemwise_checker(op, expected_f, gap=None, test_dtypes=None,
                         dtypes.
     :param grad_test: True for testing the grad. False will
                       skip this test.
+    :param gap_grad: If None, we reuse gap. Otherwise it is the same as gap
+                     but for testing the gradiant of the op.
 
     :return: The class that perform the tests, not an instance
              of the class.
@@ -2218,6 +2243,10 @@ def elemwise_checker(op, expected_f, gap=None, test_dtypes=None,
             self.op = op
             self.expected_f = expected_f
             self.gap = gap
+            if gap_grad is not None:
+                self.gap_grad = gap_grad
+            else:
+                self.gap_grad = gap
             # Ensure the test's name is correct.
             assert eval(self.__class__.__name__) is self.__class__
 
@@ -2327,7 +2356,8 @@ def elemwise_checker(op, expected_f, gap=None, test_dtypes=None,
                         variable, data = sparse_random_inputs(
                             format,
                             shape=(4, 7),
-                            out_dtype=dtype)
+                            out_dtype=dtype,
+                            gap=self.gap_grad)
 
                         verify_grad_sparse(self.op,
                                            data,
@@ -2442,7 +2472,8 @@ TanhTester = elemwise_checker(
 ArctanhTester = elemwise_checker(
     sparse.arctanh,
     numpy.arctanh,
-    gap=(-0.9, 1))
+    gap=(-0.9, 1),
+    gap_grad=(-0.9, 0.95))
 
 RintTester = elemwise_checker(
     sparse.rint,
@@ -2585,9 +2616,14 @@ class StructuredAddSVTester(unittest.TestCase):
 class SamplingDotTester(utt.InferShapeTester):
     x = [tensor.matrix() for t in range(2)]
     x.append(sparse.csr_matrix())
-    a = [numpy.array(numpy.random.random_integers(maximum, size=(3, 3)) - 1,
+    #unsquare shape
+    a = [numpy.array(numpy.random.random_integers(5, size=(4, 3)) - 1,
+                      dtype=theano.config.floatX),
+         numpy.array(numpy.random.random_integers(5, size=(5, 3)) - 1,
+                      dtype=theano.config.floatX),
+         numpy.array(numpy.random.random_integers(2, size=(4, 5)) - 1,
                       dtype=theano.config.floatX)
-         for maximum in [5, 5, 2]]
+         ]
     a[2] = sp.csr_matrix(a[2])
 
     def setUp(self):

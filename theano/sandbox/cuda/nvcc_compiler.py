@@ -9,11 +9,12 @@ import warnings
 
 import numpy
 
-import theano
+from theano.compat import decode, decode_iter
+from theano.gof import local_bitwidth
 from theano.gof.cc import hash_from_file
 from theano.gof.cmodule import (std_libs, std_lib_dirs,
                                 std_include_dirs, dlimport,
-                                get_lib_extension, local_bitwidth)
+                                get_lib_extension)
 from theano.gof.python25 import any
 from theano.misc.windows import call_subprocess_Popen
 
@@ -26,7 +27,8 @@ from theano.configparser import (config, AddConfigVar, StrParam,
 AddConfigVar('nvcc.compiler_bindir',
              "If defined, nvcc compiler driver will seek g++ and gcc"
              " in this directory",
-        StrParam(""))
+             StrParam(""),
+             in_c_key=False)
 
 AddConfigVar('cuda.nvccflags',
         "DEPRECATED, use nvcc.flags instead",
@@ -50,13 +52,21 @@ def filter_nvcc_flags(s):
             " nvcc.flags value is '%s'" % s)
     return ' '.join(flags)
 AddConfigVar('nvcc.flags',
-        "Extra compiler flags for nvcc",
-        ConfigParam(config.cuda.nvccflags, filter_nvcc_flags))
+             "Extra compiler flags for nvcc",
+             ConfigParam(config.cuda.nvccflags, filter_nvcc_flags),
+             # Not needed in c key as it is already added.
+             # We remove it as we don't make the md5 of config to change
+             # if theano.sandbox.cuda is loaded or not.
+             in_c_key=False)
 
 
 AddConfigVar('nvcc.fastmath',
-        "",
-        BoolParam(False))
+             "",
+             BoolParam(False),
+             # Not needed in c key as it is already added.
+             # We remove it as we don't make the md5 of config to change
+             # if theano.sandbox.cuda is loaded or not.
+             in_c_key=False)
 
 nvcc_path = 'nvcc'
 nvcc_version = None
@@ -69,10 +79,13 @@ def is_nvcc_available():
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.PIPE)
         p.wait()
-        s = p.stdout.readlines()[-1].split(',')[1].strip().split()
-        assert s[0] == 'release'
+
+        ver_line = decode(p.stdout.readlines()[-1])
+        build, version = ver_line.split(',')[1].strip().split()
+
+        assert build == 'release'
         global nvcc_version
-        nvcc_version = s[1]
+        nvcc_version = version
     try:
         set_version()
         return True
@@ -136,28 +149,33 @@ class NVCC_compiler(object):
             flags.append("-D NPY_ARRAY_C_CONTIGUOUS=NPY_C_CONTIGUOUS")
             flags.append("-D NPY_ARRAY_F_CONTIGUOUS=NPY_F_CONTIGUOUS")
 
-        # We compile cuda_ndarray.cu during import.
-        # We should not add device properties at that time.
-        # As the device is not selected yet!
-        # TODO: compile cuda_ndarray when we bind to a GPU?
-        import theano.sandbox.cuda
-        if hasattr(theano.sandbox, 'cuda'):
-            n = theano.sandbox.cuda.use.device_number
-            if n is None:
-                _logger.warn("We try to get compilation arguments for CUDA"
-                             " code, but the GPU device is not initialized."
-                             " This is probably caused by an Op that work on"
-                             " the GPU that don't inherit from GpuOp."
-                             " We Initialize the GPU now.")
-                theano.sandbox.cuda.use("gpu",
-                                        force=True,
-                                        default_to_move_computation_to_gpu=False,
-                                        move_shared_float32_to_gpu=False,
-                                        enable_cuda=False)
+        # If the user didn't specify architecture flags add them
+        if not any(['-arch=sm_' in f for f in flags]):
+            # We compile cuda_ndarray.cu during import.
+            # We should not add device properties at that time.
+            # As the device is not selected yet!
+            # TODO: re-compile cuda_ndarray when we bind to a GPU?
+            import theano.sandbox.cuda
+            if hasattr(theano.sandbox, 'cuda'):
                 n = theano.sandbox.cuda.use.device_number
+                if n is None:
+                    _logger.warn(
+                        "We try to get compilation arguments for CUDA"
+                        " code, but the GPU device is not initialized."
+                        " This is probably caused by an Op that work on"
+                        " the GPU that don't inherit from GpuOp."
+                        " We Initialize the GPU now.")
+                    theano.sandbox.cuda.use(
+                        "gpu",
+                        force=True,
+                        default_to_move_computation_to_gpu=False,
+                        move_shared_float32_to_gpu=False,
+                        enable_cuda=False)
+                    n = theano.sandbox.cuda.use.device_number
+                p = theano.sandbox.cuda.device_properties(n)
+                flags.append('-arch=sm_' + str(p['major']) +
+                             str(p['minor']))
 
-            p = theano.sandbox.cuda.device_properties(n)
-            flags.append('-arch=sm_' + str(p['major']) + str(p['minor']))
         return flags
 
     @staticmethod
@@ -242,11 +260,9 @@ class NVCC_compiler(object):
                 lib_dirs.append(python_lib)
 
         cppfilename = os.path.join(location, 'mod.cu')
-        cppfile = file(cppfilename, 'w')
+        cppfile = open(cppfilename, 'w')
 
         _logger.debug('Writing module C++ code to %s', cppfilename)
-        ofiles = []
-        rval = None
 
         cppfile.write(src_code)
         cppfile.close()
@@ -276,7 +292,7 @@ class NVCC_compiler(object):
 
         if sys.platform == 'win32':
             # add flags for Microsoft compiler to create .pdb files
-            preargs2.append('/Zi')
+            preargs2.extend(['/Zi', '/MD'])
             cmd.extend(['-Xlinker', '/DEBUG'])
 
         if local_bitwidth() == 64:
@@ -351,7 +367,7 @@ class NVCC_compiler(object):
             os.chdir(location)
             p = subprocess.Popen(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            nvcc_stdout, nvcc_stderr = p.communicate()[:2]
+            nvcc_stdout, nvcc_stderr = decode_iter(p.communicate()[:2])
         finally:
             os.chdir(orig_dir)
 
@@ -398,7 +414,7 @@ class NVCC_compiler(object):
 
         if py_module:
             #touch the __init__ file
-            file(os.path.join(location, "__init__.py"), 'w').close()
+            open(os.path.join(location, "__init__.py"), 'w').close()
             return dlimport(lib_filename)
 
 

@@ -20,15 +20,15 @@ import theano
 from theano import tensor
 from theano.tensor import opt, get_scalar_constant_value
 from theano import gof
-from theano.gof.python25 import maxsize, any
+from theano.gof.python25 import maxsize, any, OrderedDict
 from theano.gof.opt import Optimizer
 from theano.gof import toolbox, DestroyHandler, InconsistencyError
 from theano.compile import optdb
 from theano.compile.function_module import deep_copy_op
 
-import scan_op
-import scan_utils
-from scan_utils import equal_computations, find_up, scan_args
+from theano.scan_module import scan_op
+from theano.scan_module import scan_utils
+from theano.scan_module.scan_utils import equal_computations, find_up, scan_args
 from theano.gof.opt import pre_constant_merge, pre_greedy_local_optimizer
 
 # Logging function for sending warning or info
@@ -86,7 +86,7 @@ def remove_constants_and_unused_inputs_scan(node):
     out_stuff_outer = node.inputs[1 + op.n_seqs:st]
 
     # To replace constants in the outer graph by clones in the inner graph
-    givens = {}
+    givens = OrderedDict()
     # All the inputs of the inner graph of the new scan
     nw_inner = []
     # Same for the outer graph, initialized w/ number of steps
@@ -123,10 +123,15 @@ def remove_constants_and_unused_inputs_scan(node):
         if isinstance(nw_out, tensor.Constant):
             givens[nw_in] = nw_out.clone()
         elif nw_in in all_ins:
-            identical_non_seqs = [x for x in outer_non_seqs[:idx]
+            identical_non_seqs = [x for x in nw_outer
                                   if scan_utils.equal_computations(
                                       [x], [nw_out])]
             if identical_non_seqs:
+                identical_idx = outer_non_seqs.index(identical_non_seqs[0])
+                # If we have identical non sequences, the previous one
+                # must be in nw_inner or be a constant.
+                assert (non_seqs[identical_idx] in nw_inner or
+                        isinstance(identical_non_seqs[0], tensor.Constant))
                 index = outer_non_seqs.index(identical_non_seqs[0])
                 givens[nw_in] = non_seqs[index]
             else:
@@ -250,14 +255,18 @@ class PushOutNonSeqScan(gof.Optimizer):
         for nd in existent_nodes:
             to_keep += nd.inputs
         for idx, out in enumerate(to_replace):
-            if out in to_keep and out.owner not in existent_nodes:
+            if (out in to_keep
+                    and out.owner not in existent_nodes
+                    # If types are different, conversion Op will be inserted,
+                    # and it may trigger an infinite loop.
+                    and replace_with_in[idx].type == out.type):
                 clean_to_replace += [out]
                 clean_replace_with_in += [replace_with_in[idx]]
                 clean_replace_with_out += [replace_with_out[idx]]
 
         if len(clean_to_replace) > 0:
             # We can finally put an end to all this madness
-            givens = {}
+            givens = OrderedDict()
             nw_outer = []
             nw_inner = []
             for to_repl, repl_in, repl_out in zip(clean_to_replace,
@@ -284,7 +293,7 @@ class PushOutNonSeqScan(gof.Optimizer):
             return True
         elif to_keep == []:
             # Nothing in the inner graph should be kept
-            replace_with = {}
+            replace_with = OrderedDict()
             for idx, out in enumerate(to_replace):
                 if out in local_fgraph.outputs:
                     x = node.outputs[local_fgraph.outputs.index(out)]
@@ -432,14 +441,18 @@ class PushOutSeqScan(gof.Optimizer):
         for nd in existent_nodes:
             to_keep += nd.inputs
         for idx, out in enumerate(to_replace):
-            if out in to_keep and out.owner not in existent_nodes:
+            if (out in to_keep
+                    and out.owner not in existent_nodes
+                    # If types are different, conversion Op will be inserted,
+                    # and it may trigger an infinite loop.
+                    and replace_with_in[idx].type == out.type):
                 clean_to_replace += [out]
                 clean_replace_with_in += [replace_with_in[idx]]
                 clean_replace_with_out += [replace_with_out[idx]]
 
         if len(clean_to_replace) > 0:
             # We can finally put an end to all this madness
-            givens = {}
+            givens = OrderedDict()
             nw_outer = []
             nw_inner = []
             for to_repl, repl_in, repl_out in zip(clean_to_replace,
@@ -471,7 +484,7 @@ class PushOutSeqScan(gof.Optimizer):
               not op.as_while and
               not op.outer_mitmot(node)):
             # Nothing in the inner graph should be kept
-            replace_with = gof.python25.OrderedDict()
+            replace_with = OrderedDict()
             for idx, out in enumerate(to_replace):
                 if out in local_fgraph.outputs:
                     x = node.outputs[local_fgraph.outputs.index(out)]
@@ -529,7 +542,7 @@ class ScanInplaceOptimizer(Optimizer):
             for pos in xrange(n_outs):
                 info = copy.deepcopy(op.info)
                 if not 'destroy_map' in info:
-                    info['destroy_map'] = {}
+                    info['destroy_map'] = OrderedDict()
                 info['destroy_map'][pos] = [pos + 1 + op.info['n_seqs']]
                 # inputs corresponding to sequences and n_steps
                 ls_begin = node.inputs[:1 + op.n_seqs]
@@ -600,7 +613,7 @@ class ScanSaveMem(gof.Optimizer):
             # Each access to shape_of is in a try..except block in order to
             # use a default version when the variable is not in the shape_of
             # dictionary.
-            shape_of = {}
+            shape_of = OrderedDict()
         # 1. Initialization of variables
         # Note 1) We do not actually care about outputs representing shared
         # variables (those have no intermediate values) so it is safer to
@@ -923,7 +936,7 @@ class ScanSaveMem(gof.Optimizer):
             # 3.5 Remove unwanted orphane outputs
             (inps, outs, info, node_ins, compress_map) = \
                     scan_utils.compress_outs(op, not_required, nw_inputs)
-            inv_compress_map = {}
+            inv_compress_map = OrderedDict()
             for k, v in compress_map.items():
                 inv_compress_map[v] = k
 
@@ -1053,7 +1066,7 @@ class ScanMerge(gof.Optimizer):
         else:
             as_while = False
 
-        info = {}
+        info = OrderedDict()
         info['tap_array'] = []
         info['n_seqs'] = sum([nd.op.n_seqs for nd in nodes])
         info['n_mit_mot'] = sum([nd.op.n_mit_mot for nd in nodes])
@@ -1159,7 +1172,7 @@ class ScanMerge(gof.Optimizer):
         Questionable, we should also consider profile ?
         """
         rep = set_nodes[0]
-        if not rep.op.as_while and node.op.as_while:
+        if rep.op.as_while != node.op.as_while:
             return False
 
         nsteps = node.inputs[0]
@@ -1228,7 +1241,7 @@ def has_duplicates(l):
 def make_equiv(lo, li):
     """builds a dictionary of equivalences between inner inputs based on
     the equivalence of their corresponding outer inputs."""
-    seeno = {}
+    seeno = OrderedDict()
     left = []
     right = []
     for o, i in zip(lo, li):
@@ -1248,7 +1261,7 @@ def scan_merge_inouts(node):
     a = scan_args(node.inputs, node.outputs,
                   node.op.inputs, node.op.outputs, node.op.info)
 
-    inp_equiv = {}
+    inp_equiv = OrderedDict()
 
     if has_duplicates(a.outer_in_seqs):
         new_outer_seqs = []
@@ -1310,7 +1323,7 @@ def scan_merge_inouts(node):
         left += _left
         right += _right
     if has_duplicates(na.outer_in_mit_mot):
-        seen = {}
+        seen = OrderedDict()
         for omm, imm, _sl in zip(na.outer_in_mit_mot,
                                  na.inner_in_mit_mot, na.mit_mot_in_slices):
             sl = tuple(_sl)
@@ -1322,7 +1335,7 @@ def scan_merge_inouts(node):
                 seen[(omm, sl)] = imm
 
     if has_duplicates(na.outer_in_mit_sot):
-        seen = {}
+        seen = OrderedDict()
         for oms, ims, _sl in zip(na.outer_in_mit_sot,
                                  na.inner_in_mit_sot,
                                  na.mit_sot_in_slices):
@@ -1347,9 +1360,9 @@ def scan_merge_inouts(node):
                 if equal_computations([sh], [ssh]):
                     return so
                 try:
-                    vsh = int(opt.get_constant_value(sh))
-                    vssh = int(opt.get_constant_value(ssh))
-                except TypeError:
+                    vsh = int(opt.get_scalar_constant_value(sh))
+                    vssh = int(opt.get_scalar_constant_value(ssh))
+                except tensor.NotScalarConstantError:
                     return o
                 if vsh == vssh:
                     return so

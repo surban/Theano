@@ -548,7 +548,7 @@ class Test_pfunc(unittest.TestCase):
     def test_default_updates_input(self):
         x = shared(0)
         y = shared(1)
-        if theano.gof.cmodule.python_int_bitwidth() == 32:
+        if theano.gof.python_int_bitwidth() == 32:
             a = iscalar('a')
         else:
             a = lscalar('a')
@@ -983,6 +983,19 @@ class Test_aliasing_rules(unittest.TestCase):
             # further and further from the (e.g. data_of_a) with each
             # call.  The memory leak is in the increasing number of view
             # objects forming a chain to the underlying data.
+
+
+class Test_rebuild_strict(unittest.TestCase):
+    def test1(self):
+        # Test fix for error reported at
+        # https://groups.google.com/d/topic/theano-users/BRK0UEB72XA/discussion
+        w = tensor.imatrix()
+        x, y = tensor.ivectors('x', 'y')
+        z = x * y
+        f = theano.function([w, y], z, givens=[(x, w)], rebuild_strict=False)
+        z_val = f(numpy.ones((3, 5), dtype='int32'), numpy.arange(5, dtype='int32'))
+        assert z_val.ndim == 2
+        assert numpy.all(z_val == numpy.ones((3, 5)) * numpy.arange(5))
 
 
 if __name__ == '__main__':

@@ -1,5 +1,4 @@
 __authors__ = "Ian Goodfellow"
-__copyright__ = "Copyright 2010-2012, Universite de Montreal"
 __credits__ = ["Ian Goodfellow"]
 __license__ = "3-clause BSD"
 __maintainer__ = "Ian Goodfellow"
@@ -127,7 +126,7 @@ class RecordMode(Mode):
             handle_line(line, i, node, fn)
 
         #linker = theano.gof.OpWiseCLinker()
-        linker = theano.gof.vm.VM_Linker(use_cloop=True)
+        linker = theano.gof.vm.VM_Linker(use_cloop=bool(theano.config.cxx))
 
         wrap_linker = theano.gof.WrapLinkerMany([linker], [callback])
         super(RecordMode, self).__init__(wrap_linker, optimizer='fast_run')

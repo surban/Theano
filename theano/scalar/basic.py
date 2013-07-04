@@ -21,8 +21,10 @@ from textwrap import dedent
 import numpy
 
 import theano
+from theano.compat import PY3
 from theano import gof
-from theano.gof import Op, utils, Variable, Constant, Type, Apply, FunctionGraph
+from theano.gof import (Op, utils, Variable, Constant, Type, Apply,
+        FunctionGraph)
 from theano.gof.python25 import partial, all, any
 from theano.configparser import config
 
@@ -299,6 +301,12 @@ class Scalar(Type):
                     ret.imag = -this->imag;
                     return ret;
                 }
+                bool operator ==(const complex_type &y) const {
+                    return (this->real == y.real) && (this->imag == y.imag);
+                }
+                bool operator ==(const npy_float%(nbits)s &y) const {
+                    return (this->real == y) && (this->imag == 0);
+                }
                 complex_type operator -(const complex_type &y) const {
                     complex_type ret;
                     ret.real = this->real - y.real;
@@ -421,6 +429,12 @@ class Scalar(Type):
         return (4,)  # explicit T given in specialization of operator=
                      # lines.  This makes it compile with open64
 
+    def get_shape_info(self, obj):
+        return obj.itemsize
+
+    def get_size(self, shape_info):
+        return shape_info
+
 # Register C code for ViewOp on Scalars.
 theano.compile.register_view_op_c_code(
         Scalar,
@@ -457,6 +471,9 @@ class _scalar_py_operators:
     # So that we can simplify checking code when we have a mixture of Scalar
     # variables and Tensor variables
     ndim = 0
+
+    dtype = property(lambda self: self.type.dtype)
+    """ The dtype of this scalar.  """
 
     #UNARY
     def __abs__(self):
@@ -515,8 +532,12 @@ class _scalar_py_operators:
     def __mul__(self, other):
         return mul(self, other)
 
-    def __div__(self, other):
-        return div_proxy(self, other)
+    if PY3:
+        def __truediv__(self, other):
+            return div_proxy(self, other)
+    else:
+        def __div__(self, other):
+            return div_proxy(self, other)
 
     def __floordiv__(self, other):
         return int_div(self, other)
@@ -830,10 +851,49 @@ class ScalarOp(Op):
     def c_code_cache_version(self):
         return (4,)
 
+    def c_code_contiguous(self, node, name, inp, out, sub):
+        """This function is called by Elemwise when all inputs and
+        outputs are c_contiguous. This allows to use the SIMD version
+        of this op.
+
+        The inputs are the same as c_code except that:
+
+            - inp and out must be the names of the variables associated to the
+              ndarrays in the C code
+            - node must be the elemwise node (this is needed to know
+              the inputs/outputs types)
+
+        """
+        raise theano.gof.utils.MethodNotDefined()
+
 
 class UnaryScalarOp(ScalarOp):
     nin = 1
+    amd_float32 = None
+    amd_float64 = None
 
+    def c_code_contiguous(self, node, name, (x, ), (z, ), sub):
+        if (not theano.config.lib.amdlibm or
+            # We compare the dtype AND the broadcast flag
+            # as this function do not broadcast
+            node.inputs[0].type != node.outputs[0].type):
+            raise theano.gof.utils.MethodNotDefined()
+
+        dtype = node.inputs[0].dtype
+        if dtype == 'float32' and self.amd_float32 is not None:
+            dtype = 'float'
+            fct = self.amd_float32
+        elif dtype == 'float64' and self.amd_float64 is not None:
+            dtype = 'double'
+            fct = self.amd_float64
+        else:
+            raise theano.gof.utils.MethodNotDefined()
+        return """
+        npy_intp n = PyArray_SIZE(%(z)s);
+        %(dtype)s * x = (%(dtype)s*) PyArray_DATA(%(x)s);
+        %(dtype)s * z = (%(dtype)s*) PyArray_DATA(%(z)s);
+        %(fct)s(n, x, z);
+        """ % locals()
 
 class BinaryScalarOp(ScalarOp):
     # One may define in subclasses the following fields:
@@ -1085,7 +1145,7 @@ class UnaryBitOp(UnaryScalarOp):
         return upcast_out(*input_types[0])
 
     def grad(self, inputs, output_gradients):
-        return [None]
+        return [inputs[0].zeros_like().astype(theano.config.floatX)]
 
 
 class BinaryBitOp(BinaryScalarOp):
@@ -1098,7 +1158,8 @@ class BinaryBitOp(BinaryScalarOp):
         return upcast_out(*input_types[0])
 
     def grad(self, inputs, output_gradients):
-        return [None, None]
+        a,b = inputs
+        return [a.zeros_like().astype(theano.config.floatX), b.zeros_like().astype(theano.config.floatX)]
 
 
 class OR(BinaryBitOp):
@@ -1599,6 +1660,46 @@ class Pow(BinaryScalarOp):
 
         return (first_part, second_part)
 
+    def c_code_contiguous(self, node, name, (x, y), (z, ), sub):
+        if not theano.config.lib.amdlibm:
+            raise theano.gof.utils.MethodNotDefined()
+
+        # We compare the dtype AND the broadcast flag
+        # as this function do not broadcast
+        if (node.inputs[0].type == node.outputs[0].type and
+            node.inputs[1].type == node.outputs[0].type and
+            # amdlibm 3.0 do not have a float64 version of this SIMD function
+            node.inputs[0].dtype == 'float32' and
+            node.inputs[1].dtype == 'float32'):
+            dtype = 'float'
+            fct = "amd_vrsa_powf"
+            return """
+        npy_intp n = PyArray_SIZE(%(z)s);
+        %(dtype)s * x = (%(dtype)s*) PyArray_DATA(%(x)s);
+        %(dtype)s * y = (%(dtype)s*) PyArray_DATA(%(y)s);
+        %(dtype)s * z = (%(dtype)s*) PyArray_DATA(%(z)s);
+        %(fct)s(n, x, y, z);
+        """ % locals()
+        # We compare the dtype and check we broadcast a scalar
+        elif (node.inputs[0].type == node.outputs[0].type and
+              node.inputs[1].dtype == node.outputs[0].dtype and
+              all(node.inputs[1].broadcastable) and
+              # amdlibm 3.0 do not have a float64 version of this SIMD function
+              node.inputs[0].dtype == 'float32' and
+              node.inputs[1].dtype == 'float32'):
+            dtype = 'float'
+            fct = "amd_vrsa_powxf"
+            return """
+        npy_intp n = PyArray_SIZE(%(z)s);
+        %(dtype)s * x = (%(dtype)s*) PyArray_DATA(%(x)s);
+        %(dtype)s * y = (%(dtype)s*) PyArray_DATA(%(y)s);
+        %(dtype)s * z = (%(dtype)s*) PyArray_DATA(%(z)s);
+        %(fct)s(n, x, *y, z);
+        """ % locals()
+
+        raise theano.gof.utils.MethodNotDefined()
+
+
 pow = Pow(upcast_out, name='pow')
 
 
@@ -2003,6 +2104,9 @@ inv = Inv(upgrade_to_float, name='inv')
 
 class Log(UnaryScalarOp):
     """ log base e """
+    amd_float32 = "amd_vrsa_logf"
+    amd_float64 = "amd_vrda_log"
+
     def impl(self, x):
         return numpy.log(x)
 
@@ -2026,6 +2130,9 @@ log = Log(upgrade_to_float, name='log')
 
 class Log2(UnaryScalarOp):
     """ log base 2 """
+    amd_float32 = "amd_vrsa_log2f"
+    amd_float64 = "amd_vrda_log2"
+
     def impl(self, x):
         return numpy.log2(x)
 
@@ -2046,6 +2153,9 @@ log2 = Log2(upgrade_to_float, name='log2')
 
 class Log10(UnaryScalarOp):
     """ log base 10 """
+    amd_float32 = "amd_vrsa_log10f"
+    amd_float64 = "amd_vrda_log10"
+
     def impl(self, x):
         return numpy.log10(x)
 
@@ -2084,6 +2194,9 @@ log1p = Log1p(upgrade_to_float, name='log1p')
 
 
 class Exp(UnaryScalarOp):
+    amd_float32 = "amd_vrsa_expf"
+    amd_float64 = "amd_vrda_exp"
+
     def impl(self, x):
         return numpy.exp(x)
 
@@ -2215,6 +2328,9 @@ rad2deg = Rad2Deg(upgrade_to_float, name='rad2deg')
 
 
 class Cos(UnaryScalarOp):
+    amd_float32 = "amd_vrsa_cosf"
+    amd_float64 = "amd_vrda_cos"
+
     def impl(self, x):
         return numpy.cos(x)
 
@@ -2253,6 +2369,9 @@ arccos = ArcCos(upgrade_to_float, name='arccos')
 
 
 class Sin(UnaryScalarOp):
+    amd_float32 = "amd_vrsa_sinf"
+    amd_float64 = "amd_vrda_sin"
+
     def impl(self, x):
         return numpy.sin(x)
 
@@ -2674,7 +2793,7 @@ class Composite(ScalarOp):
         except AttributeError:
             if 0:
                 l = []
-                for n in fgraph.toposort():
+                for n in self.fgraph.toposort():
                     if hasattr(n.op, "name") and n.op.name is not None:
                         v = n.op.name
                         if v.startswith("Composite"):

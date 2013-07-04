@@ -4,13 +4,12 @@ import theano
 import numpy
 from theano import gof, scalar, tensor
 from theano.tensor import blas
-from theano.sparse import (CSC, CSR, csm_properties, Remove0,
+from theano.sparse import (CSC, CSR, csm_properties,
                            register_specialize,
                            csm_grad, usmm)
 from theano.sparse import basic as sparse
 
-from basic import _is_sparse_variable
-
+_is_sparse_variable = sparse._is_sparse_variable
 
 # This is tested in tests/test_opt.py:test_local_csm_properties_csm
 @gof.local_optimizer([csm_properties])
@@ -690,7 +689,7 @@ class UsmmCscDense(gof.Op):
         return rval
 
     def c_code_cache_version(self):
-        return (1,)
+        return (1, blas.blas_header_version())
 usmm_csc_dense = UsmmCscDense(inplace=False)
 usmm_csc_dense_inplace = UsmmCscDense(inplace=True)
 
@@ -1520,7 +1519,7 @@ class SamplingDotCSR(gof.Op):
         ])
 
     def c_code_cache_version(self):
-        return (2, )
+        return (2, blas.blas_header_version())
 
     def c_support_code(self):
         return blas.blas_header_text()

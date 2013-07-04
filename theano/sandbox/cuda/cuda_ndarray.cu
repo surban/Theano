@@ -44,8 +44,11 @@ static PyObject *CudaNdarray_get_shape(CudaNdarray *self, void *closure);
  *
  */
 int _outstanding_mallocs[] = {0,0};
+
 #if COMPUTE_GPU_MEM_USED
 int _allocated_size = 0;
+int _max_allocated_size = 0;
+
 const int TABLE_SIZE = 10000;
 struct table_struct{
     void* ptr;
@@ -82,8 +85,15 @@ void * device_malloc(size_t size, int verbose)
                 "Error allocating %li bytes of device memory (%s).", (long)size, cudaGetErrorString(err));
         return NULL;
     }
-    _outstanding_mallocs[0] += (rval != NULL);
-    #if COMPUTE_GPU_MEM_USED
+    if (rval != NULL){
+        // Can it happen that cudaMalloc return cudaSuccess, but return a NULL ptr?
+        // Could this be what happen if size is 0?
+        _outstanding_mallocs[0] += 1;
+
+#if COMPUTE_GPU_MEM_USED
+        _allocated_size += size;
+        _max_allocated_size = std::max(_max_allocated_size, _allocated_size);
+
         for(int i=0;i<TABLE_SIZE;i++){
             if(NULL==_alloc_size_table[i].ptr){
                 _alloc_size_table[i].ptr=rval;
@@ -91,8 +101,8 @@ void * device_malloc(size_t size, int verbose)
                 break;
             }
         }
-        _allocated_size += size;
-    #endif
+#endif
+    }
     //fprintf(stderr,
     //"allocated %li bytes of device memory (%s). new total bytes allocated: %d. ptr: %p\n",
     //(long)size, cudaGetErrorString(err),_allocated_size,rval);
@@ -260,7 +270,6 @@ __global__ void name (unsigned int numEls,  \
         for (unsigned int _d = 0; _d < nd; ++_d) \
         { \
             unsigned int d = nd - _d-1;  \
-            /* i_d used to be unsigned, but their is a bug in nvcc 3.0. making it signed fix the bug.*/\
             int i_d = ii % dim[d]; /* i_d is our position in the d'th dimension   */ \
             ii = ii / dim[d]; \
             a_i += i_d * a_str[d]; /* increment our a and z pointers by i_d elements */ \
@@ -285,10 +294,10 @@ static void
 CudaNdarray_dealloc(CudaNdarray* self)
 {
     if (0) std::cerr << "CudaNdarray dealloc " << self << " " << self->devdata << '\n';
-    if(self->ob_refcnt>1)
+    if(Py_REFCNT(self) > 1)
       printf("WARNING:CudaNdarray_dealloc called when there is still active reference to it.\n");
     CudaNdarray_uninit(self);
-    self->ob_type->tp_free((PyObject*)self);
+    Py_TYPE(self)->tp_free((PyObject*)self);
     --_outstanding_mallocs[1];
     if (0)
     {
@@ -452,9 +461,9 @@ PyObject* CudaNdarray_ZEROS(int n, int * dims)
     return (PyObject*) rval;
 }
 
-// declared as a static method (hence "dummy" is not used)
+// declared as a static method (hence 1st parameter is not used)
 // Based on _Copy and _dimshuffle
-PyObject* CudaNdarray_Zeros(PyObject* dummy, PyObject* shape)
+PyObject* CudaNdarray_Zeros(PyObject* _unused, PyObject* shape)
 {
     if(!shape)
     {
@@ -745,15 +754,6 @@ PyObject * CudaNdarray_View(const CudaNdarray * self)
     }
     return (PyObject*)rval;
 }
-
-
-enum operator_t
-{
-    IADD=0,
-    IDIV,
-    CPY,
-    N_ELEMWISE_OPS // This is to know the number of operation
-};
 
 /*
  * d0,... are the output dims
@@ -1226,7 +1226,7 @@ static PyMethodDef CudaNdarray_methods[] =
         (PyCFunction)CudaNdarray_DeepCopy, METH_O,
         "Create a copy of this object"},
     {"zeros",
-        (PyCFunction)CudaNdarray_Zeros, METH_STATIC,
+        (PyCFunction)CudaNdarray_Zeros, METH_STATIC | METH_O,
         "Create a new CudaNdarray with specified shape, filled with zeros."},
     {"copy",
         (PyCFunction)CudaNdarray_Copy, METH_NOARGS,
@@ -1389,6 +1389,45 @@ __global__ void k_ielem_4(const int d0, const int d1, const int d2, const int d3
     }
 }
 
+template <int operator_num>
+__global__ void k_ielem_6(const int d0, const int d1,
+                          const int d2, const int d3,
+                          const int d4, const int d5,
+                          float* a, const int sA0, const int sA1,
+                          const int sA2, const int sA3,
+                          const int sA4, const int sA5,
+                          const float* b, const int sB0, const int sB1,
+                          const int sB2, const int sB3,
+                          const int sB4, const int sB5
+                          ){
+    for (int i0 = blockIdx.x; i0 < d0; i0 += gridDim.x){
+        for (int i1 = blockIdx.y; i1 < d1; i1 += gridDim.y){
+            for (int i2 = blockIdx.z; i2 < d2; i2 += gridDim.z){
+                for (int i3 = threadIdx.x; i3 < d3; i3 += blockDim.x){
+                    for (int i4 = threadIdx.y; i4 < d4; i4 += blockDim.y){
+                        for (int i5 = threadIdx.z; i5 < d5; i5 += blockDim.z){
+                            switch (operator_num) {
+                            case IADD:
+                                a[i0*sA0 + i1*sA1 + i2*sA2 + i3*sA3 + i4*sA4 + i5*sA5]
+                                    += b[i0*sB0 + i1*sB1 + i2*sB2 + i3*sB3 + i4*sB4 + i5*sB5];
+                                break;
+                            case IDIV:
+                                a[i0*sA0 + i1*sA1 + i2*sA2 + i3*sA3 + i4*sA4 + i5*sA5]
+                                    /= b[i0*sB0 + i1*sB1 + i2*sB2 + i3*sB3 + i4*sB4 + i5*sB5];
+                                break;
+                            case CPY:
+                                a[i0*sA0 + i1*sA1 + i2*sA2 + i3*sA3 + i4*sA4 + i5*sA5]
+                                    = b[i0*sB0 + i1*sB1 + i2*sB2 + i3*sB3 + i4*sB4 + i5*sB5];
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 /*
 CudaNdarray_inplace_elemwise
 Compute elemwise, working inplace on A.
@@ -1415,19 +1454,31 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                     const int, const int,
                     const float*, const int, const int,
                     const int, const int);
+    void (*k6)(const int, const int,
+               const int, const int,
+               const int, const int,
+               float*, const int, const int,
+               const int, const int,
+               const int, const int,
+               const float*, const int, const int,
+               const int, const int,
+               const int, const int);
     switch (fct_nb)
     {
         case IADD:
             k3 = k_ielem_3<IADD>;
             k4 = k_ielem_4<IADD>;
+            k6 = k_ielem_6<IADD>;
             break;
         case IDIV:
             k3 = k_ielem_3<IDIV>;
             k4 = k_ielem_4<IDIV>;
+            k6 = k_ielem_6<IDIV>;
             break;
         case CPY:
             k3 = k_ielem_3<CPY>;
             k4 = k_ielem_4<CPY>;
+            k6 = k_ielem_6<CPY>;
             break;
         default:
             assert (0);
@@ -1787,6 +1838,61 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 }
             }
             break;
+        case 6:
+            {
+                dim3 n_blocks(
+                        std::min(
+                            CudaNdarray_HOST_DIMS(self)[0],
+                            NUM_VECTOR_OP_BLOCKS),
+                        CudaNdarray_HOST_DIMS(self)[1],
+                        CudaNdarray_HOST_DIMS(self)[2]
+                        );
+                while (n_blocks.x * n_blocks.y > NUM_VECTOR_OP_BLOCKS)
+                    n_blocks.y /= 2;
+                while (n_blocks.x * n_blocks.y * n_blocks.z > NUM_VECTOR_OP_BLOCKS)
+                    n_blocks.z /= 2;
+                dim3 n_threads(
+                        std::min(
+                            CudaNdarray_HOST_DIMS(self)[3],
+                            NUM_VECTOR_OP_THREADS_PER_BLOCK)
+                    //TODO: DON"T YOU NEED OT PUT DIMS[4] in here???
+                    //TODO: DON"T YOU NEED OT PUT DIMS[5] in here???
+                            );
+                k6<<<n_blocks, n_threads>>>(
+                        CudaNdarray_HOST_DIMS(self)[0],
+                        CudaNdarray_HOST_DIMS(self)[1],
+                        CudaNdarray_HOST_DIMS(self)[2],
+                        CudaNdarray_HOST_DIMS(self)[3],
+                        CudaNdarray_HOST_DIMS(self)[4],
+                        CudaNdarray_HOST_DIMS(self)[5],
+                        CudaNdarray_DEV_DATA(self),
+                        CudaNdarray_HOST_STRIDES(self)[0],
+                        CudaNdarray_HOST_STRIDES(self)[1],
+                        CudaNdarray_HOST_STRIDES(self)[2],
+                        CudaNdarray_HOST_STRIDES(self)[3],
+                        CudaNdarray_HOST_STRIDES(self)[4],
+                        CudaNdarray_HOST_STRIDES(self)[5],
+                        CudaNdarray_DEV_DATA(other),
+                        other_strides[0],
+                        other_strides[1],
+                        other_strides[2],
+                        other_strides[3],
+                        other_strides[4],
+                        other_strides[5]);
+                CNDA_THREAD_SYNC;
+                cudaError_t err = cudaGetLastError();
+                if (cudaSuccess != err)
+                {
+                    PyErr_Format(
+                        PyExc_RuntimeError,
+                        "Cuda error: %s: %s.\n",
+                        "k4",
+                        cudaGetErrorString(err));
+                    Py_XDECREF(new_other);
+                    return -1;
+                }
+            }
+            break;
         default:
         {
             PyErr_Format(
@@ -1839,56 +1945,100 @@ CudaNdarray_inplace_div(PyObject* py_self, PyObject * py_other)
     return py_self;
 }
 
+// The PyNumberMethods struct layout changed in a non-trivial way from 2 to 3.
+#if PY_MAJOR_VERSION == 3
 static PyNumberMethods CudaNdarrayNumberMethods =
 {
-     (binaryfunc)CudaNdarray_add,  //binaryfunc nb_add;  __add__
-     0,  //binaryfunc nb_subtract;      __sub__
-     0,  //binaryfunc nb_multiply;      __mul__
-     0,  //binaryfunc nb_divide;        __div__
-     0,  //binaryfunc nb_remainder;     __mod__
-     0,  //binaryfunc nb_divmod;        __divmod__
-     0,  //ternaryfunc nb_power;        __pow__
-     0,  //unaryfunc nb_negative;       __neg__
-     0,  //unaryfunc nb_positive;       __pos__
-     0,  //unaryfunc nb_absolute;       __abs__
-     0,  //inquiry nb_nonzero;          __nonzero__     /* Used by PyObject_IsTrue */
-     0,  //unaryfunc nb_invert;         __invert__
-     0,  //binaryfunc nb_lshift;        __lshift__
-     0,  //binaryfunc nb_rshift;        __rshift__
-     0,  //binaryfunc nb_and;           __and__
-     0,  //binaryfunc nb_xor;           __xor__
-     0,  //binaryfunc nb_or;            __or__
-     0,  //coercion nb_coerce;          __coerce__     /* Used by the coerce() function */
-     0,  //unaryfunc nb_int;            __int__
-     0,  //unaryfunc nb_long;           __long__
-     0,  //unaryfunc nb_float;          __float__
-     0,  //unaryfunc nb_oct;            __oct__
-     0,  //unaryfunc nb_hex;            __hex__
+    (binaryfunc)CudaNdarray_add,  //binaryfunc nb_add;  __add__
+    0,  //binaryfunc nb_subtract;
+    0,  //binaryfunc nb_multiply;
+    0,  //binaryfunc nb_remainder;
+    0,  //binaryfunc nb_divmod;
+    0,  //ternaryfunc nb_power;
+    0,  //unaryfunc nb_negative;
+    0,  //unaryfunc nb_positive;
+    0,  //unaryfunc nb_absolute;
+    0,  //inquiry nb_bool;
+    0,  //unaryfunc nb_invert;
+    0,  //binaryfunc nb_lshift;
+    0,  //binaryfunc nb_rshift;
+    0,  //binaryfunc nb_and;
+    0,  //binaryfunc nb_xor;
+    0,  //binaryfunc nb_or;
+    0,  //unaryfunc nb_int;
+    0,  //void *nb_reserved;
+    0,  //unaryfunc nb_float;
 
-     /* Added in release 2.0 */
-     (binaryfunc)CudaNdarray_inplace_add,  //binaryfunc nb_inplace_add;  __iadd__
-     0,  //binaryfunc nb_inplace_subtract;      __isub__
-     0,  //binaryfunc nb_inplace_multiply;      __imul__
-     (binaryfunc)CudaNdarray_inplace_div,  //binaryfunc nb_inplace_divide;        __idiv__
-     0,  //binaryfunc nb_inplace_remainder;     __imod__
-     0,  //ternaryfunc nb_inplace_power;        __ipow__
-     0,  //binaryfunc nb_inplace_lshift;        __ilshift__
-     0,  //binaryfunc nb_inplace_rshift;        __irshift__
-     0,  //binaryfunc nb_inplace_and;           __iand__
-     0,  //binaryfunc nb_inplace_xor;           __ixor__
-     0,  //binaryfunc nb_inplace_or;            __ior__
+    (binaryfunc)CudaNdarray_inplace_add,  //binaryfunc nb_inplace_add;  __iadd__
+    0,  //binaryfunc nb_inplace_subtract;
+    0,  //binaryfunc nb_inplace_multiply;
+    0,  //binaryfunc nb_inplace_remainder;
+    0,  //ternaryfunc nb_inplace_power;
+    0,  //binaryfunc nb_inplace_lshift;
+    0,  //binaryfunc nb_inplace_rshift;
+    0,  //binaryfunc nb_inplace_and;
+    0,  //binaryfunc nb_inplace_xor;
+    0,  //binaryfunc nb_inplace_or;
 
-     /* Added in release 2.2 */
-     0,  //binaryfunc nb_floor_divide;          __floordiv__
-     0,  //binaryfunc nb_true_divide;           __truediv__
-     0,  //binaryfunc nb_inplace_floor_divide;  __ifloordiv__
-     0,  //binaryfunc nb_inplace_true_divide;   __itruediv__
+    0,  //binaryfunc nb_floor_divide;
+    0,  //binaryfunc nb_true_divide;
+    0,  //binaryfunc nb_inplace_floor_divide;
+    (binaryfunc)CudaNdarray_inplace_div,  //binaryfunc nb_inplace_true_divide;        __idiv__
+
+    0,  //unaryfunc nb_index
+};
+#else
+static PyNumberMethods CudaNdarrayNumberMethods =
+{
+    (binaryfunc)CudaNdarray_add,  //binaryfunc nb_add;  __add__
+    0,  //binaryfunc nb_subtract;      __sub__
+    0,  //binaryfunc nb_multiply;      __mul__
+    0,  //binaryfunc nb_divide;        __div__
+    0,  //binaryfunc nb_remainder;     __mod__
+    0,  //binaryfunc nb_divmod;        __divmod__
+    0,  //ternaryfunc nb_power;        __pow__
+    0,  //unaryfunc nb_negative;       __neg__
+    0,  //unaryfunc nb_positive;       __pos__
+    0,  //unaryfunc nb_absolute;       __abs__
+    0,  //inquiry nb_nonzero;          __nonzero__     /* Used by PyObject_IsTrue */
+    0,  //unaryfunc nb_invert;         __invert__
+    0,  //binaryfunc nb_lshift;        __lshift__
+    0,  //binaryfunc nb_rshift;        __rshift__
+    0,  //binaryfunc nb_and;           __and__
+    0,  //binaryfunc nb_xor;           __xor__
+    0,  //binaryfunc nb_or;            __or__
+    0,  //coercion nb_coerce;          __coerce__     /* Used by the coerce() function */
+    0,  //unaryfunc nb_int;            __int__
+    0,  //unaryfunc nb_long;           __long__
+    0,  //unaryfunc nb_float;          __float__
+    0,  //unaryfunc nb_oct;            __oct__
+    0,  //unaryfunc nb_hex;            __hex__
+
+    /* Added in release 2.0 */
+    (binaryfunc)CudaNdarray_inplace_add,  //binaryfunc nb_inplace_add;  __iadd__
+    0,  //binaryfunc nb_inplace_subtract;      __isub__
+    0,  //binaryfunc nb_inplace_multiply;      __imul__
+    (binaryfunc)CudaNdarray_inplace_div,  //binaryfunc nb_inplace_divide;        __idiv__
+    0,  //binaryfunc nb_inplace_remainder;     __imod__
+    0,  //ternaryfunc nb_inplace_power;        __ipow__
+    0,  //binaryfunc nb_inplace_lshift;        __ilshift__
+    0,  //binaryfunc nb_inplace_rshift;        __irshift__
+    0,  //binaryfunc nb_inplace_and;           __iand__
+    0,  //binaryfunc nb_inplace_xor;           __ixor__
+    0,  //binaryfunc nb_inplace_or;            __ior__
+
+    /* Added in release 2.2 */
+    0,  //binaryfunc nb_floor_divide;          __floordiv__
+    0,  //binaryfunc nb_true_divide;           __truediv__
+    0,  //binaryfunc nb_inplace_floor_divide;  __ifloordiv__
+    0,  //binaryfunc nb_inplace_true_divide;   __itruediv__
 
 #if PY_MINOR_VERSION > 4
-     /* Added in release 2.5 */
-     0  //unaryfunc nb_index;  __index__
+    /* Added in release 2.5 */
+    0  //unaryfunc nb_index;  __index__
 #endif
 };
+#endif
 
 
 /////////////////////
@@ -1911,7 +2061,7 @@ CudaNdarray_len(PyObject * py_self)
 }
 
 // Will by called by __getitem__ in Python
-static PyObject *
+PyObject *
 CudaNdarray_Subscript(PyObject * py_self, PyObject * key)
 {
     int verbose = 0;
@@ -1992,7 +2142,7 @@ CudaNdarray_Subscript(PyObject * py_self, PyObject * key)
 
         int d_dim = CudaNdarray_HOST_DIMS(self)[0];
         Py_ssize_t start, stop, step, slen;
-        if (PySlice_GetIndicesEx((PySliceObject*)key, d_dim, &start, &stop, &step, &slen))
+        if (PySlice_GetIndicesEx(SLICE_CAST(key), d_dim, &start, &stop, &step, &slen))
         {
             if (verbose)
                 fprintf(stderr, "PySlice_GetIndicesEx failed\n");
@@ -2089,7 +2239,7 @@ CudaNdarray_Subscript(PyObject * py_self, PyObject * key)
                 if (PySlice_Check(key_d))
                 {
                     Py_ssize_t start, stop, step, slen;
-                    if (PySlice_GetIndicesEx((PySliceObject*)key_d, CudaNdarray_HOST_DIMS(self)[d], &start, &stop, &step, &slen))
+                    if (PySlice_GetIndicesEx(SLICE_CAST(key_d), CudaNdarray_HOST_DIMS(self)[d], &start, &stop, &step, &slen))
                     {
                         Py_DECREF(rval);
                         return NULL;
@@ -2369,8 +2519,58 @@ CudaNdarray_get_strides(CudaNdarray *self, void *closure)
 static int
 CudaNdarray_set_strides(CudaNdarray *self, PyObject *value, void *closure)
 {
-    PyErr_SetString(PyExc_NotImplementedError, "");
-    return -1;
+    //npy_intp newstrides_bytes[PyTuple_Size(value)];
+    if (PyTuple_Check(value)){
+        if (PyTuple_Size(value) != CudaNdarray_NDIM(self)){
+            PyErr_SetString(PyExc_ValueError,
+                            "The new strides tuple must have the same length"
+                            " as the number of dimensions");
+            return -1;
+        }
+    }else if (PyList_Check(value)){
+        if (PyList_Size(value) != CudaNdarray_NDIM(self)){
+            PyErr_SetString(PyExc_ValueError,
+                            "The new strides list must have the same length"
+                            " as the number of dimensions");
+            return -1;
+        }
+    }else{
+        PyErr_SetString(PyExc_ValueError,
+                        "The new strides need to be encoded in a tuple or list");
+        return -1;
+    }
+    npy_intp newstrides[CudaNdarray_NDIM(self)];
+    if (PyTuple_Check(value)){
+        for(int i=0; i < CudaNdarray_NDIM(self); i++){
+            newstrides[i] = PyInt_AsLong(PyTuple_GetItem(value, Py_ssize_t(i)));
+            //newstrides_bytes[i] = newstrides[i] * 4;
+        }
+    }else if (PyList_Check(value)){
+        for(int i=0; i < CudaNdarray_NDIM(self); i++){
+            newstrides[i] = PyInt_AsLong(PyList_GetItem(value, Py_ssize_t(i)));
+            //newstrides_bytes[i] = newstrides[i] * 4;
+        }
+    }
+    /*
+    // Do not do this check, as ExtractDiag needs that, and NumPy does not seem
+    // to do it.
+    npy_intp dims[PyTuple_Size(value)];
+    for(int i=0; i < CudaNdarray_NDIM(self); i++){
+        dims[i] = CudaNdarray_HOST_DIMS(self)[i];
+    }
+    if (!PyArray_CheckStrides(4,
+                              CudaNdarray_NDIM(self),
+                              0, 0,
+                              dims,
+                              newstrides_bytes)){
+        PyErr_SetString(PyExc_ValueError, "bad new strides");
+        return -1;
+        }
+    */
+    for(int i=0; i < CudaNdarray_NDIM(self); i++){
+        CudaNdarray_set_stride(self, i, newstrides[i]);
+    }
+    return 0;
 }
 
 static PyObject *
@@ -2539,6 +2739,7 @@ CudaNdarray_synchronize(PyObject* _unused, PyObject* dummy)
     Py_INCREF(Py_None);
     return Py_None;
 }
+
 #if COMPUTE_GPU_MEM_USED
 /*
  * Return the size in bytes that Theano currently have allocated on the gpu.
@@ -2546,7 +2747,13 @@ CudaNdarray_synchronize(PyObject* _unused, PyObject* dummy)
 PyObject *
 GetTheanoAllocInfo(PyObject* _unused, PyObject* dummy)
 {
-    return PyLong_FromLong(_allocated_size);
+    PyObject* a = PyLong_FromLong(_allocated_size);
+    PyObject* b = PyLong_FromLong(_max_allocated_size);
+
+    PyObject* tuple = PyTuple_New(2);
+    PyTuple_SetItem(tuple, 0, a);
+    PyTuple_SetItem(tuple, 1, b);
+    return tuple;
 }
 #endif
 
@@ -2557,6 +2764,11 @@ static PyGetSetDef CudaNdarray_getset[] = {
         "shape of this ndarray (tuple)",
         NULL},
     {"_strides",
+        (getter)CudaNdarray_get_strides,
+        (setter)CudaNdarray_set_strides,
+        "data pointer strides (in elements)",
+        NULL},
+    {"strides",
         (getter)CudaNdarray_get_strides,
         (setter)CudaNdarray_set_strides,
         "data pointer strides (in elements)",
@@ -2602,12 +2814,14 @@ static PyGetSetDef CudaNdarray_getset[] = {
     {NULL, NULL, NULL, NULL}  /* Sentinel */
 };
 
-
-
 static PyTypeObject CudaNdarrayType =
 {
+#if PY_MAJOR_VERSION >= 3
+    PyVarObject_HEAD_INIT(NULL, 0)
+#else
     PyObject_HEAD_INIT(NULL)
     0,                         /*ob_size*/
+#endif
     "CudaNdarray",             /*tp_name*/
     sizeof(CudaNdarray),       /*tp_basicsize*/
     0,                         /*tp_itemsize*/
@@ -2626,7 +2840,12 @@ static PyTypeObject CudaNdarrayType =
     0,                         /*tp_getattro*/
     0,                         /*tp_setattro*/
     0,                         /*tp_as_buffer*/
+#if PY_MAJOR_VERSION >= 3
+    // Py_TPFLAGS_CHECKTYPES is always true and was removed in Python 3.
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE, /*tp_flags*/
+#else
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_BASETYPE | Py_TPFLAGS_CHECKTYPES, /*tp_flags*/
+#endif
     "CudaNdarray objects",     /* tp_doc */
     0,                         /* tp_traverse */
     0,                         /* tp_clear */
@@ -2978,6 +3197,12 @@ filter(PyObject* __unsed_self, PyObject *args) // args = (data, broadcastable, s
                 Py_DECREF(py_data);
                 Py_DECREF(broadcastable);
                 return NULL;
+            }else if (CudaNdarray_HOST_DIMS(cnda)[i] == 1 && CudaNdarray_HOST_STRIDES(cnda)[i] != 0){
+                PyErr_Format(PyExc_TypeError, "Non-zeros strides(%d) on dimension %d of size 1",
+                             CudaNdarray_HOST_STRIDES(cnda)[i], i);
+                Py_DECREF(py_data);
+                Py_DECREF(broadcastable);
+                return NULL;
             }
         }
         Py_DECREF(broadcastable);
@@ -3053,21 +3278,53 @@ static PyMethodDef module_methods[] = {
 #ifndef PyMODINIT_FUNC  /* declarations for DLL import/export */
 #define PyMODINIT_FUNC void
 #endif
+
+#define CNDA_MOD_NAME "cuda_ndarray"
+#define CNDA_DOCSTRING "CUDA implementation of a numpy ndarray-like object."
+
+#if PY_MAJOR_VERSION == 3
+static struct PyModuleDef cuda_ndarray_moduledef =
+{
+    PyModuleDef_HEAD_INIT,
+    CNDA_MOD_NAME,
+    CNDA_DOCSTRING,
+    -1,     /* size of per-interpreter state of the module,
+               or -1 if the module keeps state in global variables. */
+    module_methods
+};
+
+PyMODINIT_FUNC
+PyInit_cuda_ndarray(void)
+#else
 PyMODINIT_FUNC
 initcuda_ndarray(void)
+#endif
 {
     import_array();
 
     PyObject* m;
 
-    if (PyType_Ready(&CudaNdarrayType) < 0)
+    if (PyType_Ready(&CudaNdarrayType) < 0) {
+#if PY_MAJOR_VERSION == 3
+        return NULL;
+#else
         return;
+#endif
+    }
 
-    m = Py_InitModule3("cuda_ndarray", module_methods,
-                       "Example module that creates an extension type.");
+#if PY_MAJOR_VERSION == 3
+    m = PyModule_Create(&cuda_ndarray_moduledef);
+#else
+    m = Py_InitModule3(CNDA_MOD_NAME, module_methods, CNDA_DOCSTRING);
+#endif
 
-    if (m == NULL)
+    if (m == NULL) {
+#if PY_MAJOR_VERSION == 3
+        return NULL;
+#else
         return;
+#endif
+    }
 
     Py_INCREF(&CudaNdarrayType);
     PyModule_AddObject(m, "CudaNdarray", (PyObject *)&CudaNdarrayType);
@@ -3092,6 +3349,10 @@ initcuda_ndarray(void)
             std::cerr << "Error in SetDevice:" << cudaGetErrorString(err) << "\n";
         }
     }
+
+#if PY_MAJOR_VERSION == 3
+    return m;
+#endif
 }
 
 
@@ -3110,7 +3371,7 @@ CudaNdarray_Check(const PyObject * ob)
 int
 CudaNdarray_CheckExact(const PyObject * ob)
 {
-    return ((ob->ob_type == &CudaNdarrayType) ? 1 : 0);
+    return ((Py_TYPE(ob) == &CudaNdarrayType) ? 1 : 0);
 }
 
 PyObject *

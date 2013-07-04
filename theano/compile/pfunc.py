@@ -3,12 +3,11 @@
 __docformat__ = 'restructuredtext en'
 
 
-from profiling import ProfileStats
-
 from theano import config
 from theano.compile import orig_function, In, Out
 from theano.compile import UnusedInputError
 from theano.compile.sharedvalue import SharedVariable, shared
+from theano.compile.profiling import ProfileStats
 from theano.gof import Variable, Constant
 from theano.gof.python25 import any
 
@@ -180,10 +179,11 @@ def rebuild_collect_shared(outputs,
     # it is also not clear when/how to use the value of that shared
     # variable (is it a default? ignored?, if the shared variable changes,
     # does that function default also change?).
-    if any([isinstance(v, SharedVariable) for v in input_variables]):
-        raise TypeError(('Cannot use a shared variable (%s) as explicit '
-                         'input. Consider substituting a non-shared'
-                         ' variable via the `givens` parameter') % v)
+    for v in input_variables:
+        if isinstance(v, SharedVariable):
+            raise TypeError(('Cannot use a shared variable (%s) as explicit '
+                             'input. Consider substituting a non-shared'
+                             ' variable via the `givens` parameter') % v)
 
     # Fill update_d and update_expr with provided updates
     if updates is None:
@@ -439,6 +439,11 @@ def pfunc(params, outputs=None, mode=None, updates=None, givens=None,
             and not isinstance(no_default_updates, list):
         raise TypeError("no_default_update should be either a boolean or a list")
 
+    if len(updates) > 0 and any(isinstance(v, Variable)
+                                for v in iter_over_pairs(updates)):
+        raise ValueError(
+            "The updates parameter must an OrderedDict/dict or a list of list/tuple with 2 elements")
+
     # transform params into theano.compile.In objects.
     inputs = [_pfunc_param_to_in(p, allow_downcast=allow_input_downcast)
               for p in params]
@@ -479,7 +484,7 @@ def pfunc(params, outputs=None, mode=None, updates=None, givens=None,
                                          in_variables,
                                          replace=givens,
                                          updates=updates,
-                                         rebuild_strict=True,
+                                         rebuild_strict=rebuild_strict,
                                          copy_inputs_over=True,
                                          no_default_updates=no_default_updates)
     # extracting the arguments

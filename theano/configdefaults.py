@@ -131,9 +131,10 @@ else:
     enum = EnumStr("")
 
 AddConfigVar('cxx',
-             "The c++ compiler to use. Currently only g++ is"
-             " supported. But supporting more is easy if someone want this."
-             "If it is empty, we don't compile c++ code.",
+             "The C++ compiler to use. Currently only g++ is"
+             " supported, but supporting additional compilers should not be "
+             "too difficult. "
+             "If it is empty, no C++ code is compiled.",
              enum,
              in_c_key=False)
 del enum
@@ -157,9 +158,9 @@ AddConfigVar('optimizer',
         in_c_key=False)
 
 AddConfigVar('on_opt_error',
-        ("What to do when an optimization crashes: warn and skip it, or raise "
-         "the exception"),
-        EnumStr('warn', 'raise'),
+        ("What to do when an optimization crashes: warn and skip it, raise "
+         "the exception, or fall into the pdb debugger."),
+        EnumStr('warn', 'raise', 'pdb'),
         in_c_key=False)
 
 
@@ -233,7 +234,8 @@ AddConfigVar('op.set_flops',
 
 AddConfigVar('gpuelemwise.sync',
         "when true, wait that the gpu fct finished and check it error code.",
-        BoolParam(True))
+        BoolParam(True),
+        in_c_key=False)
 
 AddConfigVar('traceback.limit',
              "The number of stack to trace. -1 mean all.",
@@ -420,8 +422,8 @@ else:
                         " want theano to use.")
     default_openmp = count > 1
 
-# Disable it by default for now as currently only the ConvOp support
-# it And this cause slow down by default as we do not disable it for
+# Disable it by default for now as currently only the ConvOp supports
+# it, and this causes slowdown by default as we do not disable it for
 # too small convolution.
 default_openmp = False
 

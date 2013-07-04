@@ -5,21 +5,21 @@ amount of useful generic optimization tools.
 
 import copy
 import logging
+import pdb
 import sys
 import time
 
 import numpy
 
-import graph
-from fg import InconsistencyError
-import op
-import utils
-import unify
-import toolbox
+from theano.gof import graph
+from theano.gof.fg import InconsistencyError
+from theano.gof import op
+from theano.gof import utils
+from theano.gof import unify
+from theano.gof import toolbox
 import theano
 from theano import config
 from theano.gof.python25 import any, all, deque
-from theano.configparser import AddConfigVar, BoolParam
 
 #if sys.version_info[:2] >= (2,5):
 #  from collections import defaultdict
@@ -49,6 +49,16 @@ class Optimizer(object):
             self._optimizer_idx = _optimizer_idx[0]
             _optimizer_idx[0] += 1
         return self._optimizer_idx
+
+    def __eq__(self, other):
+        # added to override the  __eq__ implementation that may be inherited
+        # in subclasses from other bases.
+        return id(self) == id(other)
+
+    def __neq__(self, other):
+        # added to override the  __neq__ implementation that may be inherited
+        # in subclasses from other bases.
+        return id(self) != id(other)
 
     def apply(self, fgraph):
         """WRITEME
@@ -138,6 +148,8 @@ class SeqOptimizer(Optimizer, list):
         _logger.error(traceback.format_exc())
         if config.on_opt_error == 'raise':
             raise exc
+        elif config.on_opt_error == 'pdb':
+            pdb.post_mortem(sys.exc_info()[2])
 
     def __init__(self, *opts, **kw):
         """WRITEME"""
@@ -177,14 +189,6 @@ class SeqOptimizer(Optimizer, list):
             validate_time = None
         return (self, l, validate_time, nb_node_before,
                 len(fgraph.apply_nodes), sub_profs)
-
-    def __eq__(self, other):
-        #added to override the list's __eq__ implementation
-        return id(self) == id(other)
-
-    def __neq__(self, other):
-        #added to override the list's __neq__ implementation
-        return id(self) != id(other)
 
     def __str__(self):
         return "SeqOpt(%s)" % list.__str__(self)
@@ -270,7 +274,7 @@ class SeqOptimizer(Optimizer, list):
                 new_sub_profile.append(None)
 
         # merge not common opt
-        import StringIO
+        from theano.compat.six import StringIO
         for l in set(prof1[0]).symmetric_difference(set(prof2[0])):
             #The set trick above only work for the same object optimization
             #It don't work for equivalent optimization.
@@ -278,8 +282,8 @@ class SeqOptimizer(Optimizer, list):
             new_l_names = [o.name for o in new_l]
             if l.name in new_l_names:
                 idx = new_l_names.index(l.name)
-                io1 = StringIO.StringIO()
-                io2 = StringIO.StringIO()
+                io1 = StringIO()
+                io2 = StringIO()
                 l.print_summary(io1)
                 new_l[idx].print_summary(io2)
                 if io1.read() == io2.read():
@@ -1083,7 +1087,11 @@ class NavigatorOptimizer(Optimizer):
         _logger.error("Optimization failure due to: %s" % str(local_opt))
         _logger.error("TRACEBACK:")
         _logger.error(traceback.format_exc())
-        if isinstance(exc, AssertionError) or config.on_opt_error == 'raise':
+        if config.on_opt_error == 'pdb':
+            pdb.post_mortem(sys.exc_info()[2])
+        elif isinstance(exc, AssertionError) or config.on_opt_error == 'raise':
+            # We always crash on AssertionError because something may be
+            # seriously wrong if such an exception is raised.
             raise exc
 
     @staticmethod

@@ -64,13 +64,13 @@ def check_equal(x, y):
 # Mode, it will be used as the key to retrieve the real linker in this
 # dictionary
 predefined_linkers = {
-    'py': gof.PerformLinker(),
-    'c': gof.CLinker(),
-    'c|py': gof.OpWiseCLinker(),
+    'py': gof.PerformLinker(),  # Use allow_gc Theano flag
+    'c': gof.CLinker(),  # Don't support gc. so don't check allow_gc
+    'c|py': gof.OpWiseCLinker(),  # Use allow_gc Theano flag
     'c|py_nogc': gof.OpWiseCLinker(allow_gc=False),
-    'c&py': gof.DualLinker(checker=check_equal),
-    'vm': gof.vm.VM_Linker(use_cloop=False),
-    'cvm': gof.vm.VM_Linker(use_cloop=True),
+    'c&py': gof.DualLinker(checker=check_equal),  # Deprecated
+    'vm': gof.vm.VM_Linker(use_cloop=False),  # Use allow_gc Theano flag
+    'cvm': gof.vm.VM_Linker(use_cloop=True),  # Use allow_gc Theano flag
     'vm_nogc': gof.vm.VM_Linker(allow_gc=False, use_cloop=False),
     'cvm_nogc': gof.vm.VM_Linker(allow_gc=False, use_cloop=True),
     }
@@ -86,7 +86,7 @@ def register_linker(name, linker):
 # If a string is passed as the optimizer argument in the constructor
 # for Mode, it will be used as the key to retrieve the real optimizer
 # in this dictionary
-exclude=[]
+exclude = []
 if not theano.config.cxx:
     exclude = ['cxx_only']
 OPT_FAST_RUN = gof.Query(include=['fast_run'], exclude=exclude)
@@ -120,7 +120,7 @@ def register_optimizer(name, opt):
 class AddDestroyHandler(gof.Optimizer):
     """This optimizer performs two important functions:
 
-    1) it has a 'requirement' of the destroyhandler.  This means that the fgraph
+    1) It has a 'requirement' of the destroyhandler. This means that the fgraph
     will include it as a feature for this optimization, and keep this feature
     enabled for subsequent optimizations.  All optimizations that work inplace
     on any of their inputs must run *after* this optimization to ensure that

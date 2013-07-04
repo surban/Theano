@@ -39,9 +39,15 @@ probably do something similar on older computer.
 Installation steps
 ~~~~~~~~~~~~~~~~~~
 
-Ubuntu 11.10/12.04/12.10:
+Ubuntu 11.10/12.04/12.10/13.04:
  1) ``sudo apt-get install python-numpy python-scipy python-dev python-pip python-nose g++ libopenblas-dev git``
  2) ``sudo pip install Theano``
+
+ If the packages ``libatlas3gf-base`` or ``libatlas-dev`` are already installed, there will be problems as they conflict with ``libopenblas-dev``.
+ If you see NumPy errors, the simplest is to remove ``libopenblas-dev`` and its dependency ``libopenblas-base`` like this: ``sudo apt-get remove libopenblas-base``.
+ The ideal would be that you remove ``libatlas3gf-base`` and ``libatlas-dev``,
+ but you will need to reinstall python-numpy, python-scipy and all other packages that used it.
+ OpenBLAS is faster then ATLAS most of the time and it allows to control the number of threads used during the execution.
 
 Ubuntu 11.04:
  1) ``sudo apt-get install python-numpy python-scipy python-dev python-pip python-nose g++ git libatlas3gf-base libatlas-dev``
@@ -56,6 +62,13 @@ Test the newly installed packages
  2) SciPy (~1m): ``python -c "import scipy; scipy.test()"``
  3) Theano (~30m): ``python -c "import theano; theano.test()"``
 
+NumPy 1.6.2, 1.7.0 and 1.7.1, have a bug where it marks some ndarrays
+as not aligned. Theano does not support unaligned arrays, and raises
+an Exception when that happens.  This can cause one test to fail with
+an unaligned error with those versions of NumPy. You can ignore that
+test error as at worst, your code will crash. If this happens, you can
+install another NumPy version to fix this problem. NumPy 1.6.2 is used
+in Ubuntu 12.10 and NumPy 1.7.1 is used in Ubuntu 13.04.
 
 Speed test Theano/BLAS
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -109,6 +122,8 @@ Do like in the section "Updating Theano", but use
 ``git+git://github.com/Theano/Theano.git`` instead of ``theano``.
 
 
+.. _install_ubuntu_gpu:
+
 Contributed GPU instruction
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -133,7 +148,7 @@ Then you install it like this:
     sudo ./XXX.sh
 
 You probably need to change the default version of gcc as 
-`explained by Benjamin J. McCann <http://www.benmccann.com/dev-blog/installing-cuda-and-theano/>`_:
+`explained by Benjamin J. McCann <http://www.benmccann.com/blog/installing-cuda-and-theano/>`_:
 
 
 

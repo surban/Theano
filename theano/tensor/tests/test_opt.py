@@ -2,7 +2,6 @@
 
 import copy
 import logging
-import StringIO
 import time
 import unittest
 
@@ -13,6 +12,7 @@ from numpy.testing.noseclasses import KnownFailureTest
 
 import theano
 import theano.scalar as scal
+from theano.compat.six import StringIO
 from theano import compile
 from theano.compile import deep_copy_op, DeepCopyOp
 from theano import config
@@ -742,7 +742,7 @@ class test_canonize(unittest.TestCase):
         This bug caused an infinite loop which was caught by the equilibrium
         optimizer, resulting in an error log message.
         """
-        sio = StringIO.StringIO()
+        sio = StringIO()
         handler = logging.StreamHandler(sio)
         handler.setLevel(logging.ERROR)
         logging.getLogger('theano.gof.opt').addHandler(handler)
@@ -780,6 +780,19 @@ def test_local_merge_abs():
     theano.printing.debugprint(f)
     assert isinstance(f.maker.fgraph.toposort()[1].op.scalar_op, scal.Abs)
     assert len(f.maker.fgraph.toposort()) == 2
+
+
+def test_merge_abs_bugfix():
+    # Test crash in optimization reported by Jeremiah Lowin at
+    # https://groups.google.com/d/topic/theano-users/TaXfqXP2Mj0/discussion
+    input = T.matrix()
+    # normalize on cols
+    step1 = input / input.sum(0)
+    # normalize on rows
+    step2 = step1 / step1.sum(1)
+    # get l1 norm
+    l1_norm = T.abs_(step2).sum()
+    theano.function([input], T.grad(l1_norm, input))
 
 
 def test_mixeddiv():
@@ -862,8 +875,8 @@ class test_fusion(unittest.TestCase):
                 fyv * fzv, 'float32'),  # 2
             (fx * fy + fz, (fx, fy, fz), (fxv, fyv, fzv), 1, fxv *
                 fyv + fzv, 'float32'),  # 3
-            (fw + fx + fy + fz, (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1, fwv +
-                fxv + fyv + fzv, 'float32'),
+            (fw + fx + fy + fz, (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1,
+                 fwv + fxv + fyv + fzv, 'float32'),
             ((fw + fx) + (fy + fz), (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1,
                 fwv + fxv + fyv + fzv, 'float32'),  # 5
             (((fw + fx) + fy) + fz, (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1,
@@ -873,29 +886,29 @@ class test_fusion(unittest.TestCase):
             ((fw + (fx + fy) + fz), (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1,
                 fwv + fxv + fyv + fzv, 'float32'),
             (fw + (fx + (fy + fz)), (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1,
-                fwv + fxv + fyv +fzv, 'float32'),
+                fwv + fxv + fyv + fzv, 'float32'),
             ((fw+fx)+(fy+fz), (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1,
                 fwv+fxv+fyv+fzv, 'float32'),  # 10
-            (fw*fx*fy*fz, (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1, fwv*
-                fxv*fyv*fzv, 'float32'),
-            (fw+fx*fy*fz, (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1, fwv+
-                fxv*fyv*fzv, 'float32'),
+            (fw*fx*fy*fz, (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1,
+                fwv * fxv * fyv * fzv, 'float32'),
+            (fw+fx*fy*fz, (fw, fx, fy, fz), (fwv, fxv, fyv, fzv), 1,
+                fwv + fxv * fyv * fzv, 'float32'),
             (fx+fy*fz*fx, (fx, fy, fz), (fxv, fyv, fzv), 1,
-                 fxv+fyv*fzv*fxv, 'float32'),
+                fxv + fyv * fzv * fxv, 'float32'),
             (fx*fy+fz+fy, (fx, fy, fz), (fxv, fyv, fzv), 1,
-                 fxv*fyv+fzv+fyv, 'float32'),
+                fxv * fyv + fzv + fyv, 'float32'),
             (fx*fy*fz*fw+fx+fy+fz+fw, (fw, fx, fy, fz), (fwv, fxv,
                 fyv, fzv), 1, fxv*fyv*fzv*fwv+fxv+fyv+fzv+fwv, 'float32'),  # 15
             #test with constant
-            ((fw+fx)+(fy+fz)+ 2,(fw,fx,fy,fz),(fwv,fxv,fyv,fzv)
-                ,1,fwv+fxv+fyv+fzv+2,'float32'),
-            (((fw+fx)+2+fy)+fz,(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
+            ((fw+fx)+(fy+fz)+ 2.,(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
                 1,fwv+fxv+fyv+fzv+2,'float32'),
-            ((fw+(fx+2+fy))+fz,(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
+            (((fw+fx)+2.+fy)+fz,(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
+                1,fwv+fxv+fyv+fzv+2,'float32'),
+            ((fw+(fx+2.+fy))+fz,(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
                 1,fwv+fxv+fyv+fzv+2,'float32'),
             ((fw+(fx+fy)+2+fz),(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
                 1,fwv+fxv+fyv+fzv+2,'float32'),
-            (fw+(fx+(fy+fz)+2),(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
+            (fw+(fx+(fy+fz)+2.),(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
                 1,fwv+fxv+fyv+fzv+2,'float32'),  # 20
             (2+(fw+fx)+(fy+fz),(fw,fx,fy,fz),(fwv,fxv,fyv,fzv),
                 1,fwv+fxv+fyv+fzv+2,'float32'),
@@ -1014,16 +1027,18 @@ class test_fusion(unittest.TestCase):
         fail2 = []
         fail3 = []
         fail4 = []
-        for id, [g, sym_inputs, val_inputs, nb_elemwise, answer, out_dtype] in enumerate(cases):
+        for id, [g, sym_inputs, val_inputs,
+                 nb_elemwise, answer, out_dtype] in enumerate(cases):
             if isinstance(out_dtype, dict):
                 out_dtype = out_dtype[config.cast_policy]
-            if gpu and (out_dtype!='float32' or any(i.dtype != 'float32' for i in g.owner.inputs)):
+            if (gpu and (out_dtype != 'float32' or
+                         any(i.dtype != 'float32' for i in g.owner.inputs))):
                 print "Skip test %d as the gpu code currently supports only float32" % id
                 continue
             print "new cases", id
 
             if shared_fn is None:
-                assert gpu == False
+                assert gpu is False
                 f = compile.function(list(sym_inputs), g, mode=mode)
                 for x in range(nb_repeat):
                     out = f(*val_inputs)
@@ -2523,7 +2538,11 @@ class test_shapeoptimizer(unittest.TestCase):
         rng = numpy.random.RandomState(utt.fetch_seed())
         a = shared(rng.rand(*shp).astype(config.floatX))
         out = self.max_pool_c01b(a, 1, 1, 1)
-        f = theano.function([], out)
+
+        #max_pool_c01b use -inf and this will trigger DebugMode error.
+        mode = copy.copy(theano.compile.get_default_mode())
+        mode.check_isfinite = False
+        f = theano.function([], out, mode=mode)
         f()
 
     def test_local_track_shape_i(self):
@@ -3454,7 +3473,7 @@ class T_local_sum(unittest.TestCase):
 
     def test_local_sum_all_to_none(self):
         a = T.tensor3()
-        input = numpy.arange(3 * 3 * 3, dtype=config.floatX).reshape(3, 3, 3)
+        input = numpy.arange(3 * 4 * 5, dtype=config.floatX).reshape(3, 4, 5)
         f = theano.function([a], a.sum(), mode=self.mode)
         assert len(f.maker.fgraph.apply_nodes) == 1
         assert numpy.allclose(f(input), input.sum())
@@ -3474,36 +3493,50 @@ class T_local_sum(unittest.TestCase):
 
     def test_local_sum_sum(self):
         a = T.tensor3()
-        input = numpy.arange(3 * 3 * 3, dtype=config.floatX).reshape(3, 3, 3)
-        dims = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]
+        input = numpy.arange(3 * 4 * 5, dtype=config.floatX).reshape(3, 4, 5)
+        dims = [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1),
+                ((0, 1), 0), ((1, 2), 0), (0, (0, 1)),
+                (1, (0, 1)), (2, (0, 1))]
 
         backup = config.warn.sum_sum_bug
         config.warn.sum_sum_bug = False
+
+        def my_sum(data, d, dd):
+            # This sum when d or dd is a tuple of 2 dimensions.
+            if not isinstance(d, tuple) and not isinstance(dd, tuple):
+                return data.sum(d).sum(dd)
+            if isinstance(d, tuple):
+                d = sorted(d)
+                return data.sum(d[1]).sum(d[0]).sum(dd)
+            else:
+                dd = sorted(dd)
+                return data.sum(d).sum(dd[1]).sum(dd[0])
+
         try:
             for d, dd in dims:
+                expected = my_sum(input, d, dd)
                 f = theano.function([a], a.sum(d).sum(dd), mode=self.mode)
-                assert numpy.allclose(f(input), input.sum(d).sum(dd))
+                assert numpy.allclose(f(input), expected)
                 assert len(f.maker.fgraph.apply_nodes) == 1
-            for d, dd in dims:
+            for d, dd in dims[:6]:
                 f = theano.function([a], a.sum(d).sum(dd).
-                    sum(0), mode=self.mode)
+                                    sum(0), mode=self.mode)
                 assert numpy.allclose(f(input), input.sum(d).sum(dd).sum(0))
                 assert len(f.maker.fgraph.apply_nodes) == 1
             for d in [0, 1, 2]:
                 f = theano.function([a], a.sum(d).sum(None), mode=self.mode)
                 assert numpy.allclose(f(input), input.sum(d).sum())
                 assert len(f.maker.fgraph.apply_nodes) == 1
-            for d in [0, 1, 2]:
-                f = theano.function([a], a.sum(None).sum(), mode=self.mode)
-                assert numpy.allclose(f(input), input.sum())
-                assert len(f.maker.fgraph.apply_nodes) == 1
+            f = theano.function([a], a.sum(None).sum(), mode=self.mode)
+            assert numpy.allclose(f(input), input.sum())
+            assert len(f.maker.fgraph.apply_nodes) == 1
         finally:
             config.warn.sum_sum_bug = backup
 
     def test_local_sum_alloc(self):
         a = T.dtensor3()
         input = numpy.asarray(numpy.arange(2 * 3 * 4).reshape(2, 3, 4),
-             dtype='float64')
+                              dtype='float64')
         mode = self.mode.including('specialize').excluding('fusion')
 
         for t_like,n_like,nb_nodes in [(tensor.zeros_like,numpy.zeros_like,(1,3,3,2)),
@@ -3537,14 +3570,14 @@ class T_local_sum(unittest.TestCase):
             try:
                 for d, dd in [(0, 0), (1, 0), (2, 0), (0, 1), (1, 1), (2, 1)]:
                     f = theano.function([a], t_like(a).
-                        sum(d).sum(dd), mode=mode)
+                                        sum(d).sum(dd), mode=mode)
                     assert numpy.allclose(f(input),
-                        n_like(input).sum(d).sum(dd))
+                                          n_like(input).sum(d).sum(dd))
                     assert len(f.maker.fgraph.apply_nodes) == nb_nodes[3]
                     topo = f.maker.fgraph.toposort()
                     assert topo[-1].op == T.alloc
                     assert not any([isinstance(node.op,
-                         T.Sum) for node in topo])
+                                               T.Sum) for node in topo])
             finally:
                 config.warn.sum_sum_bug = backup
 
@@ -3967,6 +4000,35 @@ def test_local_div_to_inv():
     out_val = f(3, 2.)
     assert out_val.shape == (1, 3)
     assert numpy.allclose(out_val, 0.5)
+
+
+def test_local_flatten_lift():
+    for i in range(1, 4):
+        op = tensor.Flatten(i)
+        x = tensor.tensor4()
+        out = op(T.exp(x))
+        assert out.ndim == i
+        mode = compile.mode.get_default_mode()
+        mode = mode.including('local_flatten_lift')
+        f = theano.function([x], out, mode=mode)
+        f(numpy.random.rand(5, 4, 3, 2).astype(config.floatX))
+        topo = f.maker.fgraph.toposort()
+        assert len(topo) == 2
+        assert isinstance(topo[0].op, tensor.Flatten)
+        assert isinstance(topo[1].op, tensor.Elemwise)
+
+
+def test_local_reshape_lift():
+    x = tensor.tensor4()
+    out = T.exp(x).reshape([x.size])
+    assert out.ndim == 1
+    mode = compile.mode.get_default_mode()
+    mode = mode.including('local_reshape_lift')
+    f = theano.function([x], out, mode=mode)
+    f(numpy.random.rand(5, 4, 3, 2).astype(config.floatX))
+    topo = f.maker.fgraph.toposort()
+    assert isinstance(topo[-2].op, tensor.Reshape)
+    assert isinstance(topo[-1].op, tensor.Elemwise)
 
 
 class Test_lift_transpose_through_dot(unittest.TestCase):

@@ -131,6 +131,7 @@ import time
 
 import numpy
 import numpy.distutils
+import numpy.distutils.__config__
 
 from theano.configparser import config, AddConfigVar, StrParam
 from theano.gof import (utils, Op, view_roots, DestroyHandler,
@@ -138,15 +139,123 @@ from theano.gof import (utils, Op, view_roots, DestroyHandler,
                         InconsistencyError, toolbox, SequenceDB,
                         EquilibriumOptimizer, Apply,
                         ReplacementDidntRemovedError)
+from theano.gof.cmodule import GCC_compiler
 from theano.printing import pprint, FunctionPrinter, debugprint
 from theano.compile.mode import optdb
 from theano.gof.python25 import all, any
 import theano.scalar
 from theano.tensor import basic as T
 from theano.tensor.blas_headers import blas_header_text
+from theano.tensor.blas_headers import blas_header_version
 from theano.tensor.opt import local_dimshuffle_lift
 
 _logger = logging.getLogger('theano.tensor.blas')
+
+
+# We need to define blas.ldflag before we try to import scipy.
+# Otherwise, we give an optimization warning for no reason in some cases.
+def default_blas_ldflags():
+    try:
+        # If we are in a EPD installation, mkl is available
+        blas_info = numpy.distutils.__config__.blas_opt_info
+        if "EPD" in sys.version:
+            use_unix_epd = True
+            if sys.platform == 'win32':
+                return ' '.join(
+                    ['-L%s' % os.path.join(sys.prefix, "Scripts")] +
+                    # Why on Windows, the library used are not the
+                    # same as what is in
+                    # blas_info['libraries']?
+                    ['-l%s' % l for l in ["mk2_core", "mk2_intel_thread",
+                                          "mk2_rt"]])
+            elif sys.platform == 'darwin':
+                # The env variable is needed to link with mkl
+                new_path = os.path.join(sys.prefix, "lib")
+                v = os.getenv("DYLD_FALLBACK_LIBRARY_PATH", None)
+                if v is not None:
+                    # Explicit version could be replaced by a symbolic
+                    # link called 'Current' created by EPD installer
+                    # This will resolve symbolic links
+                    v = os.path.realpath(v)
+
+                # The python __import__ don't seam to take into account
+                # the new env variable "DYLD_FALLBACK_LIBRARY_PATH"
+                # when we set with os.environ['...'] = X or os.putenv()
+                # So we warn the user and tell him what todo.
+                if v is None or new_path not in v.split(":"):
+                    _logger.warning(
+                        "The environment variable "
+                        "'DYLD_FALLBACK_LIBRARY_PATH' does not contain "
+                        "the '%s' path in its value. This will make "
+                        "Theano use a slow version of BLAS. Update "
+                        "'DYLD_FALLBACK_LIBRARY_PATH' to contain the "
+                        "said value, this will disable this warning."
+                        % new_path)
+
+                    use_unix_epd = False
+            if use_unix_epd:
+                return ' '.join(
+                    ['-L%s' % os.path.join(sys.prefix, "lib")] +
+                    ['-l%s' % l for l in blas_info['libraries']])
+        #Canopy
+        if "Canopy" in sys.prefix:
+            if sys.platform == "darwin":
+                p2 = os.path.join(sys.base_prefix, "lib")
+                assert os.path.exists(p2), "Canopy changed the location of MKL"
+                return ' '.join(
+                    ['-L%s' % p2] +
+                    ['-l%s' % l for l in blas_info['libraries']])
+
+            p = os.path.join(sys.base_prefix, "..", "..", "appdata")
+            assert os.path.exists(p), "Canopy changed the location of MKL"
+            p2 = os.listdir(p)
+            assert len(p2) == 1, "Canopy changed the location of MKL"
+            if sys.platform == "linux2":
+                p2 = os.path.join(p, p2[0], "lib")
+                assert os.path.exists(p2), "Canopy changed the location of MKL"
+                return ' '.join(
+                    ['-L%s' % p2] +
+                    ['-l%s' % l for l in blas_info['libraries']])
+            elif sys.platform == 'win32':
+                p2 = os.path.join(p, p2[0], "Scripts")
+                assert os.path.exists(p2), "Canopy changed the location of MKL"
+                return ' '.join(
+                    ['-L%s' % p2] +
+                    # Why on Windows, the library used are not the
+                    # same as what is in blas_info['libraries']?
+                    ['-l%s' % l for l in ["mk2_core", "mk2_intel_thread",
+                                          "mk2_rt"]])
+
+        #if numpy was linked with library that are not installed, we
+        #can't reuse them.
+        if any(os.path.exists(dir) for dir in blas_info['library_dirs']):
+            return ' '.join(
+                        #TODO: the Gemm op below should separate the
+                        # -L and -l arguments into the two callbacks
+                        # that CLinker uses for that stuff.  for now,
+                        # we just pass the whole ldflags as the -l
+                        # options part.
+                        ['-L%s' % l for l in blas_info['library_dirs']] +
+                        ['-l%s' % l for l in blas_info['libraries']] +
+                        [])
+#                       ['-I%s' % l for l in blas_info['include_dirs']])
+    except KeyError:
+        pass
+
+    # Even if we could not detect what was used for numpy, or if these
+    # libraries are not found, most Linux systems have a libblas.so
+    # readily available. We try to see if that's the case, rather
+    # than disable blas.
+    if GCC_compiler.try_flags(["-lblas"]):
+        return "-lblas"
+    else:
+        return ""
+
+
+AddConfigVar('blas.ldflags',
+        "lib[s] to include for [Fortran] level-3 blas implementation",
+        StrParam(default_blas_ldflags))
+
 
 try:
     import scipy.linalg.blas
@@ -166,8 +275,16 @@ try:
             }
 except ImportError, e:
     have_fblas = False
-    _logger.warning('Failed to import scipy.linalg.blas. '
-            'Falling back on slower implementations (%s)', str(e))
+    # This is used in Gemv and ScipyGer. We use CGemv and CGer
+    # when theano.config.blas.ldflags is defined. So we don't need a
+    # warning in that case.
+    if not config.blas.ldflags:
+        _logger.warning('Failed to import scipy.linalg.blas, and '
+                        'Theano flag blas.ldflags is empty. '
+                        'Falling back on slower implementations for '
+                        'dot(matrix, vector), dot(vector, matrix) and '
+                        'dot(vector, vector) (%s)',
+                        str(e))
 
 
 class Gemv(Op):
@@ -256,6 +373,7 @@ gemv_inplace = Gemv(inplace=True)
 # For the user interface. Opt will make them inplace later
 gemv = gemv_no_inplace
 
+
 class Ger(Op):
     """
     BLAS defines general rank-1 update GER as A <- A + alpha x y'
@@ -324,73 +442,6 @@ class Ger(Op):
 
 ger = Ger(destructive=False)
 ger_destructive = Ger(destructive=True)
-
-
-def default_blas_ldflags():
-    try:
-        # If we are in a EPD installation, mkl is available
-        blas_info = numpy.distutils.__config__.blas_opt_info
-        if "EPD" in sys.version:
-            use_unix_epd = True
-            if sys.platform == 'win32':
-                return ' '.join(
-                    ['-L%s' % os.path.join(sys.prefix, "Scripts")] +
-                    # Why on Windows, the library used are not the
-                    # same as what is in
-                    # blas_info['libraries']?
-                    ['-l%s' % l for l in ["mk2_core", "mk2_intel_thread",
-                                          "mk2_rt"]])
-            elif sys.platform == 'darwin':
-                # The env variable is needed to link with mkl
-                new_path = os.path.join(sys.prefix, "lib")
-                v = os.getenv("DYLD_FALLBACK_LIBRARY_PATH", None)
-                if v is not None:
-                    # Explicit version could be replaced by a symbolic
-                    # link called 'Current' created by EPD installer
-                    # This will resolve symbolic links
-                    v = os.path.realpath(v)
-
-                # The python __import__ don't seam to take into account
-                # the new env variable "DYLD_FALLBACK_LIBRARY_PATH"
-                # when we set with os.environ['...'] = X or os.putenv()
-                # So we warn the user and tell him what todo.
-                if v is None or new_path not in v.split(":"):
-                    _logger.warning(
-                        "The environment variable "
-                        "'DYLD_FALLBACK_LIBRARY_PATH' does not contain "
-                        "the '%s' path in its value. This will make "
-                        "Theano use a slow version of BLAS. Update "
-                        "'DYLD_FALLBACK_LIBRARY_PATH' to contain the "
-                        "said value, this will disable this warning."
-                        % new_path)
-
-
-                    use_unix_epd = False
-            if use_unix_epd:
-                return ' '.join(
-                    ['-L%s' % os.path.join(sys.prefix, "lib")] +
-                    ['-l%s' % l for l in blas_info['libraries']])
-
-        #if numpy was linked with library that are not installed, we
-        #can't reuse them.
-        if all(not os.path.exists(dir) for dir in blas_info['library_dirs']):
-            return "-lblas"
-        return ' '.join(
-                        #TODO: the Gemm op below should separate the
-                        # -L and -l arguments into the two callbacks
-                        # that CLinker uses for that stuff.  for now,
-                        # we just pass the whole ldflags as the -l
-                        # options part.
-                        ['-L%s' % l for l in blas_info['library_dirs']] +
-                        ['-l%s' % l for l in blas_info['libraries']] +
-                        [])
-#                       ['-I%s' % l for l in blas_info['include_dirs']])
-    except KeyError:
-        return "-lblas"
-
-AddConfigVar('blas.ldflags',
-        "lib[s] to include for [Fortran] level-3 blas implementation",
-        StrParam(default_blas_ldflags()))
 
 
 @utils.memoize
@@ -717,17 +768,28 @@ class GemmRelated(Op):
                 //);
                 switch(unit)
                 {
-                    case 0x000: dgemm_(&N, &N, &Nz1, &Nz0, &Nx1, &a, y, &sy_0, x, &sx_0, &b, z, &sz_0); break;
-                    case 0x100: dgemm_(&N, &T, &Nz1, &Nz0, &Nx1, &a, y, &sy_0, x, &sx_1, &b, z, &sz_0); break;
-                    case 0x010: dgemm_(&T, &N, &Nz1, &Nz0, &Nx1, &a, y, &sy_1, x, &sx_0, &b, z, &sz_0); break;
-                    case 0x110: dgemm_(&T, &T, &Nz1, &Nz0, &Nx1, &a, y, &sy_1, x, &sx_1, &b, z, &sz_0); break;
-                    case 0x001: dgemm_(&T, &T, &Nz0, &Nz1, &Nx1, &a, x, &sx_0, y, &sy_0, &b, z, &sz_1); break;
-                    case 0x101: dgemm_(&N, &T, &Nz0, &Nz1, &Nx1, &a, x, &sx_1, y, &sy_0, &b, z, &sz_1); break;
-                    case 0x011: dgemm_(&T, &N, &Nz0, &Nz1, &Nx1, &a, x, &sx_0, y, &sy_1, &b, z, &sz_1); break;
-                    case 0x111: dgemm_(&N, &N, &Nz0, &Nz1, &Nx1, &a, x, &sx_1, y, &sy_1, &b, z, &sz_1); break;
-                    default: PyErr_SetString(PyExc_ValueError, "some matrix has no unit stride"); %(fail)s;
+                    case 0x000: dgemm_(&N, &N, &Nz1, &Nz0, &Nx1, &a, y,
+                                       &sy_0, x, &sx_0, &b, z, &sz_0); break;
+                    case 0x100: dgemm_(&N, &T, &Nz1, &Nz0, &Nx1, &a, y,
+                                       &sy_0, x, &sx_1, &b, z, &sz_0); break;
+                    case 0x010: dgemm_(&T, &N, &Nz1, &Nz0, &Nx1, &a, y,
+                                       &sy_1, x, &sx_0, &b, z, &sz_0); break;
+                    case 0x110: dgemm_(&T, &T, &Nz1, &Nz0, &Nx1, &a, y,
+                                       &sy_1, x, &sx_1, &b, z, &sz_0); break;
+                    case 0x001: dgemm_(&T, &T, &Nz0, &Nz1, &Nx1, &a, x,
+                                       &sx_0, y, &sy_0, &b, z, &sz_1); break;
+                    case 0x101: dgemm_(&N, &T, &Nz0, &Nz1, &Nx1, &a, x,
+                                       &sx_1, y, &sy_0, &b, z, &sz_1); break;
+                    case 0x011: dgemm_(&T, &N, &Nz0, &Nz1, &Nx1, &a, x,
+                                       &sx_0, y, &sy_1, &b, z, &sz_1); break;
+                    case 0x111: dgemm_(&N, &N, &Nz0, &Nz1, &Nx1, &a, x,
+                                       &sx_1, y, &sy_1, &b, z, &sz_1); break;
+                    default: PyErr_SetString(PyExc_ValueError,
+                                             "some matrix has no unit stride");
+                             %(fail)s;
                 };
-                //fprintf(stderr, "Calling dgemm %%i %%i %%i %%i took %%f\\n", unit, Nz1, Nz0, Nx1, time_time()- t0);
+                //fprintf(stderr, "Calling dgemm %%i %%i %%i %%i took %%f\\n",
+                //        unit, Nz1, Nz0, Nx1, time_time()- t0);
         """
 
     end_switch_typenum = """
@@ -758,7 +820,7 @@ class GemmRelated(Op):
             self.end_switch_typenum), '')
 
     def build_gemm_version(self):
-        return (12,)
+        return (12, blas_header_version())
 
 
 class Gemm(GemmRelated):
@@ -1887,9 +1949,9 @@ def local_dot22_to_dot22scalar(node):
 
     scalar_idx = -1
     for i, x in enumerate(node.inputs):
-        if (i_scalar[i] is not None
-                and (theano.scalar.upcast(x.type.dtype, d.type.dtype)
-                    == d.type.dtype)):
+        if (i != dot22_idx and i_scalar[i] is not None and
+            (theano.scalar.upcast(x.type.dtype, d.type.dtype) ==
+             d.type.dtype)):
             scalar_idx = i
             break
     if scalar_idx < 0:
