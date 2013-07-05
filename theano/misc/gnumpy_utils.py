@@ -3,6 +3,8 @@ This code can only work if gnumpy and theano are initialized on the
 same gpu as theano.
 """
 
+import ctypes
+
 try:
     import gnumpy
     import cudamat
@@ -49,34 +51,22 @@ try:
                     x = x.copy()
                 else:
                     raise ValueError("We where asked to don't copy memory, but the memory is not c contiguous.")
-
             # Now x is always c contiguous.
-
-
 
             # the next step is to create a CUDAMatrix object. We do so by first creating
             # a cudamat object with no data_host.
             cm_mat = cudamat.cudamat()
-
             cm_mat.size[0] = reduce(lambda x,y:x*y, x.shape, 1)
             cm_mat.size[1] = 1
             cm_mat.on_host = 0
             cm_mat.on_device = 1
             cm_mat.is_trans = 0
             cm_mat.owns_data = 0 # <-- note: cm_mat dosen't owe the data; x does. So x will delete it.
-
-
             # x.gpudata is a long. We need a pointer to a float. cast.
-            import ctypes
             cm_mat.data_device = ctypes.cast(x.gpudata, ctypes.POINTER(ctypes.c_float))
 
             px = cudamat.CUDAMatrix(cm_mat)
-
             px._base = x # x won't be freed if the cudamat object isn't freed.
-
-
-
-
             px.mat_on_host = False # let cudamat know that we don't have a numpy
                                    # array attached.
 
@@ -87,7 +77,6 @@ try:
             # move the _base to the _cmsResueCache; so the cudamat object will be deleted,
             # and we won't overpump the world with memory.
             _is_alias_of = ___const_garray
-
             ans = gnumpy.garray(px,
                                 x.shape,
                                 _is_alias_of)
@@ -112,12 +101,12 @@ try:
                     strides[i] = 0
             strides = tuple(strides)
 
-            import ctypes
             ptr_long = long(ctypes.cast(x._base.mat.data_device, ctypes.c_void_p).value)
 
-            # seems legit.
-            z = cuda.from_gpu_pointer(ptr_long, x.shape, strides, x._base)
-            return z
+            # from_gpu_pointer expects arrays of int, so we need to convert from long
+            xshape = [int(i) for i in x.shape]
+            strides = [int(i) for i in strides]
+            return cuda.from_gpu_pointer(ptr_long, xshape, strides, x._base)
 
 except (ImportError, OSError):
     gnumpy_available = False
