@@ -194,6 +194,19 @@ outstanding_mallocs(PyObject* self, PyObject * args)
 // Static helper methods
 /////////////////////////
 
+
+bool
+check_cuda_error()
+{
+	cudaError_t err = cudaPeekAtLastError();
+	if (err != cudaSuccess)
+	{
+		printf("CUDA error: %s\n", cudaGetErrorString(err));
+		return false;
+	}
+	return true;	
+}
+
 static void
 CudaNdarray_null_init(CudaNdarray*self)
 {
@@ -2580,7 +2593,7 @@ CudaNdarray_get_dev_data(CudaNdarray *self, void *closure)
 {
     float * p =  CudaNdarray_DEV_DATA(self);
     //printf("get_dev_data %p %li \n", p, (long int)p );
-    return PyInt_FromLong((long int) CudaNdarray_DEV_DATA(self));
+	return PyInt_FromSize_t((size_t)CudaNdarray_DEV_DATA(self));
 }
 
 static int
@@ -3054,15 +3067,18 @@ CudaNdarray_from_gpu_pointer(PyObject* _unused, PyObject* args)
         //CudaNdarray_set_nd set the error msg
         return NULL;
     }
+
     // set gpu pointeur
     assert(((CudaNdarray *)rval)->data_allocated == 0);
-    if (CudaNdarray_set_device_data((CudaNdarray *)rval, (float *)PyInt_AsLong(gpu_ptr), base))
+	float *devptr = (float *)PyInt_AsUnsignedLongLongMask(gpu_ptr);
+	if (PyErr_Occurred())
+		PyErr_Print();
+    if (CudaNdarray_set_device_data((CudaNdarray *)rval, devptr, base))
     {
         PyErr_SetString(PyExc_TypeError, "CudaNdarray_from_gpu_pointer: Error while setting the gpu pointor");
         return NULL;
-
     }
-
+	
     // Set dims and strides
     for (int i = nd-1; i >= 0; --i)
     {
@@ -3092,6 +3108,7 @@ CudaNdarray_from_gpu_pointer(PyObject* _unused, PyObject* args)
         Py_DECREF(dim_);
         Py_DECREF(strd_);
     }
+
     if (verbose) printf("CudaNdarray_from_gpu_pointer normal return\n");
     return rval;
 }
