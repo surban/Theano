@@ -1572,8 +1572,6 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 PyExc_ValueError,
                 "CudaNdarray_inplace_elemwise need same dimensions (or broadcastable dimension)");
             Py_XDECREF(new_other);
-			free(other_dims);
-			free(other_strides);
             return -1;
         }
         // if we're broadcasting other, then make sure it has stride 0
@@ -1593,13 +1591,9 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 " un-initialized array when the new value have more than"
                 " 0 or 1 broadcastable dimensions");
             Py_XDECREF(new_other);
-			free(other_dims);
-			free(other_strides);
             return 0;
         }
         Py_XDECREF(new_other);
-		free(other_dims);
-		free(other_strides);
         return 0;
     }
 
@@ -1631,8 +1625,6 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
-					free(other_dims);
-					free(other_strides);
                     return -1;
                 }
             }
@@ -1666,8 +1658,6 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
-					free(other_dims);
-					free(other_strides);
                     return -1;
                 }
             }
@@ -1706,8 +1696,6 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
-					free(other_dims);
-					free(other_strides);
                     return -1;
                 }
             }
@@ -1749,8 +1737,6 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
-					free(other_dims);
-					free(other_strides);
                     return -1;
                 }
             }
@@ -1796,8 +1782,6 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                         "k4",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
-					free(other_dims);
-					free(other_strides);
                     return -1;
                 }
             }
@@ -1844,8 +1828,6 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                             "k4",
                             cudaGetErrorString(err));
                         Py_XDECREF(new_other);
-						free(other_dims);
-						free(other_strides);
                         return -1;
                     }
                 }
@@ -1913,16 +1895,12 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 "inplace_elemwise w nd=%i\n",
                 self->nd);
             Py_XDECREF(new_other);
-			free(other_dims);
-			free(other_strides);
             return -1;
         }
     }
     if (verbose)
         fprintf(stderr, "INPLACE ADD/DIV end\n");
     Py_XDECREF(new_other);
-	free(other_dims);
-	free(other_strides);
     return 0;
 }
 
