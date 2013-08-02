@@ -217,8 +217,10 @@ if cuda_available:
         gpu_init()
         cuda_available = True
         cuda_initialization_error_message = ""
-# actively closing our gpu session presents segfault-on-exit on some systems
-        atexit.register(gpu_shutdown)
+        # Explicitly closing the CUDA context causes problem with other libraries
+        # like pyCUDA that have CUDA cleanup operations pending at shutdown.
+        # Thus we don't close it.
+        # atexit.register(gpu_shutdown)
     except EnvironmentError, e:
         cuda_available = False
         cuda_initialization_error_message = " ".join(e.args)
