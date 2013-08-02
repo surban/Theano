@@ -2986,6 +2986,7 @@ CudaNdarray_active_device_name(PyObject* _unused, PyObject* _unused_args) {
 
 PyObject *
 CudaNdarray_gpu_shutdown(PyObject* _unused, PyObject* _unused_args) {
+	printf("Theano: cudaThreadExit\n");
     cudaThreadExit();
     g_gpu_context_active = 0; // context has now been closed down
     Py_INCREF(Py_None);
@@ -3409,10 +3410,11 @@ CudaNdarray_New(int nd)
 int
 cublas_init()
 {
+	printf("Theano: Initializing cuBLAS\n");
     cublasInit();
     if (CUBLAS_STATUS_SUCCESS != cublasGetError())
     {
-        PyErr_SetString(PyExc_RuntimeError, "error initializing device");
+        PyErr_SetString(PyExc_RuntimeError, "error initializing cublas");
         return -1;
     }
     return 0;
@@ -3420,10 +3422,11 @@ cublas_init()
 int
 cublas_shutdown()
 {
+	printf("Theano: Shutting down cuBLAS\n");
     cublasShutdown();
     if (CUBLAS_STATUS_SUCCESS != cublasGetError())
     {
-        PyErr_SetString(PyExc_RuntimeError, "error shutting down device");
+        PyErr_SetString(PyExc_RuntimeError, "error shutting down cublas");
         return -1;
     }
     return 0;
