@@ -43,7 +43,7 @@ from theano.gof.compiledir import \
     local_bitwidth, python_int_bitwidth
 
 from theano.gof.fg import \
-    InconsistencyError, MissingInputError, FunctionGraph
+    CachedConstantError, InconsistencyError, MissingInputError, FunctionGraph
 
 from theano.gof.destroyhandler import \
     DestroyHandler
@@ -78,4 +78,4 @@ from theano.gof.type import \
     Type, Generic, generic
 
 from theano.gof.utils import \
-    object2, MethodNotDefined
+    hashtype, object2, MethodNotDefined

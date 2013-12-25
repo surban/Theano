@@ -91,6 +91,10 @@ if config.device.startswith('gpu') or config.init_gpu_device.startswith('gpu'):
 
         theano.sandbox.cuda.tests.test_driver.test_nvidia_driver1()
 
+if config.device.startswith('cuda') or config.device.startswith('opencl') or \
+        config.gpuarray.init_device != '':
+    import theano.sandbox.gpuarray
+
 # Use config.numpy to call numpy.seterr
 import numpy
 
@@ -166,6 +170,20 @@ def get_scalar_constant_value(v):
             data = v.owner.inputs[0]
             return tensor.get_scalar_constant_value(data)
     return tensor.get_scalar_constant_value(v)
+
+
+def sparse_grad(var):
+    """This function return a new variable whose gradient will be
+    stored in a sparse format instead of dense.
+
+    Currently only variable created by AdvancedSubtensor1 is supported.
+    i.e. a_tensor_var[an_int_vector].
+
+    .. versionadded:: 0.6rc4
+    """
+    assert isinstance(var.owner.op, tensor.AdvancedSubtensor1)
+    ret = var.owner.op.__class__(sparse_grad=True)(*var.owner.inputs)
+    return ret
 
 
 import theano.tests

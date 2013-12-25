@@ -12,7 +12,6 @@ import subprocess
 import sys
 import tempfile
 import time
-import itertools
 
 import distutils.sysconfig
 
@@ -25,8 +24,8 @@ except ImportError:
 import numpy.distutils  # TODO: TensorType should handle this
 
 import theano
-from theano.compat import PY3, next, decode, decode_iter
-from theano.compat.six import StringIO
+from theano.compat import any, PY3, next, decode, decode_iter
+from theano.compat.six import b, BytesIO, StringIO
 from theano.gof.utils import flatten
 from theano.configparser import config
 from theano.gof.cc import hash_from_code
@@ -144,12 +143,7 @@ class DynamicModule(object):
         self.support_code = []
         self.functions = []
         self.includes = ["<Python.h>", "<iostream>"]
-
-        #TODO: this should come from TensorType
-        self.includes.append('<numpy/arrayobject.h>')
-
-        #TODO: from TensorType
-        self.init_blocks = ['import_array();']
+        self.init_blocks = []
 
     def print_methoddef(self, stream):
         print >> stream, "static PyMethodDef MyMethods[] = {"
@@ -368,7 +362,7 @@ def get_module_hash(src_code, key):
     # it changes, then the module hash should be different.
     # We start with the source code itself (stripping blanks might avoid
     # recompiling after a basic indentation fix for instance).
-    to_hash = map(str.strip, src_code.split('\n'))
+    to_hash = [l.strip() for l in src_code.split('\n')]
     # Get the version part of the key (ignore if unversioned).
     if key[0]:
         to_hash += map(str, key[0])
@@ -1457,17 +1451,26 @@ def std_lib_dirs_and_libs():
         # directories.
         python_lib_dirs = [os.path.join(os.path.dirname(python_inc), 'libs')]
         if "Canopy" in python_lib_dirs[0]:
-            # Canopy store libpython27.a and libmsccr90.a in this directory.
+            # Canopy stores libpython27.a and libmsccr90.a in this directory.
             # For some reason, these files are needed when compiling Python
             # modules, even when libpython27.lib and python27.dll are
             # available, and the *.a files have to be found earlier than
             # the other ones.
-            libdir = os.path.join(sys.base_prefix, '..', '..', '..',
-                                  'User', 'libs')
+
+            #When Canopy is installed for the user:
+            #sys.prefix:C:\Users\username\AppData\Local\Enthought\Canopy\User
+            #sys.base_prefix:C:\Users\username\AppData\Local\Enthought\Canopy\App\appdata\canopy-1.1.0.1371.win-x86_64
+            #When Canopy is installed for all users:
+            #sys.base_prefix: C:\Program Files\Enthought\Canopy\App\appdata\canopy-1.1.0.1371.win-x86_64
+            #sys.prefix: C:\Users\username\AppData\Local\Enthought\Canopy\User
+            #So we need to use sys.prefix as it support both cases.
+            #sys.base_prefix support only one case
+            libdir = os.path.join(sys.prefix, 'libs')
+
             for f, lib in [('libpython27.a', 'libpython 1.2'),
                            ('libmsvcr90.a', 'mingw 4.5.2')]:
                 if not os.path.exists(os.path.join(libdir, f)):
-                    print ("Your python version is from Canopy. " +
+                    print ("Your Python version is from Canopy. " +
                            "You need to install the package '" + lib +
                            "' from Canopy package manager."
                            )
@@ -1556,6 +1559,7 @@ class GCC_compiler(object):
                         "         It is better to let Theano/g++ find it"
                         " automatically, but we don't do it now")
                     detect_march = False
+                    GCC_compiler.march_flags = []
                     break
 
         if detect_march:
@@ -1565,26 +1569,35 @@ class GCC_compiler(object):
                 p = call_subprocess_Popen(cmd,
                                           stdout=subprocess.PIPE,
                                           stderr=subprocess.PIPE,
+                                          stdin=subprocess.PIPE,
                                           shell=True)
-                p.wait()
+                # For mingw64 with GCC >= 4.7, passing os.devnull
+                # as stdin (which is the default) results in the process
+                # waiting forever without returning. For that reason,
+                # we use a pipe, and use the empty string as input.
+                (stdout, stderr) = p.communicate(input=b(''))
                 if p.returncode != 0:
                     return None
 
-                stdout = decode_iter(p.stdout.readlines())
-                stderr = decode_iter(p.stderr.readlines())
-                lines = []
+                lines = BytesIO(stdout + stderr).readlines()
+                lines = decode_iter(lines)
                 if parse:
-                    for line in itertools.chain(stdout, stderr):
-                        if "COLLECT_GCC_OPTIONS=" in line:
+                    selected_lines = []
+                    for line in lines:
+                        if ("COLLECT_GCC_OPTIONS=" in line or
+                            "CFLAGS=" in line or
+                            "CXXFLAGS=" in line or
+                            "-march=native" in line):
                             continue
-                        elif "-march=" in line and "-march=native" not in line:
-                            lines.append(line.strip())
-                        elif "-mtune=" in line and "-march=native" not in line:
-                            lines.append(line.strip())
-                    lines = list(set(lines))  # to remove duplicate
-                else:
-                    lines = itertools.chain(stdout, stderr)
-                    return list(lines)
+                        elif "-march=" in line:
+                            selected_lines.append(line.strip())
+                        elif "-mtune=" in line:
+                            selected_lines.append(line.strip())
+                        elif "-target-cpu" in line:
+                            selected_lines.append(line.strip())
+                    lines = list(set(selected_lines))  # to remove duplicate
+
+                return lines
 
             # The '-' at the end is needed. Otherwise, g++ do not output
             # enough information.
@@ -1599,13 +1612,21 @@ class GCC_compiler(object):
 
         if detect_march:
             if len(native_lines) != 1:
+                if len(native_lines) == 0:
+                    # That means we did not select the right lines, so
+                    # we have to report all the lines instead
+                    reported_lines = get_lines("g++ -march=native -E -v -",
+                                               parse=False)
+                else:
+                    reported_lines = native_lines
                 _logger.warn(
                     "OPTIMIZATION WARNING: Theano was not able to find the"
                     " g++ parameters that tune the compilation to your "
                     " specific CPU. This can slow down the execution of Theano"
                     " functions. Please submit the following lines to"
                     " Theano's mailing list so that we can fix this"
-                    " problem:\n %s", native_lines)
+                    " problem:\n %s",
+                    reported_lines)
             else:
                 default_lines = get_lines("g++ -E -v -")
                 _logger.info("g++ default lines: %s", default_lines)
@@ -1620,13 +1641,57 @@ class GCC_compiler(object):
                         " problem:\n %s",
                         get_lines("g++ -E -v -", parse=False))
                 else:
-                    part = native_lines[0].split()
+                    # Some options are actually given as "-option value",
+                    # we want to treat them as only one token when comparing
+                    # different command lines.
+                    # Heuristic: tokens not starting with a dash should be
+                    # joined with the previous one.
+                    def join_options(init_part):
+                        new_part = []
+                        for i in range(len(init_part)):
+                            p = init_part[i]
+                            if p.startswith('-'):
+                                p_list = [p]
+                                while ((i + 1 < len(init_part)) and
+                                       not init_part[i + 1].startswith('-')):
+                                    # append that next part to p_list
+                                    p_list.append(init_part[i + 1])
+                                    i += 1
+                                new_part.append(' '.join(p_list))
+                            elif i == 0:
+                                # The first argument does not usually start
+                                # with "-", still add it
+                                new_part.append(p)
+                            # Else, skip it, as it was already included
+                            # with the previous part.
+                        return new_part
+
+                    part = join_options(native_lines[0].split())
+
                     for line in default_lines:
                         if line.startswith(part[0]):
-                            part2 = [p for p in line.split()
-                                     if not 'march' in p and not 'mtune' in p]
+                            part2 = [p for p in join_options(line.split())
+                                     if (not 'march' in p and
+                                         not 'mtune' in p and
+                                         not 'target-cpu' in p)]
                             new_flags = [p for p in part if p not in part2]
-                            GCC_compiler.march_flags = new_flags
+                            # Replace '-target-cpu value', which is an option
+                            # of clang, with '-march=value', for g++
+                            for i, p in enumerate(new_flags):
+                                if 'target-cpu' in p:
+                                    opt = p.split()
+                                    if len(opt) == 2:
+                                        opt_name, opt_val = opt
+                                        new_flags[i] = '-march=%s' % opt_val
+
+                            # Go back to split arguments, like
+                            # ["-option", "value"],
+                            # as this is the way g++ expects them split.
+                            split_flags = []
+                            for p in new_flags:
+                                split_flags.extend(p.split())
+
+                            GCC_compiler.march_flags = split_flags
                             break
                     _logger.info("g++ -march=native equivalent flags: %s",
                                  GCC_compiler.march_flags)
@@ -1638,12 +1703,13 @@ class GCC_compiler(object):
         #to use the new API, but not everywhere. When finished, enable
         #the following macro to assert that we don't bring new code
         #that use the old API.
-        #cxxflags.append("-D NPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION")
+        cxxflags.append("-D NPY_NO_DEPRECATED_API=NPY_1_7_API_VERSION")
         numpy_ver = [int(n) for n in numpy.__version__.split('.')[:2]]
 
         # numpy 1.7 deprecated the following macro but the new one didn't
         # existed in the past
         if bool(numpy_ver < [1, 7]):
+            cxxflags.append("-D NPY_ARRAY_ENSUREARRAY=NPY_ENSUREARRAY")
             cxxflags.append("-D NPY_ARRAY_ENSURECOPY=NPY_ENSURECOPY")
             cxxflags.append("-D NPY_ARRAY_ALIGNED=NPY_ALIGNED")
             cxxflags.append("-D NPY_ARRAY_WRITEABLE=NPY_WRITEABLE")
@@ -1656,10 +1722,13 @@ class GCC_compiler(object):
         # in the key of the compiled module, avoiding potential conflicts.
 
         # Figure out whether the current Python executable is 32
-        # or 64 bit and compile accordingly.
-        n_bits = local_bitwidth()
-        cxxflags.append('-m%d' % n_bits)
-        _logger.debug("Compiling for %s bit architecture", n_bits)
+        # or 64 bit and compile accordingly. This step is ignored for ARM
+        # architectures in order to make Theano compatible with the Raspberry
+        # Pi.
+        if any([not 'arm' in flag for flag in cxxflags]):
+            n_bits = local_bitwidth()
+            cxxflags.append('-m%d' % n_bits)
+            _logger.debug("Compiling for %s bit architecture", n_bits)
 
         if sys.platform != 'win32':
             # Under Windows it looks like fPIC is useless. Compiler warning:
@@ -1684,6 +1753,7 @@ class GCC_compiler(object):
                 cxxflags.extend(['-framework', 'Python'])
             if 'Anaconda' in sys.version:
                 new_path = os.path.join(sys.prefix, "lib")
+                new_path = os.path.realpath(new_path)
                 v = os.getenv("DYLD_FALLBACK_LIBRARY_PATH", None)
                 if v is not None:
                     # This will resolve symbolic links
@@ -1774,12 +1844,12 @@ class GCC_compiler(object):
         if not theano.config.cxx:
             return False
 
-        code = """
+        code = b("""
         int main(int argc, char** argv)
         {
             return 0;
         }
-        """
+        """)
         return GCC_compiler.try_compile_tmp(code, tmp_prefix='try_flags_',
                 flags=flag_list, try_run=False)
 

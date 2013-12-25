@@ -204,8 +204,8 @@ def test_rop_lop():
     rop_f = function([mx, mv], yv)
 
     sy, _ = theano.scan(lambda i, y, x, v: (tensor.grad(y[i], x) * v).sum(),
-                       sequences=tensor.arange(y.shape[0]),
-                       non_sequences=[y, mx, mv])
+                        sequences=tensor.arange(y.shape[0]),
+                        non_sequences=[y, mx, mv])
     scan_f = function([mx, mv], sy)
 
     rng = numpy.random.RandomState(utt.fetch_seed())
@@ -219,7 +219,7 @@ def test_rop_lop():
 
     raised = False
     try:
-        tmp = tensor.Rop(
+        tensor.Rop(
             theano.clone(y, replace={mx: break_op(mx)}),
             mx,
             mv)
@@ -283,7 +283,7 @@ class test_diag(unittest.TestCase):
     test_diag test makes sure that linalg.diag instantiates
     the right op based on the dimension of the input.
     """
-    def __init__(self, name, mode=None, shared=tensor.shared,
+    def __init__(self, name, mode=None, shared=tensor._shared,
                  floatX=None, type=tensor.TensorType):
         self.mode = mode
         self.shared = shared
@@ -560,6 +560,7 @@ class test_Eigh(test_Eig):
 
 class test_Eigh_float32(test_Eigh):
     dtype = 'float32'
+
 
 def test_matrix_inverse_solve():
     if not imported_scipy:

@@ -1,4 +1,3 @@
-
 .. currentmodule:: tensor
 
 .. _libdoc_basic_tensor:
@@ -295,7 +294,6 @@ them perfectly, but a dscalar otherwise.
     :rtype: :class:`TensorVariable` or :class:`TensorConstant`
 
 
-
 TensorType and TensorVariable
 =============================
 
@@ -422,7 +420,9 @@ TensorVariable
 
 .. class:: _tensor_py_operators(object)
 
-    This mix-in class adds convenient attributes, methods, and support for Python operators (see :ref:`tensor_operator_support`).
+    This mix-in class adds convenient attributes, methods, and support
+    to TensorVariable, TensorConstant and TensorSharedVariable for
+    Python operators (see :ref:`tensor_operator_support`).
 
     .. attribute:: type
 
@@ -474,6 +474,10 @@ TensorVariable
 
         See :func:`flatten`.
 
+    .. method:: ravel()
+
+        return self.flatten(). For NumPy compatibility.
+
     .. attribute:: T
 
         Transpose of this tensor.
@@ -487,8 +491,31 @@ TensorVariable
             same vector!  Use `reshape` or `dimshuffle` to turn your vector
             into a row or column matrix.
 
+    .. method:: {any,all}(axis=None, keepdims=False)
+    .. method:: {sum,prod,mean}(axis=None, dtype=None, keepdims=False, acc_dtype=None)
+    .. method:: {var,std,min,max,argmin,argmax}(axis=None, keepdims=False),
+    .. method:: diagonal(offset=0, axis1=0, axis2=1)
+    .. method:: astype(dtype)
+    .. method:: take(indices, axis=None, mode='raise')
+    .. method:: copy()
+    .. method:: norm(L, axis=None)
+    .. method:: nonzero(self, return_matrix=False)
+    .. method:: nonzero_values(self)
+    .. method:: sort(self, axis=-1, kind='quicksort', order=None)
+    .. method:: argsort(self, axis=-1, kind='quicksort', order=None)
+    .. method:: clip(self, a_min, a_max)
+    .. method:: conf()
+    .. method:: repeat(repeats, axis=None)
+    .. method:: round(mode="half_away_from_zero")
+    .. method:: trace()
+    .. method:: get_scalar_constant_value()
+    .. method:: zeros_like(model, dtype=None)
 
+       All the above methods are equivalent to NumPy for Theano on the current tensor.
 
+    .. method:: __{abs,neg,lt,le,gt,ge,invert,and,or,add,sub,mul,div,truediv,floordiv}__
+
+       Those elemwise operation are supported via Python syntax.
 
 Shaping and Shuffling
 =====================
@@ -549,13 +576,13 @@ dimensions, see :meth:`_tensor_py_operators.dimshuffle`.
 .. function:: unbroadcast(x, *axes)
 
     Make `x` impossible to broadcast in the specified axes `axes`. For
-    example, `unbroadcast(x,0)` will make the first dimension of `x`
+    example, `unbroadcast(x, 0)` will make the first dimension of `x`
     unbroadcastable.
 
 .. function:: addbroadcast(x, *axes)
 
     Make `x` broadcastable in the specified axes `axes`. For
-    example, `unbroadcast(x,0)` will make the first dimension of `x`
+    example, `addbroadcast(x, 0)` will make the first dimension of `x`
     broadcastable. When performing the function, if the length of `x`
     along that dimension is not 1, a ``ValueError`` will be raised.
 
@@ -574,10 +601,14 @@ dimensions, see :meth:`_tensor_py_operators.dimshuffle`.
         dimensions, but with all remaining dimensions of `x` collapsed into
         the last dimension.
 
-    For example, if we flatten a tensor of shape (2,3,4,5) with flatten(x,
+    For example, if we flatten a tensor of shape (2, 3, 4, 5) with flatten(x,
     outdim=2), then we'll have the same (2-1=1) leading dimensions (2,), and the
     remaining dimensions are collapsed.  So the output in this example would
     have shape (2, 60).
+
+
+Creating Tensor
+===============
 
 
 .. function:: zeros_like(x)
@@ -598,6 +629,12 @@ dimensions, see :meth:`_tensor_py_operators.dimshuffle`.
     :param b: theano scalar or value with which you want to fill the output
 
     Create a matrix by filling the shape of `a` with `b`
+
+.. function:: alloc(value, *shape)
+
+    :param value: a value with which to fill the output
+    :param shape: the dimensions of the returned array
+    :returns: an N-dimensional tensor initialized by `value` and having the specified shape.
 
 .. function:: eye(n, m=None, k=0, dtype=theano.config.floatX)
 
@@ -925,11 +962,11 @@ development version to have this feature now.
 
 
 Index-assignment is *not* supported.  If you want to do something like ``a[5]
-= b`` or ``a[5]+=b``, see :func:`set_subtensor` and :func:`inc_subtensor` below.
+= b`` or ``a[5]+=b``, see :func:`theano.tensor.set_subtensor` and :func:`theano.tensor.inc_subtensor` below.
 
-.. autofunction:: theano.tensor.basic.set_subtensor
+.. autofunction:: theano.tensor.set_subtensor
 
-.. autofunction:: theano.tensor.basic.inc_subtensor
+.. autofunction:: theano.tensor.inc_subtensor
 
 .. _tensor_operator_support:
 
@@ -1059,6 +1096,18 @@ The six usual equality and inequality operators share the same interface.
 
     Returns a variable representing the result of logical inequality (a!=b).
 
+.. function:: isnan(a)
+
+    Returns a variable representing the comparison of ``a`` elements with nan.
+
+    This is equivalent to ``numpy.isnan``.
+
+.. function:: isinf(a)
+
+    Returns a variable representing the comparison of ``a`` elements
+    with inf or -inf.
+
+    This is equivalent to ``numpy.isinf``.
 
 Condition
 ---------

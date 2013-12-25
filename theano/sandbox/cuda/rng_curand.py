@@ -49,6 +49,7 @@ class CURAND_Base(GpuOp):
         if self.destructive:
             self.destroy_map = {0: [0]}
         self.output_type = output_type
+        assert output_type.dtype == "float32"
 
     def as_destructive(self):
         """Return an destructive version of self"""
@@ -345,7 +346,7 @@ class CURAND_RandomStreams(object):
         return  rval
 
 
-@local_optimizer([None])
+@local_optimizer([CURAND_Base])
 def local_destructive(node):
     op = node.op
     if isinstance(op, CURAND_Base) and not op.destructive:

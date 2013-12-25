@@ -86,7 +86,10 @@ Op Contract
         def R_op(self, inputs, eval_points):
             pass
 
-        def infer_shape(node, (i0_shapes, ...))
+        def infer_shape(node, (i0_shapes, ...)):
+            pass
+
+        def flops(self, inputs, outputs):
             pass
 
 .. ../extending/op.txt
@@ -115,6 +118,11 @@ do implement them. Those methods are :func:`__eq__` and
 The :func:`infer_shape` method allows to infer the shape of some variable, somewhere in the
 middle of the computational graph without actually computing the outputs (when possible).
 This could be helpful if one only needs the shape of the output instead of the actual outputs.
+
+The :func:`flops` method allows to have the number of mega flops and
+giga flops per second printed by the memory profiler. It takes as
+inputs two lists: one for the inputs and one for the outputs. They
+contain tuples that are the shapes of the corresponding inputs/outputs.
 
 The :func:`grad` method is required if you want to differentiate some cost whose expression
 includes your op.
@@ -211,8 +219,14 @@ returns the right answer. If you detect an error, you must raise an
             inp = numpy.asarray(numpy.random.rand(5, 4), dtype=config.floatX)
             out = f(inp)
             # Compare the result computed to the expected value.
-            assert numpy.allclose(inp * 2, out)
+            utt.assert_allclose(inp * 2, out)
 
+We call ``utt.assert_allclose(expected_value, value)`` to compare
+NumPy ndarray.This raise an error message with more information. Also,
+the default tolerance can be changed with the Theano flags
+``config.tensor.cmp_sloppy`` that take values in 0, 1 and 2. The
+defaul value do the most strict comparison, 1 and 2 make less strict
+comparison.
 
 Testing the infer_shape
 -----------------------
@@ -394,38 +408,9 @@ only applicable to computations involving a single output. Hence, to gain
 efficiency over the basic solution that is asked here, the two operations would
 have to be jointly optimized explicitly in the code.)
 
-SciPy
------
-
-We can wrap SciPy functions in Theano. But SciPy is an optional dependency.
-Here is some code that allows the Op to be optional:
-
-.. code-block:: python
-
-    try:
-        import scipy.linalg
-        imported_scipy = True
-    except ImportError:
-        # some ops (e.g. Cholesky, Solve, A_Xinv_b) won't work
-        imported_scipy = False
-
-    class SomeOp(Op):
-        ...
-        def make_node(self, x):
-            assert imported_scipy, (
-            "SciPy not available. SciPy is needed for the SomeOp op.")
-            ...
-
-    from nose.plugins.skip import SkipTest
-    class test_SomeOp(utt.InferShapeTester):
-        ...
-        def test_infer_shape(self):
-            if not imported_scipy:
-                raise SkipTest("SciPy needed for the SomeOp op.")
-            ...
 
 Random numbers in tests
------------------------
+=======================
 
 Making tests errors more reproducible is a good practice. To make your
 tests more reproducible, you need a way to get the same random
@@ -441,12 +426,8 @@ For more details see :ref:`random_value_in_tests`.
 
 :download:`Solution<extending_theano_solution_1.py>`
 
-
-Final Note
-==========
-
-A more extensive discussion of this section's content may be found in the advanced
-tutorial :ref:`Extending Theano<extending>`
+Documentation
+=============
 
 See :ref:`metadocumentation`, for some information on how to generate
 the documentation.
@@ -481,3 +462,19 @@ documentation:
 
 .. automodule:: theano.misc.doubleop
     :members:
+
+Final Note
+==========
+
+A more extensive discussion of this section's content may be found in
+the advanced tutorial :ref:`Extending Theano<extending>`
+
+The section :ref:`Other ops <other_ops>` include more instruction for
+specific case:
+
+ - :ref:`scalar_ops`
+ - :ref:`scipy_ops`
+ - :ref:`sparse_ops`
+ - :ref:`Random ops <random_ops>`
+ - :ref:`openmp_ops`
+ - :ref:`numba_ops`

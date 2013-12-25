@@ -262,8 +262,6 @@ class Mode(object):
         self.call_time = 0
         self.fn_time = 0
         linker.mode = self  # TODO: WHY IS THIS HERE?
-        self.optimizer_time = 0
-        self.linker_time = 0
 
     def __str__(self):
         return "%s(linker = %s, optimizer = %s)" % (self.__class__.__name__,
@@ -388,7 +386,7 @@ def register_mode(name, mode):
 def register_OutputGuard_c_code(type):
     """Deprecated function calling register_view_op_c_code"""
     warnings.warn("register_OutputGuard_c_code(type) is deprecated, "
-            "theano.compile.register_view_op_c_code(type, code) instead.",
+            "theano.compile.register_view_op_c_code(type, code, version=()) instead.",
             stacklevel=2)
     register_view_op_c_code(
             type,

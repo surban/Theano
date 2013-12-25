@@ -1,6 +1,7 @@
 import numpy
 
 import theano
+from theano.compat.python2x import any
 from theano.gof.cc import hash_from_code
 
 
@@ -18,7 +19,10 @@ def hash_from_ndarray(data):
 
     # python hash are not strong, so I always use md5 in order not to have a
     # too long hash, I call it again on the concatenation of all parts.
-    if not data.flags["C_CONTIGUOUS"] and not data.flags["F_CONTIGUOUS"]:
+    if not data.flags["C_CONTIGUOUS"]:
+        # Version 1.7.1 and previous of NumPy allowed calling
+        # hash_from_code on an F-contiguous array, but more recent
+        # versions need a C-contiguous one.
         data = numpy.ascontiguousarray(data)
     return hash_from_code(hash_from_code(data) +
                           hash_from_code(str(data.shape)) +
@@ -66,7 +70,7 @@ def shape_of_variables(fgraph, input_shapes):
     >>> import theano
     >>> x = theano.tensor.matrix('x')
     >>> y = x[512:]; y.name = 'y'
-    >>> fgraph = theano.FunctionGraph([x], [y])
+    >>> fgraph = theano.FunctionGraph([x], [y], clone=False)
     >>> shape_of_variables(fgraph, {x: (1024, 1024)})
     {y: (512, 1024), x: (1024, 1024)}
     """
@@ -81,6 +85,12 @@ def shape_of_variables(fgraph, input_shapes):
                              for dimension in shape]
 
     compute_shapes = theano.function(input_dims, output_dims)
+
+    if any([i not in fgraph.inputs for i in input_shapes.keys()]):
+        raise ValueError(
+            "input_shapes keys aren't in the fgraph.inputs. FunctionGraph()"
+            " interface changed. Now by default, it clones the graph it receives."
+            " To have the old behavior, give it this new parameter `clone=False`.")
 
     numeric_input_dims  = [dim for inp in fgraph.inputs
                                for dim in input_shapes[inp]]

@@ -182,8 +182,8 @@ class Scan(PureOp):
         self.n_tap_outs = self.n_mit_mot + self.n_mit_sot
         if not self.info['gpu']:
             tmp_in, tmp_out = scan_utils.reconstruct_graph(self.inputs,
-                                                       self.outputs)
-            local_fgraph = gof.FunctionGraph(tmp_in, tmp_out)
+                                                           self.outputs)
+            local_fgraph = gof.FunctionGraph(tmp_in, tmp_out, clone=False)
             self._cmodule_key = gof.CLinker().cmodule_key_(local_fgraph, [])
             self._hash_inner_graph = hash(self._cmodule_key)
         else:
@@ -566,12 +566,15 @@ class Scan(PureOp):
                 profile = ScanProfileStats(name=self.name)
         elif self.profile:
             profile = self.profile
-        self.fn = function(wrapped_inputs,
-                           wrapped_outputs,
-                           mode=self.mode_instance,
-                           name=self.name,
-                           profile=profile,
-                           on_unused_input='ignore')
+        # make_thunk can be called many times on the same op
+        # we do not want to recompile the inner fct every time.
+        if not getattr(self, 'fn', None):
+            self.fn = function(wrapped_inputs,
+                               wrapped_outputs,
+                               mode=self.mode_instance,
+                               name=self.name,
+                               profile=profile,
+                               on_unused_input='ignore')
 
         try:
             cython_mintaps = numpy.asarray(self.mintaps, dtype='int32')
@@ -1561,19 +1564,16 @@ class Scan(PureOp):
         for idx in xrange(self.n_mit_mot + self.n_mit_sot):
             mintap = numpy.min(self.tap_array[idx])
             maxtap = numpy.max(self.tap_array[idx])
+            if idx < self.n_mit_mot:
+                outmaxtap = numpy.max(self.mitmot_out_taps()[idx])
+            else:
+                outmaxtap = 0
             seq = outs[idx]
             for k in self.tap_array[idx]:
-                if maxtap < 0:
-                    dim_offset = abs(maxtap)
+                if outmaxtap -k != 0:
+                    nw_seq = seq[k - mintap: -(outmaxtap-k)][::-1]
                 else:
-                    dim_offset = 0
-                if maxtap == mintap and maxtap != 0:
-                    nw_seq = seq[:abs(maxtap)]
-                elif maxtap - k != 0:
-                    nw_seq = seq[dim_offset + k - mintap - 1:\
-                                 -(maxtap - k + 1)][::-1]
-                else:
-                    nw_seq = seq[dim_offset + k - mintap - 1: -1][::-1]
+                    nw_seq = seq[k - mintap:][::-1]
                 outer_inp_seqs.append(nw_seq)
         outer_inp_seqs += [
             x[:-1][::-1] for x in self.outer_sitsot_outs(outs)]
@@ -1581,8 +1581,30 @@ class Scan(PureOp):
             if not isinstance(x.type, DisconnectedType):
                 outer_inp_seqs.append(x[::-1])
 
-        outer_inp_seqs += [x[::-1] for x in self.outer_mitsot_outs(outs)]
-        outer_inp_seqs += [x[::-1] for x in self.outer_sitsot_outs(outs)]
+        if hasattr(inputs[0].tag, 'test_value'):
+            # Here we tests that the new scan input sequence all have
+            # the same shape[0]. This is a properties that the scan()
+            # fct add and we want to keep it for all Scan op.  This is
+            # used in T_Scan.test_grad_multiple_outs_taps to test
+            # that.
+            for taps, x in zip(self.mitsot_taps(),
+                               self.outer_mitsot_outs(outs)):
+                mintap = numpy.min(taps)
+                if hasattr(x[::-1][:mintap], 'test_value'):
+                    assert (x[::-1][:mintap].tag.test_value.shape[0] ==
+                            inputs[0].tag.test_value)
+            for x in self.outer_sitsot_outs(outs):
+                if hasattr(x[::-1][:-1].tag, 'test_value'):
+                    assert (x[::-1][:-1].tag.test_value.shape[0] ==
+                            inputs[0].tag.test_value)
+            for x in self.outer_nitsot_outs(outs):
+                if hasattr(x[::-1].tag, 'test_value'):
+                    assert (x[::-1].tag.test_value.shape[0] ==
+                            inputs[0].tag.test_value)
+        outer_inp_seqs += [x[::-1][:numpy.min(taps)]
+                           for taps, x in zip(self.mitsot_taps(),
+                                              self.outer_mitsot_outs(outs))]
+        outer_inp_seqs += [x[::-1][:-1] for x in self.outer_sitsot_outs(outs)]
         outer_inp_seqs += [x[::-1] for x in self.outer_nitsot_outs(outs)]
 
         inner_inp_seqs = self.inner_seqs(self_inputs)
@@ -1605,7 +1627,11 @@ class Scan(PureOp):
         n_mitmot_inps = 0
 
         for idx in xrange(self.n_mit_mot):
-            outer_inp_mitmot.append(dC_douts[idx][::-1])
+            if isinstance(dC_douts[idx].type, DisconnectedType):
+                out = outs[idx]
+                outer_inp_mitmot.append(tensor.zeros_like(out))
+            else:
+                outer_inp_mitmot.append(dC_douts[idx][::-1])
             mitmot_inp_taps.append([])
             mitmot_out_taps.append([])
             undefined = False
@@ -1626,7 +1652,7 @@ class Scan(PureOp):
                     if _sh in gof.graph.inputs([dC_dinps_t[ins_pos]]):
                         undefined = True
 
-                n_mitmot_inps_ += 1
+                n_mitmot_inps += 1
                 ins_pos += 1
                 n_mitmot_outs += 1
                 mitmot_inp_taps[idx].append(-self.tap_array[idx][jdx])

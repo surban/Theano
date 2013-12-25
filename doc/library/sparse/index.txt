@@ -123,12 +123,15 @@ List of Implemented Operations
       Both grad are implemented. Structured by default.
     - :class:`SparseFromDense <theano.sparse.basic.SparseFromDense>` and ``csr_from_dense``, ``csc_from_dense``.
       The grad implemented is structured.
+    - Theano SparseVariable object have a method ``toarray()`` that is the same as ``dense_from_sparse``.
 
 - Construction of Sparses and their Properties
     - :class:`CSM <theano.sparse.basic.CSM>` and ``CSC``, ``CSR`` to construct a matrix.
       The grad implemented is regular.
-    - :class:`CSMProperties <theano.sparse.basic.CSMProperties>` to get the properties of a sparse matrix.
+    - :class:`CSMProperties <theano.sparse.basic.CSMProperties>` and ``csm_properties(x)``
+      to get the properties of a sparse matrix.
       The grad implemented is regular.
+    - csm_indices(x), csm_indptr(x), csm_data(x) and csm_shape(x) or x.shape.
     - :func:`sp_ones_like <theano.sparse.basic.sp_ones_like>`.
       The grad implemented is regular.
     - :func:`sp_zeros_like <theano.sparse.basic.sp_zeros_like>`.
@@ -194,14 +197,46 @@ List of Implemented Operations
 - Dot Product
     - :class:`Dot <theano.sparse.basic.Dot>` and
       :func:`dot <theano.sparse.basic.dot>`.
-      The grad implemented is regular.
+
+        - One of the inputs must be sparse, the other sparse or dense.
+        - The grad implemented is regular.
+        - No C code for perform and no C code for grad.
+        - Return a dense for perform and a dense for grad.
     - :class:`StructuredDot <theano.sparse.basic.StructuredDot>`
       and :func:`structured_dot <theano.sparse.basic.structured_dot>`.
-      The grad implemented is structured.
-    - :class:`SamplingDot <theano.sparse.basic.SamplingDot>` and ``sampling_dot``.
-      The grad implemented is structured for `p`.
+
+        - The first input is sparse, the second can be sparse or dense.
+        - The grad implemented is structured.
+        - C code for perform and grad.
+        - Return a dense for perforn and a sparse for grad.
+    - :class:`TrueDot <theano.sparse.basic.TrueDot>` and
+      :func:`true_dot <theano.sparse.basic.true_dot>`.
+
+        - The first input is sparse, the second can be sparse or dense.
+        - The grad implemented is regular.
+        - No C code for perform and no C code for grad.
+        - Return a Sparse for perform and a Sparse for grad.
+        - Flags trough constructor can change the output of
+          grad to be dense if the second input of the op is dense.
+    - :class:`SamplingDot <theano.sparse.basic.SamplingDot>` and
+      ``sampling_dot``.
+
+        - Both input must be dense.
+        - The grad implemented is structured for `p`.
+        - Sample of the dot and sample of the gradient.
+        - C code for perform but not for grad.
+        - Return sparse for perform and grad.
     - :class:`Usmm <theano.sparse.basic.Usmm>` and ``usmm``.
-      There is no grad implemented for this op.
+
+        - You *shouldn't* insert this op yourself!
+           - There is optimization that transform a
+             :class:`Dot <theano.sparse.basic.Dot>` to ``Usmm`` when possible.
+
+        - This op is the equivalent of gemm for sparse dot.
+        - There is no grad implemented for this op and this is not needed as
+          you don't insert it yourself.
+        - One of the inputs must be sparse, the other sparse or dense.
+        - Return a dense for perform
 
 - Slice Operations
     - sparse_variable[N, N], return a tensor scalar.
@@ -235,6 +270,9 @@ List of Implemented Operations
     - :class:`Remove0 <theano.sparse.basic.Remove0>` and ``remove0``
     - :func:`clean <theano.sparse.basic.clean>` to resort indices and remove zeros
 
+- To help testing
+    - :func:`theano.sparse.tests.test_basic.sparse_random_inputs`
+
 ===================================================================
 :mod:`sparse` --  Sparse Op
 ===================================================================
@@ -247,3 +285,4 @@ List of Implemented Operations
 .. automodule:: theano.sparse.basic
     :members:
 
+.. autofunction:: theano.sparse.tests.test_basic.sparse_random_inputs

@@ -30,6 +30,29 @@ AddConfigVar('nvcc.compiler_bindir',
              StrParam(""),
              in_c_key=False)
 
+user_provided_cuda_root = True
+
+
+def default_cuda_root():
+    global user_provided_cuda_root
+    v = os.getenv('CUDA_ROOT', "")
+    user_provided_cuda_root = False
+    if v:
+        return v
+    return find_cuda_root()
+
+AddConfigVar('cuda.root',
+        """directory with bin/, lib/, include/ for cuda utilities.
+        This directory is included via -L and -rpath when linking
+        dynamically compiled modules.  If AUTO and nvcc is in the
+        path, it will use one of nvcc parent directory.  Otherwise
+        /usr/local/cuda will be used.  Leave empty to prevent extra
+        linker directives.  Default: environment variable "CUDA_ROOT"
+        or else "AUTO".
+        """,
+        StrParam(default_cuda_root),
+        in_c_key=False)
+
 AddConfigVar('cuda.nvccflags',
         "DEPRECATED, use nvcc.flags instead",
         StrParam("", allow_override=False),
@@ -104,7 +127,7 @@ def is_nvcc_available():
             return False
 
 
-def set_cuda_root():
+def find_cuda_root():
     s = os.getenv("PATH")
     if not s:
         return
@@ -303,8 +326,13 @@ class NVCC_compiler(object):
         if len(preargs2) > 0:
             cmd.extend(['-Xcompiler', ','.join(preargs2)])
 
-        if config.cuda.root and os.path.exists(os.path.join(config.cuda.root,
-                                                            'lib')):
+        # We should not use rpath if possible. If the user provided
+        # provided an cuda.root flag, we need to add one, but
+        # otherwise, we don't add it. See gh-1540 and
+        # https://wiki.debian.org/RpathIssue for details.
+        if (user_provided_cuda_root and
+            os.path.exists(os.path.join(config.cuda.root, 'lib'))):
+
             rpaths.append(os.path.join(config.cuda.root, 'lib'))
             if sys.platform != 'darwin':
                 # the 64bit CUDA libs are in the same files as are
@@ -319,8 +347,6 @@ class NVCC_compiler(object):
         cmd.append(os.path.split(cppfilename)[-1])
         cmd.extend(['-L%s' % ldir for ldir in lib_dirs])
         cmd.extend(['-l%s' % l for l in libs])
-        if module_name != 'cuda_ndarray':
-            cmd.append("-lcuda_ndarray")
         if sys.platform == 'darwin':
             cmd.extend(darwin_python_lib.split())
 

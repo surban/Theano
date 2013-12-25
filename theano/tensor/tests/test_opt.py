@@ -2,6 +2,9 @@
 
 import copy
 import logging
+import pickle
+import os
+import sys
 import time
 import unittest
 
@@ -12,7 +15,7 @@ from numpy.testing.noseclasses import KnownFailureTest
 
 import theano
 import theano.scalar as scal
-from theano.compat.six import StringIO
+from theano.compat.six import PY3, StringIO
 from theano import compile
 from theano.compile import deep_copy_op, DeepCopyOp
 from theano import config
@@ -124,13 +127,27 @@ class test_dimshuffle_lift(unittest.TestCase):
         x, y, z = inputs([False] * 1, [False] * 2, [False] * 3)
         e = x + y + z
         g = FunctionGraph([x, y, z], [e])
-        self.assertTrue(str(g) == ("[Elemwise{add,no_inplace}("
-            "InplaceDimShuffle{x,0,1}(Elemwise{add,no_inplace}"
-            "(InplaceDimShuffle{x,0}(x), y)), z)]"), str(g))
+
+        # It does not really matter if the DimShuffles are inplace
+        # or not.
+        init_str_g_inplace = (
+            "[Elemwise{add,no_inplace}(InplaceDimShuffle{x,0,1}"
+            "(Elemwise{add,no_inplace}(InplaceDimShuffle{x,0}(x), y)), z)]")
+        init_str_g_noinplace = (
+            "[Elemwise{add,no_inplace}(DimShuffle{x,0,1}"
+            "(Elemwise{add,no_inplace}(DimShuffle{x,0}(x), y)), z)]")
+        self.assertTrue(str(g) in (init_str_g_inplace, init_str_g_noinplace),
+                        str(g))
+
+        opt_str_g_inplace = (
+            "[Elemwise{add,no_inplace}(Elemwise{add,no_inplace}"
+            "(InplaceDimShuffle{x,x,0}(x), InplaceDimShuffle{x,0,1}(y)), z)]")
+        opt_str_g_noinplace = (
+            "[Elemwise{add,no_inplace}(Elemwise{add,no_inplace}"
+            "(DimShuffle{x,x,0}(x), DimShuffle{x,0,1}(y)), z)]")
         dimshuffle_lift.optimize(g)
-        self.assertTrue(str(g) == ("[Elemwise{add,no_inplace}(Elemwise"
-            "{add,no_inplace}(InplaceDimShuffle{x,x,0}(x), InplaceDimShuffle"
-            "{x,0,1}(y)), z)]"), str(g))
+        self.assertTrue(str(g) in (opt_str_g_inplace, opt_str_g_noinplace),
+                        str(g))
 
 
 def test_add_canonizer_problem0():
@@ -219,12 +236,12 @@ class test_canonize(unittest.TestCase):
         fyv = theano._asarray(numpy.random.rand(*shp), dtype='float32')
         fzv = theano._asarray(numpy.random.rand(*shp), dtype='float32')
         fvv = theano._asarray(numpy.random.rand(shp[0]), dtype=
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        'float32').reshape(1, shp[0])
+                              'float32').reshape(1, shp[0])
         dxv = theano._asarray(numpy.random.rand(*shp), dtype='float64')
         dyv = theano._asarray(numpy.random.rand(*shp), dtype='float64')
         dzv = theano._asarray(numpy.random.rand(*shp), dtype='float64')
         dvv = theano._asarray(numpy.random.rand(shp[0]), dtype=
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        'float64').reshape(1, shp[0])
+                              'float64').reshape(1, shp[0])
         cases = [
             (fx + fy, (fx, fy), (fxv, fyv), 1, 'float32'),
             (fx * fy, (fx, fy), (fxv, fyv), 1, 'float32'),
@@ -854,12 +871,15 @@ class test_fusion(unittest.TestCase):
         ix, iy, iz = [theano.tensor.tensor(dtype='int32',
                                            broadcastable=[False] * len(shp),
                                            name=n) for n in 'xyz']
-        fv = fvector('r')
+        fv = fvector('v')
+        fs = fscalar('s')
+
         fwv = my_init(shp, 'float32', 1)
         fxv = my_init(shp, 'float32', 2)
         fyv = my_init(shp, 'float32', 3)
         fzv = my_init(shp, 'float32', 4)
         fvv = theano._asarray(numpy.random.rand(shp[0]), dtype='float32')
+        fsv = numpy.asarray(numpy.random.rand(), dtype='float32')
         dwv = my_init(shp, 'float64', 5)
         ixv = theano._asarray(my_init(shp, num=60), dtype='int32')
         iyv = theano._asarray(my_init(shp, num=70), dtype='int32')
@@ -1018,7 +1038,13 @@ class test_fusion(unittest.TestCase):
             (theano.tensor.mul(fx,ftanx,ftanx,fx),(fx,),(fxv,),
                 1,fxv*numpy.tan(fxv)*numpy.tan(fxv)*fxv,'float32'),
             (theano.tensor.mul(ftanx,ftanx,fx+fy),(fx,fy),(fxv,
-                fyv),1,numpy.tan(fxv)*numpy.tan(fxv)*(fxv+fyv),'float32'),
+                fyv),1,numpy.tan(fxv)*numpy.tan(fxv)*(fxv+fyv),'float32'), # 70
+
+            #Cases with different broadcast pattern. They should not
+            #be merged as this would duplicate computation
+            #The graph should have 2 elemwise and 1 dimshuffle
+            (fx*theano.tensor.sin(fs),(fx,fs),(fxv,
+                fsv),3,fxv*numpy.sin(fsv),'float32'),
             ]
         if slice:
             cases = cases[slice]
@@ -1154,6 +1180,20 @@ class test_fusion(unittest.TestCase):
         else:
             shp = (5, 5, 5)
         self.do(mode, cuda.float32_shared_constructor, shp, gpu=True)
+
+    def test_fusion_35inputs(self):
+        # Make sure a fused graph with more than 35 inputs does not segfault
+        # or error.
+        inpts = vectors(['i%i' % i for i in range(35)])
+        # Make an elemwise graph looking like:
+        # sin(i34 + sin(i33 + sin(... i1 + sin(i0) ...)))
+        out = tensor.sin(inpts[0])
+        for idx in range(1, 35):
+            out = tensor.sin(inpts[idx] + out)
+
+        f = function(inpts, out)
+        # Test it on some dummy values
+        f(*[range(i, 4 + i) for i in range(35)])
 
     def speed_fusion(self, shared_fn=shared, gpu=False, s=None):
         """
@@ -2034,7 +2074,7 @@ class test_local_subtensor_merge(unittest.TestCase):
         val = fun(data)
         assert numpy.all(val == data[3:6, 2:6, 1:7][1])
         assert len([n for n in fun.maker.fgraph.toposort()
-                    if isinstance(n.op, tensor.basic.Subtensor)]) == nops
+                    if isinstance(n.op, Subtensor)]) == nops
 
         # test 2)
         y = x[2, 3][1]
@@ -2042,7 +2082,7 @@ class test_local_subtensor_merge(unittest.TestCase):
         val = fun(data)
         assert numpy.all(val == data[2, 3][1])
         assert len([n for n in fun.maker.fgraph.toposort()
-                    if isinstance(n.op, tensor.basic.Subtensor)]) == nops
+                    if isinstance(n.op, Subtensor)]) == nops
 
         # test 3)
         y = x[3:6, 2, 1:7][1]
@@ -2050,7 +2090,7 @@ class test_local_subtensor_merge(unittest.TestCase):
         val = fun(data)
         assert numpy.all(val == data[3:6, 2, 1:7][1])
         assert len([n for n in fun.maker.fgraph.toposort()
-                    if isinstance(n.op, tensor.basic.Subtensor)]) == nops
+                    if isinstance(n.op, Subtensor)]) == nops
 
     def test_scalar6(self):
         # General case with one slice and one index
@@ -2340,11 +2380,13 @@ class Test_alloc_zero(unittest.TestCase):
 
 
 def test_local_subtensor_of_alloc():
-    x = tensor.matrix('x')
 
     # DebugMode should detect if something goes wrong.
     # test shape combination of odd and event shape.
-    for shape in [(3, 5), (4, 6), (3, 8), (4, 7)]:
+    for shape in [(3, 5), (4, 6), (3, 8), (4, 7),
+                  (1, 5), (5, 1)]:
+        x = tensor.tensor(dtype=theano.config.floatX,
+                          broadcastable=(shape[0] == 1, shape[1] == 1))
 
         xval = numpy.zeros(shape, dtype=config.floatX)
         yval = numpy.arange(shape[1], dtype=config.floatX)
@@ -2361,21 +2403,29 @@ def test_local_subtensor_of_alloc():
             # Only one column
             z_vec = yx[:, 3]
             assert z_vec.ndim == 1
+            # results are vector
+            slicess = []
+            if shape[0] != 1:
+                slicess.append((2, slice(None)))
+            if shape[1] != 1:
+                slicess.append((slice(None), 3))
 
-            for slices in [
-                # results are vector
-                (slice(None), 3),
-                (2, slice(None)),
-                # results are matrix
+            # results are matrix
+            slicess += [
                 (slice(None), slice(3, None)),
                 (slice(3, None), ),
                 (slice(3, None), slice(3, None)),
                 (slice(1, 3), slice(None, -1)),
                 (slice(None, None, 2)),
                 (slice(1, None, 2)),
-                ]:
+                ]
+            for slices in slicess:
                 z = yx.__getitem__(slices)
                 f = theano.function([x], z)
+                if theano.config.mode != 'FAST_COMPILE':
+                    # Subtensor can be in the input of Alloc
+                    assert not isinstance(f.maker.fgraph.toposort()[-1].op,
+                                          Subtensor)
                 val = f(xval)
                 assert xval.__getitem__(slices).shape == val.shape
 
@@ -2545,6 +2595,15 @@ class test_shapeoptimizer(unittest.TestCase):
         f = theano.function([], out, mode=mode)
         f()
 
+    def test_constant_merge(self):
+        """This test the error in gh-1122 that is a caused by the
+        combination of merge optimizer and ShapeFeature.
+        """
+        x = tensor.constant([0, 0])
+        y = x[1:]
+        x1 = x - tensor.join(0, y, y)
+        x1.eval()
+
     def test_local_track_shape_i(self):
         class IdentityNoShape(gof.Op):
             '''Op that does not infer the output shape from the input one'''
@@ -2630,6 +2689,31 @@ class test_shapeoptimizer(unittest.TestCase):
         mode = theano.compile.get_default_mode().excluding('ShapeOpt')
         f = theano.function([X], expr, mode=mode)
         print f([[1, 2], [2, 3]])
+
+    def test_no_cycle(self):
+        # Optimizing this graph resulted in a cycle, see gh-1549
+        # This test depends on cuda
+        import theano.sandbox.cuda as cuda
+        if not cuda.cuda_available:
+            raise SkipTest("cuda not available")
+        if sys.version_info[:2] < (2, 5):
+            raise SkipTest("Test skipped due to a too old python")
+
+        pkl_filename = os.path.join(os.path.dirname(theano.__file__),
+                                    'tensor', 'tests', 'shape_opt_cycle.pkl')
+        # Due to incompatibilities between python 2 and 3 in the format
+        # of pickled numpy ndarray, we have to force an encoding
+        from theano.misc.pkl_utils import CompatUnpickler
+        pkl_file = open(pkl_filename, "rb")
+        try:
+            if PY3:
+                u = CompatUnpickler(pkl_file, encoding="latin1")
+            else:
+                u = CompatUnpickler(pkl_file)
+            fn_args = u.load()
+            theano.function(**fn_args)
+        finally:
+            pkl_file.close()
 
 
 class test_assert(utt.InferShapeTester):
@@ -3098,6 +3182,8 @@ class T_local_erf(unittest.TestCase):
         self.mode = theano.compile.mode.get_default_mode().including(
                 'canonicalize', 'fast_run').excluding('gpu', 'fusion')
         self.mode._optimizer.position_cutoff = 1.50001
+        if theano.config.cxx == '' and not theano.scalar.basic_scipy.imported_scipy_special:
+            raise SkipTest("erf need a c++ compiler or scipy")
 
     def test_local_one_plus_erf(self):
         val = numpy.asarray([-30, -3, -2, -1, 0, 1, 2, 3, 30],
@@ -3195,6 +3281,8 @@ class T_local_erfc(unittest.TestCase):
                 'canonicalize').including('fast_run').excluding('gpu')
         self.mode = self.mode_fusion.excluding('fusion')
         self.mode._optimizer.position_cutoff = 1.50001
+        if theano.config.cxx == '' and not theano.scalar.basic_scipy.imported_scipy_special:
+            raise SkipTest("erfc need a c++ compiler or scipy")
 
     def test_local_one_minus_erfc(self):
         """ test opt: 1-erfc(x) => erf(x) and -erfc(x)+1 => erf(x)

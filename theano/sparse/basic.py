@@ -251,7 +251,7 @@ def sp_zeros_like(x):
     # TODO: don't restrict to CSM formats
     _, _, indptr, shape = csm_properties(x)
     return CSM(format=x.format)(data=numpy.array([], dtype=x.type.dtype),
-                                indices=numpy.array([]),
+                                indices=numpy.array([], dtype='int32'),
                                 indptr=tensor.zeros_like(indptr),
                                 shape=shape)
 
@@ -300,6 +300,8 @@ class _sparse_py_operators:
     # def _as_TensorVariable(self):
     #    return dense_from_sparse(self)
 
+    def toarray(self):
+        return dense_from_sparse(self)
     shape = property(lambda self: tensor.shape(dense_from_sparse(self)))
     # don't worry!
     # the plan is that the ShapeFeature in tensor.opt will do shape propagation
@@ -511,23 +513,42 @@ class CSMProperties(gof.Op):
 
         data, indices, indptr, shape = csm_properties(csm)
         return [CSM(csm.format)(g[0], indices, indptr, shape)]
+
 # don't make this a function or it breaks some optimizations below
 csm_properties = CSMProperties()
+"""An CSMProperties object instance. It return the fields data,
+indices, indptr and shape of the sparse varible. Together they specify
+completly the the sparse variable when we know its format. Example::
+
+    the_data, the_indices, the_indptr, the_shape = csm_properties(a_sparse_var)
+"""
 
 
 def csm_data(csm):
+    """
+    return the data field of the sparse variable.
+    """
     return csm_properties(csm)[0]
 
 
 def csm_indices(csm):
+    """
+    return the indices field of the sparse variable.
+    """
     return csm_properties(csm)[1]
 
 
 def csm_indptr(csm):
+    """
+    return the indptr field of the sparse variable.
+    """
     return csm_properties(csm)[2]
 
 
 def csm_shape(csm):
+    """
+    return the shape field of the sparse variable.
+    """
     return csm_properties(csm)[3]
 
 
@@ -602,12 +623,22 @@ class CSM(gof.Op):
     def make_node(self, data, indices, indptr, shape):
         data = tensor.as_tensor_variable(data)
 
-        if not isinstance(indices, tensor.TensorVariable):
-            indices = theano._asarray(indices, dtype='int32')
-        if not isinstance(indptr, tensor.TensorVariable):
-            indptr = theano._asarray(indptr, dtype='int32')
-        if not isinstance(shape, tensor.TensorVariable):
-            shape = theano._asarray(shape, dtype='int32')
+        if not isinstance(indices, gof.Variable):
+            indices_ = numpy.asarray(indices)
+            indices_32 = theano._asarray(indices, dtype='int32')
+            assert (indices_ == indices_32).all()
+            indices = indices_32
+        if not isinstance(indptr, gof.Variable):
+            indptr_ = numpy.asarray(indptr)
+            indptr_32 = theano._asarray(indptr, dtype='int32')
+            assert (indptr_ == indptr_32).all()
+            indptr = indptr_32
+        if not isinstance(shape, gof.Variable):
+            shape_ = numpy.asarray(shape)
+            shape_32 = theano._asarray(shape, dtype='int32')
+            assert (shape_ == shape_32).all()
+            shape = shape_32
+
         indices = tensor.as_tensor_variable(indices)
         indptr = tensor.as_tensor_variable(indptr)
         shape = tensor.as_tensor_variable(shape)
@@ -1764,9 +1795,9 @@ class AddSD(gof.op.Op):
                 }
 
                 npy_intp N =  PyArray_DIMS(%(_indptr)s)[0]-1;
-                const npy_int32 * __restrict__ indptr = (npy_int32 *)%(_indptr)s->data;
-                const npy_int32 * __restrict__ indices = (npy_int32*)%(_indices)s->data;
-                const dtype_%(_data)s* __restrict__ data = (dtype_%(_data)s*)%(_data)s->data;
+                const npy_int32 * __restrict__ indptr = (npy_int32 *)PyArray_DATA(%(_indptr)s);
+                const npy_int32 * __restrict__ indices = (npy_int32*)PyArray_DATA(%(_indices)s);
+                const dtype_%(_data)s* __restrict__ data = (dtype_%(_data)s*)PyArray_DATA(%(_data)s);
 
                 dtype_%(y)s* ydata = (dtype_%(y)s*)PyArray_DATA(%(y)s);
                 dtype_%(z)s* zdata = (dtype_%(z)s*)PyArray_DATA(%(z)s);
@@ -1814,6 +1845,8 @@ class AddSD(gof.op.Op):
     def infer_shape(self, node, shapes):
         return [shapes[3]]
 
+    def c_code_cache_version(self):
+        return (1,)
 add_s_d = AddSD()
 
 
@@ -1889,6 +1922,10 @@ def add(x, y):
         x = as_sparse_variable(x)
     if hasattr(y, 'getnnz'):
         y = as_sparse_variable(y)
+    if not isinstance(x, theano.Variable):
+        x = theano.tensor.as_tensor_variable(x)
+    if not isinstance(y, theano.Variable):
+        y = theano.tensor.as_tensor_variable(y)
 
     x_is_sparse_variable = _is_sparse_variable(x)
     y_is_sparse_variable = _is_sparse_variable(y)
@@ -2209,6 +2246,10 @@ class HStack(gof.op.Op):
             assert _is_sparse(b)
         out[0] = scipy.sparse.hstack(block, format=self.format,
                                      dtype=self.dtype)
+        # Some version of scipy (at least 0.14.0.dev-c4314b0)
+        # Do not cast to the wanted dtype.
+        if out[0].dtype != self.dtype:
+            out[0] = out[0].astype(self.dtype)
 
     def grad(self, inputs, (gz, )):
         is_continuous = [(inputs[i].dtype in tensor.continuous_dtypes)
@@ -2284,6 +2325,10 @@ class VStack(HStack):
             assert _is_sparse(b)
         out[0] = scipy.sparse.vstack(block, format=self.format,
                                      dtype=self.dtype)
+        # Some version of scipy (at least 0.14.0.dev-c4314b0)
+        # Do not cast to the wanted dtype.
+        if out[0].dtype != self.dtype:
+            out[0] = out[0].astype(self.dtype)
 
     def grad(self, inputs, (gz, )):
         is_continuous = [(inputs[i].dtype in tensor.continuous_dtypes)
@@ -2338,8 +2383,7 @@ def vstack(blocks, format=None, dtype=None):
 
 
 class Remove0(gof.Op):
-    """Remove explicit zeros from a sparse matrix, and
-    resort indices.
+    """Remove explicit zeros from a sparse matrix.
 
     :param x: Sparse matrix.
 
@@ -2600,6 +2644,158 @@ def sqrt(x):
     # see decorator for function body
 
 
+class TrueDot(gof.op.Op):
+    """Calculate the true dot operation between two matrices.
+
+    `TrueDot` is different of `StructuredDot` for sparse matrix
+    since the grad of `TrueDot` is regular, i.e. not structured.
+
+    The parameter `grad_preserves_dense`, controlled by the
+    constructor, is a boolean flags to controls whether gradients
+    with respect to inputs are converted to dense matrices when the
+    corresponding input y is dense (not in a L{SparseVariable} wrapper).
+    This is generally a good idea when L{Dot} is in the middle of a
+    larger graph, because the types of gy will match that of y. This
+    conversion might be inefficient if the gradients are graph outputs
+    though, hence this mask.
+
+    :param x: Sparse matrix for the left operand.
+    :param y: Sparse or dense matrix for the right operand.
+
+    :return: The dot product `x` . `y` in a sparse matrix.
+
+    :note:
+     - The grad implemented is regular, i.e. not structured.
+    """
+
+    # TODO
+    # Simplify code by splitting into DotSS and DotSD.
+
+    def __init__(self, grad_preserves_dense=True):
+        self.grad_preserves_dense = grad_preserves_dense
+
+    def __eq__(self, other):
+        return (type(self) == type(other) and
+                self.grad_preserves_dense == other.grad_preserves_dense)
+
+    def __hash__(self):
+        return hash(type(self)) ^ hash(self.grad_preserves_dense)
+
+    def __ne__(self, other):
+        return not (self == other)
+
+    def make_node(self, x, y):
+        # NOTE
+        # Because of trickiness of implementing,
+        # we assume that the left argument x is a
+        # SparseVariable (not dense)
+
+        if x.type.dtype != y.type.dtype:
+            raise NotImplementedError()
+
+        if not _is_sparse_variable(x):
+            raise TypeError(x)
+
+        # These are the conversions performed by scipy.sparse.dot
+        if x.type.format == "csc" or x.type.format == "coo":
+            myformat = "csc"
+        elif x.type.format == "csr":
+            myformat = "csr"
+        else:
+            raise NotImplementedError()
+
+        inputs = [x, y]  # Need to convert? e.g. assparse
+        outputs = [SparseType(dtype=x.type.dtype,
+                              format=myformat).make_variable()]
+        return gof.Apply(self, inputs, outputs)
+
+    def perform(self, node, inp, out_):
+        # TODO
+        # -Verify that output is sufficiently sparse,
+        #  and raise a warning if it is not.
+        # -Also determine that we are storing the
+        #  output in the best storage format?
+
+        x, y = inp
+        out, = out_
+        rval = x.dot(y)
+        if not scipy.sparse.issparse(rval):
+            rval = getattr(scipy.sparse, x.format + '_matrix')(rval)
+        #x.dot call tocsr() that will "upcast" to ['int8', 'uint8', 'short',
+        # 'ushort', 'intc', 'uintc', 'longlong', 'ulonglong', 'single',
+        # 'double', 'longdouble', 'csingle', 'cdouble', 'clongdouble']
+        # But ulonglong is uint64 on x86-64, but with a different typenum!
+        if rval.dtype.num != numpy.dtype(str(rval.dtype)).num:
+            assert str(rval.dtype) == node.outputs[0].dtype
+            # Create a view with the expected typenum.
+            format = node.outputs[0].type.format
+            data = rval.data.view(dtype=node.outputs[0].dtype)
+            indices = rval.indices
+            indptr = rval.indptr
+            shape = rval.shape
+            # No need to copy indices and indptr as in CSM.perform(),
+            # as there is only one user of them.
+            if format == 'csc':
+                rval = scipy.sparse.csc_matrix((data, indices, indptr),
+                                               shape, copy=False)
+            else:
+                assert format == 'csr'
+                rval = scipy.sparse.csr_matrix((data, indices, indptr),
+                                               shape, copy=False)
+        out[0] = rval
+
+    def grad(self, (x, y), (gz, )):
+        assert _is_sparse_variable(gz)
+        assert _is_sparse_variable(x)
+
+        rval = [true_dot(gz, y.T), true_dot(x.T, gz)]
+        if _is_dense_variable(y):
+            if self.grad_preserves_dense:
+                rval[1] = dense_from_sparse(rval[1])
+        return rval
+
+    def infer_shape(self, node, shapes):
+        return [(shapes[0][0], shapes[1][1])]
+
+    def __str__(self):
+        return self.__class__.__name__
+
+
+def true_dot(x, y, grad_preserves_dense=True):
+    """
+    Operation for efficiently calculating the dot product when
+    one or all operands is sparse. Supported format are CSC and CSR.
+    The output of the operation is sparse.
+
+    :param x: Matrix variable.
+    :param y: Matrix variable.
+    :param grad_preserves_dense: if True and one on the input is dense,
+        make the output dense.
+
+    :return: The dot product `x`.`y` in a sparse format.
+    """
+    # TODO
+    # Maybe the triple-transposition formulation
+    # (when x is dense) is slow. See if there is a
+    # direct way to do this.
+
+    if hasattr(x, 'getnnz'):
+        x = as_sparse_variable(x)
+    if hasattr(y, 'getnnz'):
+        y = as_sparse_variable(y)
+
+    x_is_sparse_variable = _is_sparse_variable(x)
+    y_is_sparse_variable = _is_sparse_variable(y)
+
+    if not x_is_sparse_variable and not y_is_sparse_variable:
+        raise TypeError()
+    if x_is_sparse_variable:
+        return TrueDot(grad_preserves_dense)(x, y)
+    else:
+        assert y_is_sparse_variable
+        return transpose(TrueDot(grad_preserves_dense)(y.T, x.T))
+
+
 # Dot
 class StructuredDot(gof.Op):
     """Structured Dot is like dot, except that only the
@@ -2795,10 +2991,10 @@ class StructuredDotGradCSC(gof.Op):
         if (PyArray_NDIM(%(_indices)s) != 1) {PyErr_SetString(PyExc_NotImplementedError, "rank(indices) != 1"); %(fail)s;}
         if (PyArray_NDIM(%(_indptr)s) != 1) {PyErr_SetString(PyExc_NotImplementedError, "rank(indptr) != 1"); %(fail)s;}
 
-        if( PyArray_DESCR(%(_indices)s)->type_num != NPY_INT32) {
+        if( PyArray_TYPE(%(_indices)s) != NPY_INT32) {
         PyErr_SetString(PyExc_NotImplementedError, "C"); %(fail)s;}
 
-        if( PyArray_DESCR(%(_indptr)s)->type_num != NPY_INT32)
+        if( PyArray_TYPE(%(_indptr)s) != NPY_INT32)
         {PyErr_SetString(PyExc_NotImplementedError, "D"); %(fail)s;}
 
         if( PyArray_DIMS(%(_d)s)[1] != PyArray_DIMS(%(_g)s)[1])
@@ -2808,29 +3004,29 @@ class StructuredDotGradCSC(gof.Op):
             || (PyArray_DIMS(%(_zout)s)[0] != PyArray_DIMS(%(_indices)s)[0]))
         {
             Py_XDECREF(%(_zout)s);
-            %(_zout)s = (PyArrayObject*) PyArray_SimpleNew(1, PyArray_DIMS(%(_indices)s), PyArray_DESCR(%(_g)s)->type_num);
+            %(_zout)s = (PyArrayObject*) PyArray_SimpleNew(1, PyArray_DIMS(%(_indices)s), PyArray_TYPE(%(_g)s));
         }
 
         {   //makes it compile even though labels jump over variable definitions.
             npy_intp nnz = PyArray_DIMS(%(_indices)s)[0];
             npy_intp N =  PyArray_DIMS(%(_indptr)s)[0]-1; //TODO: error checking with this
 
-            npy_intp Sindices = %(_indices)s->strides[0]/PyArray_DESCR(%(_indices)s)->elsize;
-            npy_intp Sindptr = %(_indptr)s->strides[0]/PyArray_DESCR(%(_indptr)s)->elsize;
+            npy_intp Sindices = PyArray_STRIDES(%(_indices)s)[0]/PyArray_DESCR(%(_indices)s)->elsize;
+            npy_intp Sindptr = PyArray_STRIDES(%(_indptr)s)[0]/PyArray_DESCR(%(_indptr)s)->elsize;
 
-            const npy_intp Sd1 = %(_d)s->strides[1]/PyArray_DESCR(%(_d)s)->elsize;
-            const npy_intp Sg1 = %(_g)s->strides[1]/PyArray_DESCR(%(_g)s)->elsize;
+            const npy_intp Sd1 = PyArray_STRIDES(%(_d)s)[1]/PyArray_DESCR(%(_d)s)->elsize;
+            const npy_intp Sg1 = PyArray_STRIDES(%(_g)s)[1]/PyArray_DESCR(%(_g)s)->elsize;
 
             const npy_intp K = PyArray_DIMS(%(_d)s)[1];
 
-            const npy_int32 * __restrict__ indptr = (npy_int32 *)%(_indptr)s->data;
-            const npy_int32 * __restrict__ indices = (npy_int32 *)%(_indices)s->data;
+            const npy_int32 * __restrict__ indptr = (npy_int32 *)PyArray_DATA(%(_indptr)s);
+            const npy_int32 * __restrict__ indices = (npy_int32 *)PyArray_DATA(%(_indices)s);
 
             // loop over columns
             for (npy_int32 j = 0; j < N; ++j)
             {
                 // extract j-th row of dense matrix
-                const dtype_%(_d)s* __restrict__ d_row = (dtype_%(_d)s*)(%(_d)s->data + %(_d)s->strides[0] * j);
+                const dtype_%(_d)s* __restrict__ d_row = (dtype_%(_d)s*)(PyArray_BYTES(%(_d)s) + PyArray_STRIDES(%(_d)s)[0] * j);
                 if(j >= PyArray_DIMS(%(_d)s)[0]) {PyErr_SetString(PyExc_NotImplementedError, "G"); %(fail)s;}
 
                 // for each non-null value in the sparse column
@@ -2840,7 +3036,7 @@ class StructuredDotGradCSC(gof.Op):
                     npy_int32 i = indices[i_idx * Sindices];
 
                     // extract corresponding row in gradient
-                    const dtype_%(_g)s* __restrict__ g_row = (dtype_%(_g)s*)(%(_g)s->data + %(_g)s->strides[0] * i);
+                    const dtype_%(_g)s* __restrict__ g_row = (dtype_%(_g)s*)(PyArray_BYTES(%(_g)s) + PyArray_STRIDES(%(_g)s)[0] * i);
                     double ip = 0.0;
 
                     // make sure that row index is not bigger than actual number of rows
@@ -2856,7 +3052,7 @@ class StructuredDotGradCSC(gof.Op):
                     }
 
                     // write resulting gradient to sparse output
-                    ((dtype_%(_zout)s* __restrict__)(%(_zout)s->data + i_idx * %(_zout)s->strides[0]))[0] = ip;
+                    ((dtype_%(_zout)s* __restrict__)(PyArray_BYTES(%(_zout)s) + i_idx * PyArray_STRIDES(%(_zout)s)[0]))[0] = ip;
                 }
             }
         }
@@ -2931,10 +3127,10 @@ class StructuredDotGradCSR(gof.Op):
         if (PyArray_NDIM(%(_indices)s) != 1) {PyErr_SetString(PyExc_NotImplementedError, "rank(indices) != 1"); %(fail)s;}
         if (PyArray_NDIM(%(_indptr)s) != 1) {PyErr_SetString(PyExc_NotImplementedError, "rank(indptr) != 1"); %(fail)s;}
 
-        if( PyArray_DESCR(%(_indices)s)->type_num != NPY_INT32) {
+        if( PyArray_TYPE(%(_indices)s) != NPY_INT32) {
         PyErr_SetString(PyExc_NotImplementedError, "C"); %(fail)s;}
 
-        if( PyArray_DESCR(%(_indptr)s)->type_num != NPY_INT32)
+        if( PyArray_TYPE(%(_indptr)s) != NPY_INT32)
         {PyErr_SetString(PyExc_NotImplementedError, "D"); %(fail)s;}
 
         if( PyArray_DIMS(%(_d)s)[1] != PyArray_DIMS(%(_g)s)[1])
@@ -2944,7 +3140,7 @@ class StructuredDotGradCSR(gof.Op):
             || (PyArray_DIMS(%(_zout)s)[0] != PyArray_DIMS(%(_indices)s)[0]))
         {
             Py_XDECREF(%(_zout)s);
-            %(_zout)s = (PyArrayObject*) PyArray_SimpleNew(1, PyArray_DIMS(%(_indices)s), PyArray_DESCR(%(_g)s)->type_num);
+            %(_zout)s = (PyArrayObject*) PyArray_SimpleNew(1, PyArray_DIMS(%(_indices)s), PyArray_TYPE(%(_g)s));
         }
 
         {   //makes it compile even though labels jump over variable definitions.
@@ -2952,16 +3148,16 @@ class StructuredDotGradCSR(gof.Op):
             // extract number of rows
             npy_intp N =  PyArray_DIMS(%(_indptr)s)[0]-1; //TODO: error checking with this
 
-            npy_intp Sindices = %(_indices)s->strides[0]/PyArray_DESCR(%(_indices)s)->elsize;
-            npy_intp Sindptr = %(_indptr)s->strides[0]/PyArray_DESCR(%(_indptr)s)->elsize;
+            npy_intp Sindices = PyArray_STRIDES(%(_indices)s)[0]/PyArray_DESCR(%(_indices)s)->elsize;
+            npy_intp Sindptr = PyArray_STRIDES(%(_indptr)s)[0]/PyArray_DESCR(%(_indptr)s)->elsize;
 
-            const npy_intp Sd1 = %(_d)s->strides[1]/PyArray_DESCR(%(_d)s)->elsize;
-            const npy_intp Sg1 = %(_g)s->strides[1]/PyArray_DESCR(%(_g)s)->elsize;
+            const npy_intp Sd1 = PyArray_STRIDES(%(_d)s)[1]/PyArray_DESCR(%(_d)s)->elsize;
+            const npy_intp Sg1 = PyArray_STRIDES(%(_g)s)[1]/PyArray_DESCR(%(_g)s)->elsize;
 
             const npy_intp K = PyArray_DIMS(%(_d)s)[1];
 
-            const npy_int32 * __restrict__ indptr = (npy_int32 *)%(_indptr)s->data;
-            const npy_int32 * __restrict__ indices = (npy_int32 *)%(_indices)s->data;
+            const npy_int32 * __restrict__ indptr = (npy_int32 *)PyArray_DATA(%(_indptr)s);
+            const npy_int32 * __restrict__ indices = (npy_int32 *)PyArray_DATA(%(_indices)s);
 
             // loop over columns of sparse matrix
             for (npy_int32 i = 0; i < N; ++i)
@@ -2973,11 +3169,11 @@ class StructuredDotGradCSR(gof.Op):
                     npy_int32 j = indices[j_idx * Sindices];
 
                     // extract j-th row of dense matrix
-                    const dtype_%(_d)s* __restrict__ d_row = (dtype_%(_d)s*)(%(_d)s->data + %(_d)s->strides[0] * j);
+                    const dtype_%(_d)s* __restrict__ d_row = (dtype_%(_d)s*)(PyArray_BYTES(%(_d)s) + PyArray_STRIDES(%(_d)s)[0] * j);
                     if(j >= PyArray_DIMS(%(_d)s)[0]) {PyErr_SetString(PyExc_NotImplementedError, "G"); %(fail)s;}
 
                     // extract corresponding row in gradient
-                    const dtype_%(_g)s* __restrict__ g_row = (dtype_%(_g)s*)(%(_g)s->data + %(_g)s->strides[0] * i);
+                    const dtype_%(_g)s* __restrict__ g_row = (dtype_%(_g)s*)(PyArray_BYTES(%(_g)s) + PyArray_STRIDES(%(_g)s)[0] * i);
                     double ip = 0.0;
 
                     // make sure that row index is not bigger than actual number of rows
@@ -2993,7 +3189,7 @@ class StructuredDotGradCSR(gof.Op):
                     }
 
                     // write resulting gradient to sparse output
-                    ((dtype_%(_zout)s* __restrict__)(%(_zout)s->data + j_idx * %(_zout)s->strides[0]))[0] = ip;
+                    ((dtype_%(_zout)s* __restrict__)(PyArray_BYTES(%(_zout)s) + j_idx * PyArray_STRIDES(%(_zout)s)[0]))[0] = ip;
                 }
             }
         }

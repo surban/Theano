@@ -154,7 +154,7 @@ class SharedVariable(Variable):
                         " instead.")
 
     # We keep this just to raise an error
-    value = property(_value_get, _value_set),
+    value = property(_value_get, _value_set)
 
 
 def shared_constructor(ctor, remove=False):
@@ -201,7 +201,10 @@ def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):
                            ' using \'theano.shared(..., borrow=True)\'',)
         raise
 
-    raise TypeError('No suitable SharedVariable constructor could be found',
+    raise TypeError('No suitable SharedVariable constructor could be found.'
+                    ' Are you sure all kwargs are supported?'
+                    ' We do not support the parameter dtype or type.'
+                    ' value="%s". parameters="%s"' %
                     (value, kwargs))
 
 shared.constructors = []

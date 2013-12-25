@@ -1,13 +1,10 @@
 __docformat__ = "restructuredtext en"
-import sys
-import unittest
-import numpy as N
+import numpy
 from theano.tests import unittest_tools as utt
 
 from theano.tensor.raw_random import *
 from theano.tensor import (raw_random, ivector, dvector, iscalar, dcol,
                            dtensor3)
-from theano.tests import unittest_tools as utt
 from theano import tensor
 
 from theano import compile, config, gof
@@ -474,6 +471,39 @@ class T_random_function(utt.InferShapeTester):
                     update=post_r2, mutable=True)],
                 [out2], accept_inplace=True)
         self.assertRaises(ValueError, f2)
+    
+    def test_choice(self):
+        """Test that raw_random.choice generates the same
+        results as numpy."""
+        # numpy.random.choice is only available for numpy versions >= 1.7
+        major, minor, _ = numpy.version.short_version.split('.')
+        if (int(major), int(minor)) < (1, 7):
+            raise utt.SkipTest('choice requires at NumPy version >= 1.7 '
+                               '(%s)' % numpy.__version__)
+        
+        # Check over two calls to see if the random state is correctly updated.
+        rng_R = random_state_type()
+        # Use non-default parameters, and larger dimensions because of
+        # the integer nature of the result
+        post_r, out = choice(rng_R, (11, 8), 10, 1, 0)
+
+        f = compile.function(
+                [compile.In(rng_R,
+                    value=numpy.random.RandomState(utt.fetch_seed()),
+                    update=post_r, mutable=True)],
+                [out], accept_inplace=True)
+
+        numpy_rng = numpy.random.RandomState(utt.fetch_seed())
+        val0 = f()
+        val1 = f()
+        numpy_val0 = numpy_rng.choice(10, (11, 8), True, None)
+        numpy_val1 = numpy_rng.choice(10, (11, 8), True, None)
+        print val0
+        print numpy_val0
+        print val1
+        print numpy_val1
+        self.assertTrue(numpy.allclose(val0, numpy_val0))
+        self.assertTrue(numpy.allclose(val1, numpy_val1))
 
     def test_permutation(self):
         """Test that raw_random.permutation generates the same
@@ -544,6 +574,42 @@ class T_random_function(utt.InferShapeTester):
 
         self.assertRaises(ValueError, f, rng_state0, [4])
         self.assertRaises(ValueError, f, rng_state0, [4, 3, 4, 5])
+
+    def test_mixed_shape(self):
+        # Test when the provided shape is a tuple of ints and scalar vars
+        rng_R = random_state_type()
+        shape0 = tensor.lscalar()
+        shape = (shape0, 3)
+        post_r, u = uniform(rng_R, size=shape, ndim=2)
+        f = compile.function([rng_R, shape0], u)
+        rng_state0 = numpy.random.RandomState(utt.fetch_seed())
+
+        assert f(rng_state0, 2).shape == (2, 3)
+        assert f(rng_state0, 8).shape == (8, 3)
+
+        post_r, v = uniform(rng_R, size=shape)
+        g = compile.function([rng_R, shape0], v)
+        assert g(rng_state0, 2).shape == (2, 3)
+        assert g(rng_state0, 8).shape == (8, 3)
+
+    def test_mixed_shape_bcastable(self):
+        # Test when the provided shape is a tuple of ints and scalar vars
+        rng_R = random_state_type()
+        shape0 = tensor.lscalar()
+        shape = (shape0, 1)
+        post_r, u = uniform(rng_R, size=shape, ndim=2)
+        assert u.broadcastable == (False, True)
+        f = compile.function([rng_R, shape0], u)
+        rng_state0 = numpy.random.RandomState(utt.fetch_seed())
+
+        assert f(rng_state0, 2).shape == (2, 1)
+        assert f(rng_state0, 8).shape == (8, 1)
+
+        post_r, v = uniform(rng_R, size=shape)
+        assert v.broadcastable == (False, True)
+        g = compile.function([rng_R, shape0], v)
+        assert g(rng_state0, 2).shape == (2, 1)
+        assert g(rng_state0, 8).shape == (8, 1)
 
     def test_default_shape(self):
         rng_R = random_state_type()

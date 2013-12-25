@@ -171,7 +171,8 @@ class BadThunkOutput(DebugModeError):
         of the exception"""
         sio = StringIO()
         print >> sio, "BadThunkOutput"
-        print >> sio, "  variable    :", self.r
+        print >> sio, "  Apply   :", self.r.owner
+        print >> sio, "  op      :", self.offending_op()
         print >> sio, "  Outputs Type:", self.r.type
         print >> sio, "  Outputs Shape:", getattr(self.val1, 'shape', None)
         print >> sio, "  Outputs Strides:", getattr(self.val1, 'strides', None)
@@ -180,60 +181,15 @@ class BadThunkOutput(DebugModeError):
                                           for val in self.inputs_val]
         print >> sio, "  Inputs Strides:", [getattr(val, 'strides', None)
                                             for val in self.inputs_val]
-        print >> sio, "  Apply   :", self.r.owner
+        print >> sio, "  Bad Variable:", self.r
         print >> sio, "  thunk1  :", self.thunk1
         print >> sio, "  thunk2  :", self.thunk2
-        print >> sio, "  val1    :", self.val1
-        print >> sio, "  val2    :", self.val2
-        print >> sio, "  op      :", self.offending_op()
-        try:
-            ssio = StringIO()
-            print >> ssio, "  Value 1 : shape, dtype, strides, min, max, n_inf, n_nan:",
-            print >> ssio, self.val1.shape,
-            print >> ssio, self.val1.dtype,
-            print >> ssio, self.val1.strides,
-            print >> ssio, self.val1.min(),
-            print >> ssio, self.val1.max(),
-            print >> ssio, numpy.isinf(self.val1).sum(),
-            print >> ssio, numpy.isnan(self.val1).sum(),
-            # only if all succeeds to we add anything to sio
-            print >> sio, ssio.getvalue()
-        except Exception:
-            pass
-        try:
-            ssio = StringIO()
-            print >> ssio, "  Value 2 : shape, dtype, strides, min, max, n_inf, n_nan:",
-            print >> ssio, self.val2.shape,
-            print >> ssio, self.val2.dtype,
-            print >> ssio, self.val2.strides,
-            print >> ssio, self.val2.min(),
-            print >> ssio, self.val2.max(),
-            print >> ssio, numpy.isinf(self.val2).sum(),
-            print >> ssio, numpy.isnan(self.val2).sum(),
-            # only if all succeeds to we add anything to sio
-            print >> sio, ssio.getvalue()
-        except Exception:
-            pass
-        try:
-            ov = numpy.asarray(self.val1)
-            nv = numpy.asarray(self.val2)
-            ssio = StringIO()
-            absdiff = numpy.absolute(nv - ov)
-            print >> ssio, "  Max Abs Diff: ", numpy.max(absdiff)
-            print >> ssio, "  Mean Abs Diff: ", numpy.mean(absdiff)
-            print >> ssio, "  Median Abs Diff: ", numpy.median(absdiff)
-            print >> ssio, "  Std Abs Diff: ", numpy.std(absdiff)
-            reldiff = numpy.absolute(nv - ov) / (numpy.absolute(nv) +
-                                                 numpy.absolute(ov))
-            print >> ssio, "  Max Rel Diff: ", numpy.max(reldiff)
-            print >> ssio, "  Mean Rel Diff: ", numpy.mean(reldiff)
-            print >> ssio, "  Median Rel Diff: ", numpy.median(reldiff)
-            print >> ssio, "  Std Rel Diff: ", numpy.std(reldiff)
-            # only if all succeeds to we add anything to sio
-            print >> sio, ssio.getvalue()
-        except Exception:
-            pass
-        return sio.getvalue()
+
+        #Don't import it at the top of the file to prevent circular import.
+        utt = theano.tests.unittest_tools
+        print >> sio, utt.str_diagnostic(self.val1, self.val2, None, None)
+        ret = sio.getvalue()
+        return ret
 
 
 class BadOptimization(DebugModeError):
@@ -675,9 +631,8 @@ def _optcheck_fgraph(input_specs, output_specs, accept_inplace=False):
     updates = [spec.update for spec in input_specs if spec.update]
     orig_outputs = [spec.variable for spec in output_specs] + updates
 
-    inputs, outputs = gof.graph.clone(orig_inputs, orig_outputs)
     equivalence_tracker = _VariableEquivalenceTracker()
-    fgraph = gof.fg.FunctionGraph(inputs, outputs,
+    fgraph = gof.fg.FunctionGraph(orig_inputs, orig_outputs,
             # DestroyHandler may not be needed yet, as there is usually no
             # inplace operation in the graph at this stage. DestroyHandler
             # will be installed by an optimization after canonicalization,
@@ -702,7 +657,7 @@ def _optcheck_fgraph(input_specs, output_specs, accept_inplace=False):
                 break
 
     # We need to protect all immutable inputs from inplace operations.
-    fgraph.attach_feature(Supervisor(input for spec, input in zip(input_specs, inputs)
+    fgraph.attach_feature(Supervisor(input for spec, input in zip(input_specs, fgraph.inputs)
                           if not (spec.mutable or (hasattr(fgraph, 'destroyers')
                                                    and fgraph.destroyers(input)))))
 
@@ -1472,21 +1427,25 @@ class _VariableEquivalenceTracker(object):
         self.reasons = {}
         self.replaced_by = {}
         self.event_list = []
+        for node in fgraph.toposort():
+            self.on_import(fgraph, node, "on_attach")
 
     def on_detach(self, fgraph):
         assert fgraph is self.fgraph
         self.fgraph = None
 
-    def on_prune(self, fgraph, node):
-        self.event_list.append(_FunctionGraphEvent('prune', node))
+    def on_prune(self, fgraph, node, reason):
+        self.event_list.append(_FunctionGraphEvent('prune', node,
+                                                   reason=reason))
         #print 'PRUNING NODE', node, id(node)
         assert node in self.active_nodes
         assert node not in self.inactive_nodes
         self.active_nodes.remove(node)
         self.inactive_nodes.add(node)
 
-    def on_import(self, fgraph, node):
-        self.event_list.append(_FunctionGraphEvent('import', node))
+    def on_import(self, fgraph, node, reason):
+        self.event_list.append(_FunctionGraphEvent('import', node,
+                                                   reason=reason))
 
         #print 'NEW NODE', node, id(node)
         assert node not in self.active_nodes
@@ -1635,8 +1594,9 @@ class _Linker(gof.link.LocalLinker):
                 # directly from PureOp)
                 if not isinstance(node.op, gof.op.Op):
                     raise utils.MethodNotDefined()
-                e = FunctionGraph(*graph.clone(node.inputs, node.outputs))
-                e.toposort = lambda: e.apply_nodes  # WARNING: STOCHASTIC ORDER
+                e = FunctionGraph(node.inputs, node.outputs)
+                # The toposort isn't a stochastic order as it contain only one node.
+                e.toposort = lambda: list(e.apply_nodes)
                 #  Specifically... e.nodes is a set, but of only 1 element
 
                 cl = CLinker().accept(e, [r for r, r2 in zip(e.outputs,
@@ -1679,6 +1639,8 @@ class _Linker(gof.link.LocalLinker):
                                            storage_map,
                                            compute_map,
                                            no_recycling)
+                thunk.inputs = [storage_map[v] for v in node.inputs]
+                thunk.outputs = [storage_map[v] for v in node.outputs]
 
                 # Right now there is no op that when called check if
                 # its ouputs are computed and don't recompute itself.
@@ -1830,6 +1792,27 @@ class _Linker(gof.link.LocalLinker):
                             # shouldn't have put it into the list in
                             # the first place
                             thunk_py = None
+                        except Exception, e:
+                            # I think that only 1 optimization can
+                            # insert a given apply node. If that is not True,
+                            # we would need to loop over all node outputs,
+                            # But this make the output uglier.
+                            reason = fgraph.equivalence_tracker.reasons[
+                                node.outputs[0]]
+                            if not reason:
+                                raise
+                            opt = str(reason[0][0])
+                            msg = (
+"An optimization (probably %s ) inserted an apply node that raise an error." % opt +
+"\nThe information we have about this optimizations is:" + str(reason[0][1]) +
+"\n" + reason[0][2] +
+"\n\nThe original exception: \n" + str(e))
+                            new_e = e.__class__(msg)
+                            exc_type, exc_value, exc_trace = sys.exc_info()
+                            exc_value = new_e
+                            raise_with_op(node, thunk_c,
+                                          (exc_type, exc_value, exc_trace))
+
 
                     if thunk_py:
                         # check output values for type-correctness
@@ -1907,8 +1890,26 @@ class _Linker(gof.link.LocalLinker):
                         ## First time, with None in output_storage
                         try:
                             thunk_c()
-                        except Exception:
-                            raise_with_op(node, thunk_c)
+                        except Exception, e:
+                            # I think that only 1 optimization can
+                            # insert a given apply node. If that is not True,
+                            # we would need to loop over all node outputs,
+                            # But this make the output uglier.
+                            reason = fgraph.equivalence_tracker.reasons[
+                                node.outputs[0]]
+                            if not reason:
+                                raise
+                            opt = str(reason[0][0])
+                            msg = (
+"An optimization (probably %s ) inserted an apply node that raise an error." % opt +
+"\nThe information we have about this optimizations is:" + str(reason[0][1]) +
+"\n" + reason[0][2] +
+"\n\nThe original exception: \n" + str(e))
+                            new_e = e.__class__(msg)
+                            exc_type, exc_value, exc_trace = sys.exc_info()
+                            exc_value = new_e
+                            raise_with_op(node, thunk_c,
+                                          (exc_type, exc_value, exc_trace))
 
                         for r in node.outputs:
                             # check output values for type-correctness
@@ -2139,29 +2140,29 @@ class _Maker(FunctionMaker):  # inheritance buys a few helper functions
         # Check if some input variables are unused
         self._check_unused_inputs(inputs, outputs, on_unused_input)
 
-#TODO: REMOVE THIS CRUFT - it's complicated for SymbolicInputKits
+        # Make a list of (SymbolicInput|SymblicInputKits, indices, [SymbolicInput,...]), one 
+        # tuple for each input. (See Function.indices for more details)
         indices = [[input] + self.expand_in(input, _inputs) for input in inputs]
-        expanded_inputs = reduce(list.__add__, [list(z)
-                                                for x, y, z in indices], [])
-
-        assert expanded_inputs == inputs  #JB - I added this to make sure we could delete above
 
         # make the fgraph
         for i in xrange(mode.stability_patience):
             fgraph, additional_outputs, equivalence_tracker = _optcheck_fgraph(
-                expanded_inputs, outputs, accept_inplace)
+                inputs, outputs, accept_inplace)
             fgraph.equivalence_tracker = equivalence_tracker
 
             # optimize the fgraph
             compute_test_value_orig = theano.config.compute_test_value
+            add_stack_trace_on_call = gof.Op.add_stack_trace_on_call
             try:
-                theano.config.compute_test_value = "off"
+                theano.config.compute_test_value = theano.config.compute_test_value_opt
+                gof.Op.add_stack_trace_on_call = False  # Should it be 0 == i?
                 optimizer(fgraph)
 
                 theano.compile.function_module.insert_deepcopy(fgraph, inputs,
                                                     outputs + additional_outputs)
             finally:
                 theano.config.compute_test_value = compute_test_value_orig
+                gof.Op.add_stack_trace_on_call = add_stack_trace_on_call
 
             if i:
                 li = fgraph.equivalence_tracker.event_list
@@ -2227,7 +2228,7 @@ class _Maker(FunctionMaker):  # inheritance buys a few helper functions
 
         self.indices = indices
         self.inputs = inputs
-        self.expanded_inputs = expanded_inputs
+        self.expanded_inputs = inputs
         self.outputs = outputs
         self.unpack_single = unpack_single
         self.return_none = return_none

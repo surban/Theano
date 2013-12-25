@@ -1,32 +1,24 @@
-#from nose.plugins.skip import SkipTest
-#import traceback
-import itertools
-import sys
-
-import theano.tensor as T
-from theano import tensor
-from theano.compat import PY3, exc_message
-from theano.gof.python25 import product as itertools_product
-from theano.gof.python25 import any
-from theano.printing import pp
+from copy import copy
+from unittest import TestCase
 
 import numpy
-import theano
 from numpy import (arange, array, common_type, complex64, complex128, float32,
                   float64, newaxis, shape, transpose, zeros)
 from numpy.testing import assert_array_almost_equal
-#from numpy.testing import dec
-#from numpy.testing.noseclasses import KnownFailureTest
+
+import theano
+import theano.tensor as T
+from theano import tensor, Param, shared, config
+from theano.compat import exc_message
+from theano.gof.python25 import product as itertools_product
+from theano.gof.python25 import any
+from theano.printing import pp
 from theano.tensor.blas import (_dot22, _dot22scalar, res_is_a, _as_scalar,
                                 _is_real_matrix, _gemm_canonicalize,
                                 _factor_canonicalized, Gemm, Gemv,
                                 gemm_inplace, gemm_no_inplace,
                                 InconsistencyError, Ger, ger, ger_destructive)
-from unittest import TestCase
 from theano.tests import unittest_tools
-from copy import copy, deepcopy
-
-from theano import Param, shared, config
 from test_basic import (_approx_eq, as_tensor_variable, inplace_func,
         compile, inplace)
         #, constant, eval_outputs)
@@ -361,11 +353,8 @@ class t_gemm(TestCase):
                     z = tz.get_value(borrow=True, return_internal_type=True)
                     z[:, :, i] = z_i
 
-                    self.assertTrue(
-                            _approx_eq(z_after[:, :, i],
-                                       tz.get_value(borrow=True)[:, :, i]),
-                            (z_orig[:, :, i], z_after[:, :, i],
-                                z[:, :, i], z_after[:, :, i] - z[:, :, i]))
+                    unittest_tools.assert_allclose(z_after[:, :, i],
+                                                   tz.get_value(borrow=True)[:, :, i])
 
                 tz_i = gemm_no_inplace(tz[:, :, i], ta, tx[
                     :, :, i], ty[:, :, i], tb)
@@ -374,11 +363,8 @@ class t_gemm(TestCase):
                         mode=compile.Mode(optimizer=None, linker=l))
                 for j in xrange(3):
                     g_i()
-                    self.assertTrue(
-                            _approx_eq(z_after[:, :, i],
-                                       tz.get_value(borrow=True)[:, :, i]),
-                            (z_orig[:, :, i], z_after[:, :, i],
-                                z[:, :, i], z_after[:, :, i] - z[:, :, i]))
+                    unittest_tools.assert_allclose(z_after[:, :, i],
+                                                   tz.get_value(borrow=True)[:, :, i])
 
         t(C, A, B)
         t(C.transpose((1, 0, 2)), A, B)
@@ -1022,6 +1008,60 @@ def test_dot22scalar_cast():
             assert _dot22 in [x.op for x in f.maker.fgraph.toposort()]
         else:
             assert _dot22scalar in [x.op for x in f.maker.fgraph.toposort()]
+
+
+def test_local_dot22_to_dot22scalar():
+    """
+    This test that the bug in gh-1507 is really fixed
+    """
+    A = T.dmatrix()
+    mode = theano.compile.mode.get_default_mode()
+    opt = theano.tensor.opt.in2out(
+        theano.tensor.blas.local_dot22_to_dot22scalar)
+    mode = mode.__class__(optimizer=opt)
+
+    x = T.dscalar()
+    y = T.dscalar()
+    z = T.dscalar()
+    # make sure to don't have dimshuffle as we don't opt those cases
+    m = T.dmatrix()
+    r = T.drow()
+    for idx, node in enumerate([
+        #Old working cases
+        T.mul(_dot22(A, A), x),
+        T.mul(_dot22(A, A), x, y),
+        T.mul(_dot22(A, A), x, r),
+        T.mul(_dot22(A, A), m, x),
+        T.mul(_dot22(A, A), x, m),
+        T.mul(_dot22(A, A), x, (m * y)),
+        T.mul(_dot22(A, A), (m * y), x),
+        T.mul(_dot22(A, A), x, (r * y)),
+        T.mul(_dot22(A, A), (r * y), x),
+        T.mul(_dot22(A, A), (x * y), (m * x)),
+        T.mul(_dot22(A, A), (r * y), (y * x)),
+
+        # Case that was raising an assert that is fixed in gh-1507
+        T.mul(_dot22(A, A), (m * y), m),
+        T.mul(_dot22(A, A), m, (m * y)),
+        T.mul(_dot22(A, A), (r * y), (m * x)),
+
+        # assert fixed in gh-1507 and opt case added in gh-1515
+        T.mul(_dot22(A, A), (m * y * z), m),
+        T.mul(_dot22(A, A), m, (m * y * z)),
+
+        # Opt case added in gh-1515
+        T.mul(_dot22(A, A), T.mul(m, y, z), m),
+        T.mul(_dot22(A, A), m, T.mul(m, y, z)),
+
+        #Case that opt later in gh-1515
+        T.mul(_dot22(A, A), (r * m), (m * x)),
+    ]):
+        node2 = theano.tensor.blas.local_dot22_to_dot22scalar.transform(
+            node.owner)
+        assert node2
+        f = theano.function([x, y, z, m, r, A], node,
+                            mode=mode, on_unused_input='ignore')
+        f(.1, .2, .3, [[1, 2], [3, 4]], [[5, 6]], [[7, 8], [9, 10]])
 
 
 def test_dot_w_self():

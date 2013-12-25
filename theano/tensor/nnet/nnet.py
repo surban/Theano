@@ -8,6 +8,7 @@ import numpy
 import theano
 from theano import gof
 from theano.tensor import basic as tensor
+from theano.tensor import subtensor
 from theano.tensor import elemwise, dmatrix, fmatrix, dvector, fvector
 from theano.tensor import opt
 from theano.compile import optdb
@@ -117,14 +118,14 @@ class SoftmaxWithBias(gof.Op):
             PyErr_SetString(PyExc_ValueError, "b not 1d tensor");
             %(fail)s;
         }
-        if ((PyArray_DESCR(%(x)s)->type_num != NPY_DOUBLE) &&
-            (PyArray_DESCR(%(x)s)->type_num != NPY_FLOAT))
+        if ((PyArray_TYPE(%(x)s) != NPY_DOUBLE) &&
+            (PyArray_TYPE(%(x)s) != NPY_FLOAT))
         {
             PyErr_SetString(PyExc_TypeError, "not a float");
             %(fail)s;
         }
-        if ((PyArray_DESCR(%(b)s)->type_num != NPY_DOUBLE) &&
-            (PyArray_DESCR(%(b)s)->type_num != NPY_FLOAT))
+        if ((PyArray_TYPE(%(b)s) != NPY_DOUBLE) &&
+            (PyArray_TYPE(%(b)s) != NPY_FLOAT))
         {
             PyErr_SetString(PyExc_TypeError, "b not float");
             %(fail)s;
@@ -263,15 +264,15 @@ class SoftmaxGrad(gof.Op):
         dy, sm = inp
         dx, = out
         return '''
-        if ((PyArray_DESCR(%(dy)s)->type_num != NPY_DOUBLE) &&
-            (PyArray_DESCR(%(dy)s)->type_num != NPY_FLOAT))
+        if ((PyArray_TYPE(%(dy)s) != NPY_DOUBLE) &&
+            (PyArray_TYPE(%(dy)s) != NPY_FLOAT))
         {
             PyErr_SetString(PyExc_TypeError,
                  "types should be float or float64");
             %(fail)s;
         }
-        if ((PyArray_DESCR(%(sm)s)->type_num != NPY_DOUBLE) &&
-            (PyArray_DESCR(%(sm)s)->type_num != NPY_FLOAT))
+        if ((PyArray_TYPE(%(sm)s) != NPY_DOUBLE) &&
+            (PyArray_TYPE(%(sm)s) != NPY_FLOAT))
         {
             PyErr_SetString(PyExc_TypeError,
                  "types should be float or float64");
@@ -352,18 +353,15 @@ class Softmax(gof.Op):
         x = tensor.as_tensor_variable(x)
         if x.type.ndim not in (1, 2) \
                 or x.type.dtype not in tensor.float_dtypes:
-            raise ValueError('x must be 1-d or 2-d tensor of floats')
+            raise ValueError('x must be 1-d or 2-d tensor of floats. Got ', x.type)
         if x.ndim == 1:
             x = tensor.shape_padleft(x, n_ones=1)
         return Apply(self, [x], [x.type()])
 
     def perform(self, node, input_storage, output_storage):
         x, = input_storage
-        sm = numpy.zeros_like(x)
-        for i in xrange(sm.shape[0]):
-            row = x[i]
-            sm[i] = numpy.exp(row - numpy.max(row))
-            sm[i] /= numpy.sum(sm[i])
+        e_x = numpy.exp(x - x.max(axis=1)[:, None])
+        sm = e_x / e_x.sum(axis=1)[:, None]
         output_storage[0][0] = sm
 
     def grad(self, inp, grads):
@@ -397,23 +395,23 @@ class Softmax(gof.Op):
 
         #TODO: use this to accept float32 and int32: node.inputs[0].type.dtype_specs()[1]
         init_decl = """
-        npy_intp* Nx = %(x)s->dimensions;
+        npy_intp* Nx = PyArray_DIMS(%(x)s);
 
-        if (%(x)s->nd != 2)
+        if (PyArray_NDIM(%(x)s) != 2)
         {
             PyErr_SetString(PyExc_ValueError, "not a 2d tensor");
             %(fail)s;
         }
-        if ((%(x)s->descr->type_num != PyArray_DOUBLE) &&
-            (%(x)s->descr->type_num != PyArray_FLOAT))
+        if ((PyArray_TYPE(%(x)s) != NPY_DOUBLE) &&
+            (PyArray_TYPE(%(x)s) != NPY_FLOAT))
         {
             PyErr_SetString(PyExc_TypeError, "not a float");
             %(fail)s;
         }
 
         if ((NULL == %(sm)s)
-            || (%(sm)s->dimensions[0] != %(x)s->dimensions[0])
-            || (%(sm)s->dimensions[1] != %(x)s->dimensions[1]))
+            || (PyArray_DIMS(%(sm)s)[0] != PyArray_DIMS(%(x)s)[0])
+            || (PyArray_DIMS(%(sm)s)[1] != PyArray_DIMS(%(x)s)[1]))
         {
             if (NULL != %(sm)s) Py_XDECREF(%(sm)s);
             %(sm)s = (PyArrayObject*)PyArray_SimpleNew(2, PyArray_DIMS(%(x)s),
@@ -433,13 +431,13 @@ class Softmax(gof.Op):
             double sum = 0.0;
             bool  discount_max = false;
 
-            const dtype_%(x)s* __restrict__ x_i = (dtype_%(x)s*)(%(x)s->data + %(x)s->strides[0] * i);
-            dtype_%(sm) s* __restrict__ sm_i = (dtype_%(sm)s*)(%(sm)s->data + %(sm)s->strides[0] * i);
+            const dtype_%(x)s* __restrict__ x_i = (dtype_%(x)s*)(PyArray_BYTES(%(x)s) + PyArray_STRIDES(%(x)s)[0] * i);
+            dtype_%(sm) s* __restrict__ sm_i = (dtype_%(sm)s*)(PyArray_BYTES(%(sm)s) + PyArray_STRIDES(%(sm)s)[0] * i);
         """
 
         inside_row_loop = """
-            npy_intp Sx = %(x)s->strides[1]/sizeof(dtype_%(x)s);
-            npy_intp Ssm = %(sm)s->strides[1]/sizeof(dtype_%(sm)s);
+            npy_intp Sx = PyArray_STRIDES(%(x)s)[1]/sizeof(dtype_%(x)s);
+            npy_intp Ssm = PyArray_STRIDES(%(sm)s)[1]/sizeof(dtype_%(sm)s);
 
             size_t row_max_j=0;
             dtype_%(sm)s row_max = x_i[0];
@@ -591,7 +589,7 @@ opt.local_mul_canonizer.add_simplifier(softmax_simplifier,
 
 if 0:
     @opt.register_specialize
-    @gof.local_optimizer([])
+    @gof.local_optimizer([tensor.add])
     def local_softmax_grad(node):
         '''dy*sm - DimShuffle{0,'x'}(sum{1}(dy*sm))*sm -> softmax_grad(dy,sm)'''
         #TODO what if the signs are changed?
@@ -1004,7 +1002,7 @@ class CrossentropySoftmax1HotWithBiasDx (gof.Op):
         # typically we should not need the gradient w.r.t. dy).
         y_idx_range = tensor.arange(y_idx.shape[0])
         g_dy = tensor.sum(
-                g_dx * tensor.AdvancedIncSubtensor()(
+                g_dx * subtensor.AdvancedIncSubtensor()(
                     sm, tensor.fill(dy, -1), y_idx_range, y_idx),
                 axis=1)
         g_sm = dy.dimshuffle(0, 'x') * g_dx
@@ -1020,15 +1018,15 @@ class CrossentropySoftmax1HotWithBiasDx (gof.Op):
         y_idx_type = node.inputs[2].type.dtype_specs()[1]
         return """
 
-        if ((PyArray_DESCR(%(dnll)s)->type_num != NPY_DOUBLE) &&
-            (PyArray_DESCR(%(dnll)s)->type_num != NPY_FLOAT))
+        if ((PyArray_TYPE(%(dnll)s) != NPY_DOUBLE) &&
+            (PyArray_TYPE(%(dnll)s) != NPY_FLOAT))
         {
             PyErr_SetString(PyExc_TypeError,
                  "dnll type should be float32 or float64");
             %(fail)s;
         }
-        if ((PyArray_DESCR(%(sm)s)->type_num != NPY_DOUBLE) &&
-            (PyArray_DESCR(%(sm)s)->type_num != NPY_FLOAT))
+        if ((PyArray_TYPE(%(sm)s) != NPY_DOUBLE) &&
+            (PyArray_TYPE(%(sm)s) != NPY_FLOAT))
         {
             PyErr_SetString(PyExc_TypeError,
                  "sm type should be float32 or float64");
@@ -1396,7 +1394,7 @@ def _check_rows_is_arange_len_labels(rows, labels):
 
         # Not sure if that case happens any more after the introduction of
         # ShapeOptimizer, but we keep it if ShapeOptimizer is not present
-        if isinstance(stop.owner.op, tensor.Subtensor):
+        if isinstance(stop.owner.op, subtensor.Subtensor):
             shape_subtensor = stop.owner
             if list(shape_subtensor.op.idx_list) == [0]:
                 shape_var, = shape_subtensor.inputs
@@ -1419,12 +1417,12 @@ def _is_const(z, val, approx=False):
 
 
 @opt.register_specialize
-@gof.local_optimizer([])
+@gof.local_optimizer([subtensor.AdvancedSubtensor, tensor.log])
 def local_advanced_indexing_crossentropy_onehot(node):
     log = None
     sm = None
     # First case: log(softmax(x))[rows, labels]
-    if isinstance(node.op, tensor.AdvancedSubtensor):
+    if isinstance(node.op, subtensor.AdvancedSubtensor):
         try:
             log, rows, labels = node.inputs
         except Exception:
@@ -1435,7 +1433,7 @@ def local_advanced_indexing_crossentropy_onehot(node):
     # Second case: log(softmax(x)[rows, labels])
     if node.op == tensor.log:
         pre_log = node.inputs[0].owner
-        if pre_log and isinstance(pre_log.op, tensor.AdvancedSubtensor):
+        if pre_log and isinstance(pre_log.op, subtensor.AdvancedSubtensor):
             try:
                 sm, rows, labels = pre_log.inputs
             except Exception:
@@ -1524,7 +1522,7 @@ def local_advanced_indexing_crossentropy_onehot_grad(node):
     # After the check for AdvancedIncSubtensor, if anything does not fit with
     # the formula above, there's no way to fit it with the the second case,
     # so we return immediately.
-    if d_sm.owner and isinstance(d_sm.owner.op, tensor.AdvancedIncSubtensor):
+    if d_sm.owner and isinstance(d_sm.owner.op, subtensor.AdvancedIncSubtensor):
         try:
             z, incr, rows, labels = d_sm.owner.inputs
         except Exception:
@@ -1566,7 +1564,7 @@ def local_advanced_indexing_crossentropy_onehot_grad(node):
             if not denom.owner:
                 return
 
-            if isinstance(denom.owner.op, tensor.AdvancedSubtensor):
+            if isinstance(denom.owner.op, subtensor.AdvancedSubtensor):
                 # Base case
                 adv_subtensor = denom
                 #out_grad /= 1.
@@ -1575,7 +1573,7 @@ def local_advanced_indexing_crossentropy_onehot_grad(node):
                 # and the output gradient
                 for i, input in enumerate(denom.owner.inputs):
                     if input.owner and isinstance(input.owner.op,
-                                                  tensor.AdvancedSubtensor):
+                                                  subtensor.AdvancedSubtensor):
                         other_inputs = [in_ for (j,
                              in_) in enumerate(denom.owner.inputs) if j != i]
                         if len(other_inputs) == 1:
@@ -1630,7 +1628,7 @@ def local_advanced_indexing_crossentropy_onehot_grad(node):
             return
 
         # Check the numerator (AdvancedIncSubtensor)
-        if num.owner and isinstance(num.owner.op, tensor.AdvancedIncSubtensor):
+        if num.owner and isinstance(num.owner.op, subtensor.AdvancedIncSubtensor):
             try:
                 z, incr, rows, labels = num.owner.inputs
             except Exception:

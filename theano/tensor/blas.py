@@ -128,10 +128,15 @@ import logging
 import os
 import sys
 import time
+import warnings
 
 import numpy
 import numpy.distutils
-import numpy.distutils.__config__
+import numpy.distutils.system_info
+try:
+    import numpy.distutils.__config__
+except ImportError:
+    pass
 
 from theano.configparser import config, AddConfigVar, StrParam
 from theano.gof import (utils, Op, view_roots, DestroyHandler,
@@ -147,7 +152,7 @@ import theano.scalar
 from theano.tensor import basic as T
 from theano.tensor.blas_headers import blas_header_text
 from theano.tensor.blas_headers import blas_header_version
-from theano.tensor.opt import local_dimshuffle_lift
+from theano.tensor.opt import in2out, local_dimshuffle_lift
 
 _logger = logging.getLogger('theano.tensor.blas')
 
@@ -156,8 +161,26 @@ _logger = logging.getLogger('theano.tensor.blas')
 # Otherwise, we give an optimization warning for no reason in some cases.
 def default_blas_ldflags():
     try:
+        if hasattr(numpy.distutils, '__config__'):
+            #If the old private interface is available use it as it
+            #don't print information to the user.
+            blas_info = numpy.distutils.__config__.blas_opt_info
+        else:
+            #We need to catch warnings as in some cases NumPy print
+            #stuff that we don't want the user to see like this:
+            """
+SOMEPATH/Canopy_64bit/User/lib/python2.7/site-packages/numpy/distutils/system_info.py:564: UserWarning: Specified path /home/vagrant/src/master-env/lib is invalid.
+  warnings.warn('Specified path %s is invalid.' % d)
+"""
+            #I'm not able to remove all printed stuff
+            with_context = warnings.catch_warnings(record=True)
+            with_context.__enter__()
+            try:
+                blas_info = numpy.distutils.system_info.get_info("blas_opt")
+            finally:
+                with_context.__exit__(None, None, None)
+
         # If we are in a EPD installation, mkl is available
-        blas_info = numpy.distutils.__config__.blas_opt_info
         if "EPD" in sys.version:
             use_unix_epd = True
             if sys.platform == 'win32':
@@ -209,7 +232,16 @@ def default_blas_ldflags():
             p = os.path.join(sys.base_prefix, "..", "..", "appdata")
             assert os.path.exists(p), "Canopy changed the location of MKL"
             p2 = os.listdir(p)
-            assert len(p2) == 1, "Canopy changed the location of MKL"
+            subsub = 'lib'
+            if sys.platform == 'win32':
+                subsub = 'Scripts'
+            # Try to remove subdir that can't contain MKL
+            for sub in p2:
+                if not os.path.exists(os.path.join(p, sub, subsub)):
+                    p2.remove(sub)
+            assert len(p2) == 1, ("Canopy changed the location of MKL",
+                                   p, p2, [os.listdir(os.path.join(p, sub))
+                                           for sub in p2])
             if sys.platform == "linux2":
                 p2 = os.path.join(p, p2[0], "lib")
                 assert os.path.exists(p2), "Canopy changed the location of MKL"
@@ -887,9 +919,22 @@ class Gemm(GemmRelated):
                 "Wrong number of inputs for %s (expected 5, got %s)" %
                 (self, len(inputs)))
         z, a, x, y, b = inputs
+
+        # For the consistency check we don't want z to be a cached constant.
+        if getattr(z, 'cached', False):
+            z = copy.copy(z)
         zr, xr, yr = [set(view_roots(i)) for i in z, x, y]
 
-        # TODO: justify / delete
+        # We want the gemm to be inplace. When this op is inplace, it
+        # declare to be inplace only on z. So to make it safe, we
+        # raise an error if z can be a view on x or y.
+
+        # I don't know if Theano currently can support that case. As
+        # this case don't happen in our code, I won't spent time
+        # investigating this. So the assert is for safety.  I also
+        # think there is another mechanism that would prevent this,
+        # but I don't what to modify old code and have chance to break
+        # something.
         if zr.intersection(xr):
             raise InconsistencyError(Gemm.E_z_uniq, (z, x))
         if zr.intersection(yr):
@@ -1544,7 +1589,7 @@ class Dot22(GemmRelated):
             raise
 
     def __str__(self):
-        return "_dot22"
+        return self.__class__.__name__
 
     setup_z_Nz_Sz = """
         if ((NULL == %(_zout)s)
@@ -1600,7 +1645,7 @@ class Dot22(GemmRelated):
 _dot22 = Dot22()
 
 
-@local_optimizer([T._dot])
+@local_optimizer([T.Dot])
 def local_dot_to_dot22(node):
     # This works for tensor.outer too because basic.outer is a macro that
     # produces a dot(dimshuffle,dimshuffle) of form 4 below
@@ -1749,8 +1794,8 @@ optdb.register('BlasOpt', blas_optdb, 1.7, 'fast_run')
 # free-for-all that makes the graph crazy.
 
 blas_optdb.register('local_dot_to_dot22',
-        EquilibriumOptimizer([local_dot_to_dot22], max_use_ratio=5),
-        0, 'fast_run')
+                    in2out(local_dot_to_dot22),
+                    0, 'fast_run')
 blas_optdb.register('gemm_optimizer',
         GemmOptimizer(),
         10, 'fast_run')
@@ -1768,10 +1813,10 @@ blas_optdb.register('local_gemm_to_gemv',
 # Try to make gemm inplace
 # Also, need to make the gemm optimisation(step 70) happen before the
 # fusion of elemwise(step 71)
-blas_opt_inplace = EquilibriumOptimizer(
-            [local_inplace_gemm, local_inplace_gemv, local_inplace_ger],
-            failure_callback=EquilibriumOptimizer.warn_inplace,
-            max_use_ratio=5)
+blas_opt_inplace = in2out(local_inplace_gemm,
+                          local_inplace_gemv,
+                          local_inplace_ger,
+                          name="blas_opt_inplace")
 optdb.register('InplaceBlasOpt',
         blas_opt_inplace,
         70.0, 'fast_run', 'inplace')
@@ -1817,7 +1862,7 @@ class Dot22Scalar(GemmRelated):
             raise
 
     def __str__(self):
-        return "_dot22scalar"
+        return self.__class__.__name__
 
     setup_z_Nz_Sz = Dot22.setup_z_Nz_Sz
 
@@ -1897,55 +1942,53 @@ def local_dot22_to_dot22scalar(node):
     d = node.inputs[dot22_idx]
     i_scalar = [_as_scalar(x, dtype=d.dtype) for x in node.inputs]
     if not any(i_scalar):
-        i_mul = [x.owner and x.owner.op == T.mul for x in node.inputs]
+        # Check if we can reorder the graph as this mul have a mul in inputs.
+        # We support only 1 additional level of mul.
+        # The canonizer should have merged those mul together.
+        i_mul = [x.owner and x.owner.op == T.mul and
+                 any([_as_scalar(x_i, dtype=d.dtype)
+                   for x_i in x.owner.inputs])
+                 for x in node.inputs]
         if not any(i_mul):
             #no scalar in input and no multiplication
             #if their was a multiplication we couls reorder the graph
             #by the associativity of the graph.
             return False
 
-        #maybe we can reorder the graph as this mul have a mul in input.
-        #The canonizer should have merged those mul together.
-        #We support only 1 additional level of mul.
-        mul_idx = i_mul.index(True)  # we take the first mul!
+        mul_idx = i_mul.index(True)  # The first one should always work
         m = node.inputs[mul_idx]
 
-        if len(m.owner.inputs) == 2 and any([_as_scalar(x, dtype=d.dtype)
-                                             for x in m.owner.inputs]):
-            scalar_idx = -1
-            for i, x in enumerate(m.owner.inputs):
-                if _as_scalar(x, dtype=d.dtype) and (theano.scalar.upcast(
-                        x.type.dtype, d.type.dtype)
-                                      == d.type.dtype):
-                    scalar_idx = i
-                    break
+        scalar_idx = -1
+        for i, x in enumerate(m.owner.inputs):
+            if _as_scalar(x, dtype=d.dtype) and (theano.scalar.upcast(
+                x.type.dtype, d.type.dtype)
+                                                 == d.type.dtype):
+                scalar_idx = i
+                break
 
-            if scalar_idx < 0:
-                _logger.info('Not optimizing dot22 with inputs %s %s, as the'
-                             ' type of the scalar cannot be upcasted to the'
-                             ' matrix type',
-                             node.inputs, [x.type for x in node.inputs])
-                return False
-            a = T.cast(_as_scalar(m.owner.inputs[scalar_idx],
-                                  dtype=d.dtype), d.type.dtype)
-            assert not a.type.ndim
-            dot = _dot22scalar(d.owner.inputs[0], d.owner.inputs[1], a)
-
-            # What about the other inputs to the original node that were
-            # neither part of the dot22 or this mul?
-            # I'm asserting there are no such inputs here:
-            assert dot22_idx != mul_idx
-            assert all((i in (dot22_idx, mul_idx))
-                    for i in xrange(len(node.inputs)))
-
-            return [T.mul(m.owner.inputs[1 - i], dot)]
-        elif m.owner and m.owner.op == T.mul:
-            _logger.info('Not optimizing dot22 with inputs %s %s %s %s. '
-                    'we need to check in a recursive way in the mul if we can '
-                    'reorder the graph. The canonizer should have done this.',
-                    d, m, d.type, m.type)
-        else:
+        if scalar_idx < 0:
+            _logger.info('Not optimizing dot22 with inputs %s %s, as the'
+                         ' type of the scalar cannot be upcasted to the'
+                         ' matrix type',
+                         node.inputs, [x.type for x in node.inputs])
             return False
+        a = T.cast(_as_scalar(m.owner.inputs[scalar_idx],
+                              dtype=d.dtype), d.type.dtype)
+        assert not a.type.ndim
+        dot = _dot22scalar(d.owner.inputs[0], d.owner.inputs[1], a)
+
+        # The other inputs to the original node that were
+        # neither part of the dot22 or this mul should be
+        # factors in the returned "mul" node.
+        assert dot22_idx != mul_idx
+        other_factors = [inpt
+                         for i, inpt in enumerate(node.inputs)
+                         if i not in (dot22_idx, mul_idx)]
+        other_m_inputs = [inpt
+                          for i, inpt in enumerate(m.owner.inputs)
+                          if i != scalar_idx]
+
+        return [T.mul(dot, *(other_factors + other_m_inputs))]
 
     scalar_idx = -1
     for i, x in enumerate(node.inputs):
@@ -1976,13 +2019,13 @@ def local_dot22_to_dot22scalar(node):
 #must happen after gemm as the gemm optimizer don't understant
 #dot22scalar and gemm give more speed up then dot22scalar
 blas_optdb.register('local_dot22_to_dot22scalar',
-        EquilibriumOptimizer([local_dot22_to_dot22scalar], max_use_ratio=5),
-        11, 'fast_run')
+                    in2out(local_dot22_to_dot22scalar),
+                    11, 'fast_run')
 
 
 #from opt import register_specialize, register_canonicalize
 #@register_specialize
-@local_optimizer([])
+@local_optimizer([T.sub, T.add])
 def local_print_as_we_go_along(node):
     if node.op in (T.sub, T.add):
         debugprint(node)

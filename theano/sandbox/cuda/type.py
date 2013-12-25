@@ -400,7 +400,7 @@ class CudaNdarrayType(Type):
     def c_libraries(self):
         # returning cublas because the cuda_ndarray.cuh header
         # includes calls to SetVector and cublasGetError
-        return ['cudart', 'cublas']
+        return ['cudart', config.cublas.lib, 'cuda_ndarray']
 
     def c_support_code(cls):
         return ""
@@ -437,6 +437,13 @@ theano.compile.register_view_op_c_code(
         Py_XINCREF(%(oname)s);
         """,
         version=1)
+
+theano.compile.register_shape_i_c_code(CudaNdarrayType, """
+    if(!%(oname)s)
+        %(oname)s=(PyArrayObject*)PyArray_ZEROS(0, NULL, NPY_INT64, 0);
+    ((npy_int64*)PyArray_DATA(%(oname)s))[0] =
+                              CudaNdarray_HOST_DIMS(%(iname)s)[%(i)s];
+""", version=(0,))
 
 # Register CudaNdarrayType to the DeepCopyOp list of types with c code.
 theano.compile.register_deep_copy_op_c_code(

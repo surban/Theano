@@ -41,6 +41,13 @@ Operating System :: Microsoft :: Windows
 Operating System :: POSIX
 Operating System :: Unix
 Operating System :: MacOS
+Programming Language :: Python :: 2
+Programming Language :: Python :: 2.4
+Programming Language :: Python :: 2.5
+Programming Language :: Python :: 2.6
+Programming Language :: Python :: 2.7
+Programming Language :: Python :: 3
+Programming Language :: Python :: 3.3
 """
 NAME                = 'Theano'
 MAINTAINER          = "LISA laboratory, University of Montreal"
@@ -59,7 +66,7 @@ PLATFORMS           = ["Windows", "Linux", "Solaris", "Mac OS-X", "Unix"]
 MAJOR               = 0
 MINOR               = 6
 MICRO               = 0
-SUFFIX              = "rc3"  # Should be blank except for rc's, betas, etc.
+SUFFIX              = ""  # Should be blank except for rc's, betas, etc.
 ISRELEASED          = False
 
 VERSION             = '%d.%d.%d%s' % (MAJOR, MINOR, MICRO, SUFFIX)
@@ -183,7 +190,7 @@ def do_setup():
           packages=find_packages(),
           install_requires=['numpy>=1.5.0', 'scipy>=0.7.2'],
           package_data={
-              '': ['*.txt', '*.rst', '*.cu', '*.cuh', '*.c', '*.sh',
+              '': ['*.txt', '*.rst', '*.cu', '*.cuh', '*.c', '*.sh', '*.pkl',
                    'ChangeLog'],
               'theano.misc': ['*.sh']
           },

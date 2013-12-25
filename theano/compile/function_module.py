@@ -129,8 +129,7 @@ def std_fgraph(input_specs, output_specs, accept_inplace = False):
     updates = [spec.update for spec in input_specs if spec.update]
     orig_outputs = [spec.variable for spec in output_specs] + updates
 
-    inputs, outputs = gof.graph.clone(orig_inputs, orig_outputs)
-    fgraph = gof.fg.FunctionGraph(inputs, outputs)
+    fgraph = gof.fg.FunctionGraph(orig_inputs, orig_outputs)
 
     for node in fgraph.apply_nodes:
         if getattr(node.op, 'destroy_map', None):
@@ -143,7 +142,7 @@ def std_fgraph(input_specs, output_specs, accept_inplace = False):
     # We need to protect all immutable inputs from inplace operations.
     fgraph.attach_feature(
             Supervisor(input
-                for spec, input in zip(input_specs, inputs)
+                for spec, input in zip(input_specs, fgraph.inputs)
                 if not (spec.mutable or
                         (hasattr(fgraph, 'destroyers') and
                             fgraph.destroyers(input)))))
@@ -727,12 +726,19 @@ copy_reg.pickle(Function, _pickle_Function)
 ###
 
 class SanityCheckFunction(Function):
+    """Deprecated. It is not used and not tested anywhere in Theano!
+
+    Also, we should remove the check_equal and related function in
+    this file, and use Type.values_equals() instead.
+
+    """
 
     def __init__(self, others, check_equal, *args, **kwargs):
         super(SanityCheckFunction, self).__init__(*args, **kwargs)
         self.others = others
         self.check_equal = check_equal
         # DEPRECATED?  Is this just for DualLinker?
+        warnings.warn("SanityCheckFunction is deprecated")
 
     def __setitem__(self, item, value):
         super(SanityCheckFunction, self).__setitem__(item, value)
@@ -993,13 +999,12 @@ class FunctionMaker(object):
         # Check if some input variables are unused
         self._check_unused_inputs(inputs, outputs, on_unused_input)
 
-        #TODO: REMOVE THIS CRUFT - it's complicated for SymbolicInputKits
+        # Make a list of (SymbolicInput|SymblicInputKits, indices, [SymbolicInput,...]), one 
+        # tuple for each input. (See Function.indices for more details)
         indices = [[input] + self.expand_in(input, _inputs) for input in inputs]
-        expanded_inputs = reduce(list.__add__, [list(z) for x, y, z in indices], [])
-        assert expanded_inputs == inputs  # JB - I added this to make sure we could delete above
 
         # make the fgraph (copies the graph, creates NEW INPUT AND OUTPUT VARIABLES)
-        fgraph, additional_outputs = std_fgraph(expanded_inputs, outputs, accept_inplace)
+        fgraph, additional_outputs = std_fgraph(inputs, outputs, accept_inplace)
         fgraph.profile = profile
 
         self.fgraph = fgraph
@@ -1011,14 +1016,12 @@ class FunctionMaker(object):
         compute_test_value_orig = theano.config.compute_test_value
         add_stack_trace_on_call = gof.Op.add_stack_trace_on_call
         try:
-            theano.config.compute_test_value = "off"
+            theano.config.compute_test_value = theano.config.compute_test_value_opt
             gof.Op.add_stack_trace_on_call = False
             start_optimizer = time.time()
             optimizer_profile = optimizer(fgraph)
             end_optimizer = time.time()
             opt_time = end_optimizer - start_optimizer
-            mode.optimizer_time += opt_time
-
             if profile:
                 profile.optimizer_time += opt_time
                 if theano.config.profile_optimizer:
@@ -1047,11 +1050,11 @@ class FunctionMaker(object):
         if hasattr(linker, 'accept_var_updates'):
             # hacky thing so VMLinker knows about updates
             self.linker.accept_var_updates(
-                    fgraph_updated_vars(fgraph, expanded_inputs))
+                    fgraph_updated_vars(fgraph, inputs))
 
         self.indices = indices
         self.inputs = inputs
-        self.expanded_inputs = expanded_inputs
+        self.expanded_inputs = inputs
         self.outputs = outputs
         self.unpack_single = unpack_single
         self.return_none = return_none
@@ -1178,7 +1181,6 @@ class FunctionMaker(object):
 
         linker_time = end_linker - start_linker
         _logger.debug('Linker took %f seconds', linker_time)
-        self.mode.linker_time += linker_time
         if self.profile:
             self.profile.linker_time += linker_time
             _fn.time_thunks = self.profile.flag_time_thunks
@@ -1260,9 +1262,9 @@ def orig_function(inputs, outputs, mode=None, accept_inplace=False,
 
      - FAST_COMPILE (minimal optimization)
 
-     - PROFILE_MODE: allow to print a profile mode with mode.print_summary
+     - ProfileMode(deprecated): allow to print a profile mode with mode.print_summary
 
-     - DEBUG_MODE: verify many internal conditions that are normally assumed
+     - DebugMode: verify many internal conditions that are normally assumed
        (slow)
 
     :param accept_inplace: True iff the graph can contain inplace operations
@@ -1299,12 +1301,12 @@ def orig_function(inputs, outputs, mode=None, accept_inplace=False,
     else:
         Maker = getattr(mode, 'function_maker', FunctionMaker)
         fn = Maker(inputs,
-                outputs,
-                mode,
-                accept_inplace=accept_inplace,
-                profile=profile,
-                on_unused_input=on_unused_input).create(
-                        defaults)
+                   outputs,
+                   mode,
+                   accept_inplace=accept_inplace,
+                   profile=profile,
+                   on_unused_input=on_unused_input).create(
+                       defaults)
 
     t2 = time.time()
     if profile:

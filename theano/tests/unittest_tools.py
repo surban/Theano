@@ -1,5 +1,6 @@
 from copy import copy, deepcopy
 import logging
+from StringIO import StringIO
 import sys
 import unittest
 
@@ -29,10 +30,10 @@ def good_seed_param(seed):
     return True
 
 AddConfigVar('unittests.rseed',
-        "Seed to use for randomized unit tests. "
-        "Special value 'random' means using a seed of None.",
-        StrParam(666, is_valid=good_seed_param),
-        in_c_key=False)
+             "Seed to use for randomized unit tests. "
+             "Special value 'random' means using a seed of None.",
+             StrParam(666, is_valid=good_seed_param),
+             in_c_key=False)
 
 
 def fetch_seed(pseed=None):
@@ -40,15 +41,15 @@ def fetch_seed(pseed=None):
     Returns the seed to use for running the unit tests.
     If an explicit seed is given, it will be used for seeding numpy's rng.
     If not, it will use config.unittest.rseed (its default value is 666).
-    If config.unittest.rseed is set to "random", it will seed the rng with None,
-    which is equivalent to seeding with a random seed.
+    If config.unittest.rseed is set to "random", it will seed the rng with
+    None, which is equivalent to seeding with a random seed.
 
     Useful for seeding RandomState objects.
     >>> rng = numpy.random.RandomState(unittest_tools.fetch_seed())
     """
 
     seed = pseed or config.unittests.rseed
-    if seed=='random':
+    if seed == 'random':
         seed = None
 
     try:
@@ -57,8 +58,8 @@ def fetch_seed(pseed=None):
         else:
             seed = None
     except ValueError:
-        print >> sys.stderr, 'Error: config.unittests.rseed contains '\
-                'invalid seed, using None instead'
+        print >> sys.stderr, ('Error: config.unittests.rseed contains '
+                              'invalid seed, using None instead')
         seed = None
 
     return seed
@@ -71,7 +72,7 @@ def seed_rng(pseed=None):
     """
 
     seed = fetch_seed(pseed)
-    if pseed and pseed!=seed:
+    if pseed and pseed != seed:
         print >> sys.stderr, 'Warning: using seed given by config.unittests.rseed=%i'\
                 'instead of seed %i given as parameter' % (seed, pseed)
     numpy.random.seed(seed)
@@ -154,7 +155,8 @@ class T_OpContractMixin(object):
             assert op_i == self.clone(op_i)
             assert op_i != self.other_op
             for j, op_j in enumerate(self.ops):
-                if i == j: continue
+                if i == j:
+                    continue
                 assert op_i != op_j
 
     def test_hash(self):
@@ -166,7 +168,8 @@ class T_OpContractMixin(object):
             assert h_i == hash(self.clone(op_i))
             assert h_i != hash(self.other_op)
             for j, op_j in enumerate(self.ops):
-                if i == j: continue
+                if i == j:
+                    continue
                 assert op_i != hash(op_j)
 
     def test_name(self):
@@ -179,7 +182,10 @@ class InferShapeTester(unittest.TestCase):
     def setUp(self):
         seed_rng()
         # Take into account any mode that may be defined in a child class
-        mode = getattr(self, 'mode', theano.compile.get_default_mode())
+        # and it can be None
+        mode = getattr(self, 'mode', None)
+        if mode is None:
+            mode = theano.compile.get_default_mode()
         # This mode seems to be the minimal one including the shape_i
         # optimizations, if we don't want to enumerate them explicitly.
         self.mode = mode.including("canonicalize")
@@ -239,3 +245,95 @@ class InferShapeTester(unittest.TestCase):
         numeric_shapes = shapes_function(*numeric_inputs)
         for out, shape in zip(numeric_outputs, numeric_shapes):
             assert numpy.all(out.shape == shape)
+
+
+def str_diagnostic(expected, value, rtol, atol):
+    """Return a pretty multiline string representating the cause
+    of the exception"""
+    sio = StringIO()
+
+    try:
+        ssio = StringIO()
+        print >> ssio, "           : shape, dtype, strides, min, max, n_inf, n_nan:"
+        print >> ssio, "  Expected :",
+        print >> ssio, expected.shape,
+        print >> ssio, expected.dtype,
+        print >> ssio, expected.strides,
+        print >> ssio, expected.min(),
+        print >> ssio, expected.max(),
+        print >> ssio, numpy.isinf(expected).sum(),
+        print >> ssio, numpy.isnan(expected).sum(),
+        # only if all succeeds to we add anything to sio
+        print >> sio, ssio.getvalue()
+    except Exception:
+        pass
+    try:
+        ssio = StringIO()
+        print >> ssio, "  Value    :",
+        print >> ssio, value.shape,
+        print >> ssio, value.dtype,
+        print >> ssio, value.strides,
+        print >> ssio, value.min(),
+        print >> ssio, value.max(),
+        print >> ssio, numpy.isinf(value).sum(),
+        print >> ssio, numpy.isnan(value).sum(),
+        # only if all succeeds to we add anything to sio
+        print >> sio, ssio.getvalue()
+    except Exception:
+        pass
+
+    print >> sio, "  expected    :", expected
+    print >> sio, "  value    :", value
+
+    try:
+        ov = numpy.asarray(expected)
+        nv = numpy.asarray(value)
+        ssio = StringIO()
+        absdiff = numpy.absolute(nv - ov)
+        print >> ssio, "  Max Abs Diff: ", numpy.max(absdiff)
+        print >> ssio, "  Mean Abs Diff: ", numpy.mean(absdiff)
+        print >> ssio, "  Median Abs Diff: ", numpy.median(absdiff)
+        print >> ssio, "  Std Abs Diff: ", numpy.std(absdiff)
+        reldiff = numpy.absolute(nv - ov) / (numpy.absolute(nv) +
+                                             numpy.absolute(ov))
+        print >> ssio, "  Max Rel Diff: ", numpy.max(reldiff)
+        print >> ssio, "  Mean Rel Diff: ", numpy.mean(reldiff)
+        print >> ssio, "  Median Rel Diff: ", numpy.median(reldiff)
+        print >> ssio, "  Std Rel Diff: ", numpy.std(reldiff)
+        # only if all succeeds to we add anything to sio
+        print >> sio, ssio.getvalue()
+    except Exception:
+        pass
+    #Use the same formula as in _allclose to find the tolerance used
+    narrow = 'float32', 'complex64'
+    if ((str(expected.dtype) in narrow) or
+        (str(value.dtype) in narrow)):
+        atol_ = T.basic.float32_atol
+        rtol_ = T.basic.float32_rtol
+    else:
+        atol_ = T.basic.float64_atol
+        rtol_ = T.basic.float64_rtol
+    if rtol is not None:
+        rtol_ = rtol
+    if atol is not None:
+        atol_ = atol
+    print >> sio, "  rtol, atol:", rtol_, atol_
+    return sio.getvalue()
+
+
+class WrongValue(Exception):
+    def __init__(self, expected_val, val, rtol, atol):
+        Exception.__init__(self)  # to be compatible with python2.4
+        self.val1 = expected_val
+        self.val2 = val
+        self.rtol = rtol
+        self.atol = atol
+
+    def __str__(self):
+        s = "WrongValue\n"
+        return s + str_diagnostic(self.val1, self.val2, self.rtol, self.atol)
+
+
+def assert_allclose(val1, val2, rtol=None, atol=None):
+    if not T.basic._allclose(val1, val2, rtol, atol):
+        raise WrongValue(val1, val2, rtol, atol)

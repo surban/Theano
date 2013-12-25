@@ -72,7 +72,7 @@ def hints(variable):
 
 
 @register_canonicalize
-@local_optimizer([])
+@local_optimizer([Hint])
 def remove_hint_nodes(node):
     if is_hint_node(node):
         # transfer hints from graph to Feature
@@ -137,9 +137,9 @@ class HintsFeature(object):
         # Variable -> tuple(scalars) or None  (All tensor vars map to tuple)
         self.hints = {}
         for node in fgraph.toposort():
-            self.on_import(fgraph, node)
+            self.on_import(fgraph, node, "on_attach")
 
-    def on_import(self, fgraph, node):
+    def on_import(self, fgraph, node, reason):
         if node.outputs[0] in self.hints:
             # this is a revert, not really an import
             for r in node.outputs + node.inputs:
@@ -159,7 +159,7 @@ class HintsFeature(object):
             if k not in new_hints:
                 new_hints[k] = v
 
-    def on_change_input(self, fgraph, node, i, r, new_r):
+    def on_change_input(self, fgraph, node, i, r, new_r, reason):
         # TODO:
         # This tells us that r and new_r must have the same shape
         # if we didn't know that the shapes are related, now we do.
@@ -224,7 +224,7 @@ def is_positive(v):
 
 
 @register_stabilize
-@local_optimizer([])
+@local_optimizer([Dot, Dot22])
 def inv_as_solve(node):
     if not imported_scipy:
         return False
@@ -242,7 +242,7 @@ def inv_as_solve(node):
 @register_canonicalize
 @register_stabilize
 @register_specialize
-@local_optimizer([])
+@local_optimizer([DimShuffle])
 def no_transpose_symmetric(node):
     if isinstance(node.op, DimShuffle):
         x = node.inputs[0]
@@ -253,7 +253,7 @@ def no_transpose_symmetric(node):
 
 
 @register_stabilize
-@local_optimizer([])
+@local_optimizer(None) # XXX: solve is defined later and can't be used here
 def psd_solve_with_chol(node):
     if node.op == solve:
         A, b = node.inputs  # result is solution Ax=b
@@ -269,7 +269,7 @@ def psd_solve_with_chol(node):
 
 @register_stabilize
 @register_specialize
-@local_optimizer([])
+@local_optimizer(None) # XXX: det is defined later and can't be used here
 def local_det_chol(node):
     """
     If we have det(X) and there is already an L=cholesky(X)
@@ -287,7 +287,7 @@ def local_det_chol(node):
 @register_canonicalize
 @register_stabilize
 @register_specialize
-@local_optimizer([])
+@local_optimizer([tensor.log])
 def local_log_prod_sqr(node):
     if node.op == tensor.log:
         x, = node.inputs
@@ -307,7 +307,7 @@ def local_log_prod_sqr(node):
 @register_canonicalize
 @register_stabilize
 @register_specialize
-@local_optimizer([])
+@local_optimizer([tensor.log])
 def local_log_pow(node):
     if node.op == tensor.log:
         x, = node.inputs
@@ -715,10 +715,9 @@ class ExtractDiag(Op):
         implemented our own. """
         x, = ins
         z, = outs
-
         # zero-dimensional matrices ...
         if x.shape[0] == 0 or x.shape[1] == 0:
-            z[0] = numpy.zeros(0, dtype=x.dtype)
+            z[0] = node.outputs[0].type.value_zeros((0,))
             return
 
         if x.shape[0] < x.shape[1]:
@@ -832,6 +831,8 @@ det = Det()
 def trace(X):
     """
     Returns the sum of diagonal elements of matrix X.
+
+    :note: work on GPU since 0.6rc4.
     """
     return extract_diag(X).sum()
 
@@ -962,6 +963,7 @@ class Eigh(Eig):
     _numop = staticmethod(numpy.linalg.eigh)
 
     def __init__(self, UPLO='L'):
+        assert UPLO in ['L', 'U']
         self.UPLO = UPLO
 
     def __str__(self):
@@ -1030,6 +1032,7 @@ class EighGrad(Op):
 
     """
     def __init__(self, UPLO='L'):
+        assert UPLO in ['L', 'U']
         self.UPLO = UPLO
         if UPLO == 'L':
             self.tri0 = numpy.tril

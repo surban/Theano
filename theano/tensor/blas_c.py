@@ -1,6 +1,6 @@
 from theano import config
 
-
+from theano.tensor.opt import in2out
 from theano.tensor.blas import ldflags, blas_header_text, blas_header_version
 from theano.tensor.blas import blas_optdb, optdb, local_optimizer, EquilibriumOptimizer
 from theano.tensor.blas import Ger, ger, ger_destructive
@@ -252,6 +252,8 @@ class CGer(BaseBLAS, Ger):
 
     def c_code_cache_version(self):
         return (8, blas_header_version())
+cger_inplace = CGer(True)
+cger_no_inplace = CGer(False)
 
 
 @local_optimizer([ger, ger_destructive])
@@ -269,8 +271,8 @@ def use_c_ger(node):
 
 @local_optimizer([CGer(False)])
 def make_c_ger_destructive(node):
-    if node.op == CGer(False):
-        return [CGer(True)(*node.inputs)]
+    if node.op == cger_no_inplace:
+        return [cger_inplace(*node.inputs)]
 
 
 ####### ####### #######
@@ -579,6 +581,8 @@ class CGemv(BaseBLAS, Gemv):
 
     def c_code_cache_version(self):
         return (10, blas_header_version())
+cgemv_inplace = CGemv(inplace=True)
+cgemv_no_inplace = CGemv(inplace=False)
 
 
 @local_optimizer([gemv_inplace, gemv_no_inplace])
@@ -596,8 +600,8 @@ def use_c_gemv(node):
 
 @local_optimizer([CGemv(inplace=False)])
 def make_c_gemv_destructive(node):
-    if node.op == CGemv(inplace=False):
-        return [CGemv(inplace=True)(*node.inputs)]
+    if node.op == cgemv_no_inplace:
+        return [cgemv_inplace(*node.inputs)]
 
 
 ####### ####### #######
@@ -605,21 +609,14 @@ def make_c_gemv_destructive(node):
 ####### ####### #######
 
 blas_optdb.register('use_c_blas',
-    EquilibriumOptimizer([
-        use_c_ger,
-        use_c_gemv,
-        ],
-        max_use_ratio=5),
-    20, 'fast_run', 'c_blas')
+                    in2out(use_c_ger, use_c_gemv),
+                    20, 'fast_run', 'c_blas')
 #print 'BLAS_OPTDB'
 #print blas_optdb
 
 # this matches the InplaceBlasOpt defined in blas.py
 optdb.register('c_blas_destructive',
-        EquilibriumOptimizer([
-                make_c_ger_destructive,
-                make_c_gemv_destructive,
-            ],
-            failure_callback=EquilibriumOptimizer.warn_inplace,
-            max_use_ratio=5),
-        70.0, 'fast_run', 'inplace', 'c_blas')
+               in2out(make_c_ger_destructive,
+                      make_c_gemv_destructive,
+                      name="c_blas_destructive"),
+               70.0, 'fast_run', 'inplace', 'c_blas')

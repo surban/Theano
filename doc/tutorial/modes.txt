@@ -36,9 +36,9 @@ variables, type this from the command-line:
 
 For more detail, see :ref:`Configuration <libdoc_config>` in the library.
 
--------------------------------------------
 
-**Exercise**
+Exercise
+========
 
 
 Consider the logistic regression:
@@ -125,7 +125,7 @@ as it will be useful later on.
 Mode
 ====
 
-Everytime :func:`theano.function <function.function>` is called,
+Every time :func:`theano.function <function.function>` is called,
 the symbolic relationships between the input and output Theano *variables*
 are optimized and compiled. The way this compilation occurs
 is controlled by the value of the ``mode`` parameter.
@@ -133,11 +133,11 @@ is controlled by the value of the ``mode`` parameter.
 Theano defines the following modes by name:
 
 - ``'FAST_COMPILE'``: Apply just a few graph optimizations and only use Python implementations.
-- ``'FAST_RUN'``: Apply all optimizations, and use C implementations where possible.
+- ``'FAST_RUN'``: Apply all optimizations and use C implementations where possible.
 - ``'DebugMode``: Verify the correctness of all optimizations, and compare C and Python 
     implementations. This mode can take much longer than the other modes, but can identify
     several kinds of problems.
-- ``'ProfileMode'``: Same optimization then FAST_RUN, put print some profiling information
+- ``'ProfileMode'``(deprecated): Same optimization as FAST_RUN, but print some profiling information.
 
 The default mode is typically ``FAST_RUN``, but it can be controlled via
 the configuration variable :attr:`config.mode`,
@@ -150,7 +150,7 @@ short name        Full constructor                                              
 ``FAST_COMPILE``  ``compile.mode.Mode(linker='py', optimizer='fast_compile')``    Python implementations only, quick and cheap graph transformations
 ``FAST_RUN``      ``compile.mode.Mode(linker='cvm', optimizer='fast_run')``       C implementations where available, all available graph transformations.
 ``DebugMode``     ``compile.debugmode.DebugMode()``                               Both implementations where available, all available graph transformations.
-``ProfileMode``   ``compile.profilemode.ProfileMode()``                           C implementations where available, all available graph transformations, print profile information.
+``ProfileMode``   ``compile.profilemode.ProfileMode()``                           Deprecated. C implementations where available, all available graph transformations, print profile information.
 ================= =============================================================== ===============================================================================
 
 .. Note::
@@ -167,7 +167,7 @@ A mode is composed of 2 things: an optimizer and a linker. Some modes,
 like ``ProfileMode`` and ``DebugMode``, add logic around the optimizer and
 linker. ``ProfileMode`` and ``DebugMode`` use their own linker.
 
-You can select witch linker to use with the Theano flag :attr:`config.linker`.
+You can select which linker to use with the Theano flag :attr:`config.linker`.
 Here is a table to compare the different linkers.
 
 =============  =========  =================  =========  ===
@@ -180,7 +180,7 @@ c|py_nogc      no         yes                "++"       As c|py, but without gc
 c              no         yes                "+"        Use only C code (if none available for an op, raise an error)
 py             yes        yes                "+++"      Use only Python code
 c&py [#cpy2]_  no         yes                "+++++"    Use C and Python code
-ProfileMode    no         no                 "++++"     Compute some extra profiling info
+ProfileMode    no         no                 "++++"     (Deprecated) Compute some extra profiling info
 DebugMode      no         yes                VERY HIGH  Make many checks on what Theano computes
 =============  =========  =================  =========  ===
 
@@ -252,6 +252,11 @@ For more detail, see :ref:`DebugMode<debugmode>` in the library.
 
 ProfileMode
 ===========
+
+.. note::
+
+    ProfileMode is deprecated. Use :attr:`config.profile` instead.
+
 
 Besides checking for errors, another important task is to profile your
 code. For this Theano uses a special mode called ProfileMode which has
@@ -371,5 +376,5 @@ Finally, notice that the ``ProfileMode`` also shows which ops were running a C
 implementation.
 
 
-For more detail, see :ref:`ProfileMode<libdoc_compile_mode>` in the library.
+For more detail, see :ref:`ProfileMode<profilemode>` in the library.
 

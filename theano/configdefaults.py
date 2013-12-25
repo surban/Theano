@@ -2,9 +2,8 @@ import os
 import logging
 import subprocess
 
-from theano.configparser import (
-        AddConfigVar, BoolParam, ConfigParam, EnumStr, IntParam,
-        TheanoConfigParser)
+from theano.configparser import (AddConfigVar, BoolParam, ConfigParam, EnumStr,
+                                 IntParam, StrParam, TheanoConfigParser)
 from theano.misc.cpucount import cpuCount
 from theano.misc.windows import call_subprocess_Popen
 
@@ -44,19 +43,41 @@ AddConfigVar('int_division',
 # gpu means let the driver select the gpu. Needed in case of gpu in
 # exclusive mode.
 # gpuX mean use the gpu number X.
+class DeviceParam(ConfigParam):
+    def __init__(self, default, *options, **kwargs):
+        self.default = default
+
+        def filter(val):
+            if val.startswith('cpu') or val.startswith('gpu') \
+                    or val.startswith('opencl') or val.startswith('cuda'):
+                return val
+            else:
+                raise ValueError(('Invalid value ("%s") for configuration '
+                                  'variable "%s". Valid options start with '
+                                  'one of "cpu", "gpu", "opencl", "cuda"'
+                                  % (val, self.fullname)))
+        over = kwargs.get("allow_override", True)
+        super(DeviceParam, self).__init__(default, filter, over)
+
+    def __str__(self):
+        return '%s (cpu, gpu*, opencl*, cuda*) ' % (self.fullname,)
+
 AddConfigVar('device',
         ("Default device for computations. If gpu*, change the default to try "
          "to move computation to it and to put shared variable of float32 "
          "on it. Do not use upper case letters, only lower case even if "
          "NVIDIA use capital letters."),
-        EnumStr('cpu', 'gpu',
-            'gpu0', 'gpu1', 'gpu2', 'gpu3',
-            'gpu4', 'gpu5', 'gpu6', 'gpu7',
-            'gpu8', 'gpu9', 'gpu10', 'gpu11',
-            'gpu12', 'gpu13', 'gpu14', 'gpu15',
-                allow_override=False),
+        DeviceParam('cpu', allow_override=False),
         in_c_key=False,
         )
+
+AddConfigVar('gpuarray.init_device',
+             """
+             Device to initialize for gpuarray use without moving
+             computations automatically.
+             """,
+             StrParam(''),
+             in_c_key=False)
 
 AddConfigVar('init_gpu_device',
         ("Initialize the gpu device to use, works only if device=cpu. "
@@ -113,7 +134,7 @@ if rc == 0:
     # Keep the default linker the same as the one for the mode FAST_RUN
     AddConfigVar('linker',
                  ("Default linker used if the theano flags mode is Mode "
-                  "or ProfileMode"),
+                  "or ProfileMode(deprecated)"),
                  EnumStr('cvm', 'c|py', 'py', 'c', 'c|py_nogc', 'c&py',
                      'vm', 'vm_nogc', 'cvm_nogc'),
                  in_c_key=False)
@@ -121,7 +142,7 @@ else:
     # g++ is not present, linker should default to python only
     AddConfigVar('linker',
                  ("Default linker used if the theano flags mode is Mode "
-                  "or ProfileMode"),
+                  "or ProfileMode(deprecated)"),
                  EnumStr('py', 'vm', 'vm_nogc'),
                  in_c_key=False)
     _logger.warning('g++ not detected ! Theano will be unable to execute '
@@ -153,9 +174,14 @@ AddConfigVar('allow_gc',
 #Keep the default optimizer the same as the one for the mode FAST_RUN
 AddConfigVar('optimizer',
         ("Default optimizer. If not None, will use this linker with the Mode "
-         "object (not ProfileMode or DebugMode)"),
+         "object (not ProfileMode(deprecated) or DebugMode)"),
         EnumStr('fast_run', 'merge', 'fast_compile', 'None'),
         in_c_key=False)
+
+AddConfigVar('optimizer_verbose',
+             "If True, we print all optimization being applied",
+             BoolParam(False),
+             in_c_key=False)
 
 AddConfigVar('on_opt_error',
         ("What to do when an optimization crashes: warn and skip it, raise "
@@ -225,12 +251,6 @@ AddConfigVar('gpu.local_elemwise_fusion',
 AddConfigVar('lib.amdlibm',
         "Use amd's amdlibm numerical library",
         BoolParam(False))
-
-AddConfigVar('op.set_flops',
-        ("currently used only in ConvOp. The profile mode will print the "
-         "flops/s for the op."),
-        BoolParam(False),
-        in_c_key=False)
 
 AddConfigVar('gpuelemwise.sync',
         "when true, wait that the gpu fct finished and check it error code.",
@@ -379,9 +399,16 @@ AddConfigVar('compute_test_value',
          "Constants, SharedVariables and the tag 'test_value' as inputs "
          "to the function. This helps the user track down problems in the "
          "graph before it gets optimized."),
-        EnumStr('off', 'ignore', 'warn', 'raise'),
+        EnumStr('off', 'ignore', 'warn', 'raise', 'pdb'),
         in_c_key=False)
 
+
+AddConfigVar('compute_test_value_opt',
+             ("For debugging Theano optimization only."
+              " Same as compute_test_value, but is used"
+              " during Theano optimization"),
+             EnumStr('off', 'ignore', 'warn', 'raise', 'pdb'),
+             in_c_key=False)
 
 """Note to developers:
     Generally your exceptions should use an apply node's __str__

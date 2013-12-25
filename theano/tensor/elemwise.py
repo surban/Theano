@@ -1,5 +1,4 @@
 import sys
-import traceback
 from copy import copy
 from itertools import izip
 
@@ -10,7 +9,7 @@ from theano import gof
 from theano.gof import Apply, Op
 from theano import scalar
 from theano.scalar import Scalar
-from theano.printing import min_informative_str, pprint
+from theano.printing import pprint
 from theano.gof.python25 import all, any
 from theano.tensor.utils import hash_from_dict
 from theano.gradient import DisconnectedType
@@ -144,10 +143,6 @@ class DimShuffle(Op):
 
         # list of dimensions of the input to drop
         self.drop = []
-        # this maps i before dropping dimensions to j after dropping dimensions
-        # so self.shuffle can be set properly later on
-        i2j = {}
-        j = 0
         for i, b in enumerate(input_broadcastable):
             if i not in new_order:
                 # we want to drop this dimension because it's not a value in
@@ -159,14 +154,9 @@ class DimShuffle(Op):
                     raise ValueError(
                             "You cannot drop a non-broadcastable dimension.",
                             (input_broadcastable, new_order))
-            else:
-                i2j[i] = j
-                j += 1
 
-        # transposition of non-broadcastable dimensions
-        # This is how the dimensions will be permuted, without accounting for
-        # the extra 'x' broadcastable dimensions to insert.
-        self.shuffle = [i2j[x] for x in new_order if x != 'x']
+        # this is the list of the original dimensions that we keep
+        self.shuffle = [x for x in new_order if x != 'x']
 
         # list of dimensions of the output that are broadcastable and were not
         # in the original input
@@ -238,16 +228,12 @@ class DimShuffle(Op):
         res = input
         if type(res) != numpy.ndarray and type(res) != numpy.memmap:
             raise TypeError(res)
-        shape = list(res.shape)
-        for drop in reversed(self.drop):
-            shape.pop(drop)
-        res = res.reshape(shape)
 
         # transpose
-        res = res.transpose(self.shuffle)
+        res = res.transpose(self.shuffle+self.drop)
 
         # augment
-        shape = list(res.shape)
+        shape = list(res.shape[:len(self.shuffle)])
         for augm in self.augment:
             shape.insert(augm, 1)
         res = res.reshape(shape)
@@ -260,9 +246,6 @@ class DimShuffle(Op):
 
     def infer_shape(self, node, shapes):
         ishp, = shapes
-        ishp = list(ishp)
-        for drop in reversed(self.drop):
-            del ishp[drop]
         # transpose
         rval = [ishp[i] for i in self.shuffle]
 
@@ -274,7 +257,7 @@ class DimShuffle(Op):
     def R_op(self, inputs, eval_points):
         if None in eval_points:
             return [None]
-        return self.make_node(*eval_points).outputs
+        return self(*eval_points, **dict(return_list=True))
 
     def c_code(self, node, name, inp, out, sub):
         input, = inp
@@ -353,7 +336,7 @@ class DimShuffle(Op):
                 'PyArray_UpdateFlags(%(res)s, NPY_ARRAY_UPDATE_ALL)',
                 #we are making a view in both inplace and non-inplace cases
 """
-#if NPY_VERSION <= 0x01000009
+#if NPY_API_VERSION < 0x00000007
 PyArray_BASE(%(res)s) = (PyObject*)%(basename)s;
 #else
 PyArray_SetBaseObject(%(res)s, (PyObject*)%(basename)s);
@@ -547,7 +530,7 @@ class Elemwise(Op):
                 args.append(DimShuffle(
                     input.type.broadcastable,
                     ['x'] * difference + range(length),
-                    inplace=True)(input))
+                    inplace=False)(input))
         inputs = args
 
         #HERE: all the broadcast dims have the same length now
@@ -617,7 +600,7 @@ class Elemwise(Op):
             return self.name
 
     def R_op(self, inputs, eval_points):
-        outs = self.make_node(*inputs).outputs
+        outs = self(*inputs, **dict(return_list=True))
         rval = [None for x in outs]
         # For each output
         for idx, out in enumerate(outs):
@@ -694,7 +677,7 @@ class Elemwise(Op):
 
         #sum out the broadcasted dimensions
         for i, ipt in enumerate(inputs):
-            if rval[i] is None:
+            if isinstance(rval[i].type, (NullType, DisconnectedType)):
                 continue
 
             # list of all the dimensions that are broadcastable for input[i] so
@@ -741,7 +724,7 @@ class Elemwise(Op):
             scalar_ograds = map(as_scalar, ograds)
             scalar_igrads = self.scalar_op.grad(scalar_inputs, scalar_ograds)
             for igrad in scalar_igrads:
-                assert igrad is not None
+                assert igrad is not None, self.scalar_op
 
         finally:
 
@@ -766,10 +749,8 @@ class Elemwise(Op):
                 # the gradient contains a constant, translate it as
                 # an equivalent TensorType of size 1 and proper number of
                 # dimensions
-                res = TensorConstant(TensorType(dtype=r.type.dtype,
-                                            broadcastable=()),
-                                     numpy.asarray(r.data))  # .reshape(b)
-                return DimShuffle((), ['x'] * nd, inplace=True)(res)
+                res = theano.tensor.constant(numpy.asarray(r.data), dtype=r.type.dtype)
+                return DimShuffle((), ['x'] * nd, inplace=False)(res)
             new_r = Elemwise(node.op, {})(
                     *[transform(ipt) for ipt in node.inputs])
             return new_r
@@ -784,6 +765,13 @@ class Elemwise(Op):
         return ret
 
     def perform(self, node, inputs, output_storage):
+        if len(node.inputs) >= 32:
+            # Some versions of NumPy will segfault, other will raise a
+            # ValueError, if the number of inputs to a ufunc is 32 or more.
+            # In that case, the C version should be used, or Elemwise fusion
+            # should be disabled.
+            super(Elemwise, self).perform(node, inputs, output_storage)
+
         maxsize = max(len(input.shape) for input in inputs)
         for dims in izip(*[([(1, True)] * (maxsize - len(input.shape))
                             + zip(input.shape, sinput.type.broadcastable))
@@ -1251,8 +1239,10 @@ class CAReduce(Op):
         # See <http://projects.scipy.org/numpy/ticket/2235>.
         elif isinstance(axis, (int, numpy.integer)):
             self.axis = (axis,)
+        elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
+            self.axis = (int(axis),)
         else:
-            self.axis = list(set(axis))
+            self.axis = list(set(int(a) for a in axis))
             self.axis.sort()
             self.axis = tuple(self.axis)
 
@@ -1623,6 +1613,7 @@ class All(CAReduce):
             return "All{%s}" % ", ".join(map(str, self.axis))
 
     def make_node(self, input):
+        input = as_tensor_variable(input)
         if input.dtype not in ["int8", "uint8"]:
             input = theano.tensor.neq(input, 0)
         ret = super(All, self).make_node(input)
@@ -1648,6 +1639,7 @@ class Any(CAReduce):
             return "Any{%s}" % ", ".join(map(str, self.axis))
 
     def make_node(self, input):
+        input = as_tensor_variable(input)
         if input.dtype not in ["int8", "uint8"]:
             input = theano.tensor.neq(input, 0)
         ret = super(Any, self).make_node(input)
@@ -1881,7 +1873,7 @@ class Sum(CAReduceDtype):
         # part of self
         if None in eval_points:
             return [None]
-        return self.make_node(*eval_points).outputs
+        return self(*eval_points, **dict(return_list=True))
 
     def __str__(self):
         if self.axis is None:

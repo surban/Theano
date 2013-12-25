@@ -36,7 +36,7 @@ def filter_vm_lazy(val):
         return False
     elif val == 'True' or val is True:
         return True
-    elif val == 'None':
+    elif val == 'None' or val is None:
         return None
     else:
         raise ValueError('Valid values for an vm.lazy parameter '
@@ -838,11 +838,20 @@ class VM_Linker(link.LocalLinker):
         for k in storage_map:
             compute_map[k] = [k.owner is None]
 
-        thunks = [node.op.make_thunk(node,
-                    storage_map,
-                    compute_map,
-                    no_recycling)
-                        for node in order]
+        thunks = []
+        for node in order:
+            try:
+                thunks.append(node.op.make_thunk(node,
+                                                 storage_map,
+                                                 compute_map,
+                                                 no_recycling))
+            except Exception, e:
+                e.args = ("The following error happened while"
+                          " compiling the node", node, "\n") + e.args
+                raise
+        for node, thunk in zip(order, thunks):
+            thunk.inputs = [storage_map[v] for v in node.inputs]
+            thunk.outputs = [storage_map[v] for v in node.outputs]
 
         computed, last_user = link.gc_helper(order)
         if self.allow_gc:
