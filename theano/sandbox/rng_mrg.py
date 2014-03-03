@@ -10,6 +10,7 @@ import warnings
 import numpy
 
 from theano import Op, Apply, shared, config, Variable
+from theano import gradient
 from theano import tensor
 from theano.tensor import (raw_random, TensorType, as_tensor_variable,
                            get_vector_length, cast, opt, scal)
@@ -175,7 +176,10 @@ class mrg_uniform_base(Op):
                      [rstate.type(), self.output_type()])
 
     def grad(self, inputs, ograd):
-        return [None for i in inputs]
+        return [gradient.grad_undefined(
+                    self, k, inp,
+                    'No gradient defined through random sampling op')
+                for k, inp in enumerate(inputs)]
 
     def R_op(self, inputs, eval_points):
         return [None for i in eval_points]
@@ -730,9 +734,11 @@ class MRG_RandomStreams(object):
 
         :param low: Lower bound of the interval on which values are sampled.
         If the ``dtype`` arg is provided, ``low`` will be cast into dtype.
+        This bound is excluded.
 
         :param high: Higher bound of the interval on which values are sampled.
         If the ``dtype`` arg is provided, ``high`` will be cast into dtype.
+        This bound is excluded.
 
         :param size: Can be a list of integer or Theano variable
                 (ex: the shape of other Theano Variable)

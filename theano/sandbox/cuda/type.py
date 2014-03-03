@@ -2,10 +2,12 @@
 """
 import os
 import copy_reg
+import warnings
 
 import numpy
 
 import theano
+from theano import config
 from theano import Type, Variable
 from theano import tensor, config
 from theano import scalar as scal
@@ -183,11 +185,16 @@ class CudaNdarrayType(Type):
         return tensor.TensorType.values_eq(numpy.asarray(a), numpy.asarray(b))
 
     @staticmethod
-    def values_eq_approx(a, b, allow_remove_inf=False):
+    def values_eq_approx(a, b, allow_remove_inf=False, allow_remove_nan=False,
+                         rtol=None, atol=None):
         #TODO: make the comparaison without transfert.
-        return tensor.TensorType.values_eq_approx(numpy.asarray(a),
-                                                  numpy.asarray(b),
-                allow_remove_inf=allow_remove_inf)
+        return tensor.TensorType.values_eq_approx(
+            numpy.asarray(a),
+            numpy.asarray(b),
+            allow_remove_inf=allow_remove_inf,
+            allow_remove_nan=allow_remove_nan,
+            rtol=rtol, atol=atol
+        )
 
     def dtype_specs(self):
         """Return a tuple (python type, c type, numpy typenum) that
@@ -482,7 +489,16 @@ theano.compile.register_deep_copy_op_c_code(
 # equal the pickled version, and the cmodule cache is not happy with
 # the situation.
 def CudaNdarray_unpickler(npa):
-    return cuda.CudaNdarray(npa)
+
+    if config.experimental.unpickle_gpu_on_cpu:
+        # directly return numpy array
+        warnings.warn("config.experimental.unpickle_gpu_on_cpu is set to True. Unpickling CudaNdarray as numpy.ndarray")
+        return npa
+    elif cuda:
+        return cuda.CudaNdarray(npa)
+    else:
+        raise ImportError("Cuda not found. Cannot unpickle CudaNdarray")
+
 copy_reg.constructor(CudaNdarray_unpickler)
 
 

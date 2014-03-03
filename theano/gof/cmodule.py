@@ -308,12 +308,13 @@ def last_access_time(path):
     return os.stat(path)[stat.ST_ATIME]
 
 
-def module_name_from_dir(dirname, err=True):
+def module_name_from_dir(dirname, err=True, files=None):
     """
     Scan the contents of a cache directory and return full path of the
     dynamic lib in it.
     """
-    files = os.listdir(dirname)
+    if files is None:
+        files = os.listdir(dirname)
     names = [file for file in files
              if file.endswith('.so') or file.endswith('.pyd')]
     if len(names) == 0 and not err:
@@ -640,18 +641,21 @@ class ModuleCache(object):
             time_now = time.time()
             # Go through directories in alphabetical order to ensure consistent
             # behavior.
-            root_dirs_files = sorted(os.walk(self.dirname),
-                                     key=operator.itemgetter(0))
-            for root, dirs, files in root_dirs_files:
+            subdirs = sorted(os.listdir(self.dirname))
+            for root in subdirs:
+                root = os.path.join(self.dirname, root)
                 key_pkl = os.path.join(root, 'key.pkl')
                 if key_pkl in self.loaded_key_pkl:
                     continue
-                elif 'delete.me' in files or not files:
+                if not os.path.isdir(root):
+                    continue
+                files = os.listdir(root)
+                if 'delete.me' in files or not files:
                     _rmtree(root, ignore_nocleanup=True,
                             msg="delete.me found in dir")
                 elif 'key.pkl' in files:
                     try:
-                        entry = module_name_from_dir(root)
+                        entry = module_name_from_dir(root, files=files)
                     except ValueError:  # there is a key but no dll!
                         if not root.startswith("/tmp"):
                             # Under /tmp, file are removed periodically by the
@@ -814,8 +818,7 @@ class ModuleCache(object):
                 # We do nothing here.
 
             # Clean up the name space to prevent bug.
-            if root_dirs_files:
-                del root, dirs, files
+            del root, files, subdirs
 
             # Remove entries that are not in the filesystem.
             items_copy = list(self.module_hash_to_key_data.iteritems())
@@ -1684,6 +1687,36 @@ class GCC_compiler(object):
                                         opt_name, opt_val = opt
                                         new_flags[i] = '-march=%s' % opt_val
 
+                            # Some versions of GCC report the native arch
+                            # as "corei7-avx", but it generates illegal
+                            # instructions, and should be "corei7" instead.
+                            # Affected versions are:
+                            # - 4.6 before 4.6.4
+                            # - 4.7 before 4.7.3
+                            # - 4.8 before 4.8.1
+                            # Earlier versions did not have arch "corei7-avx"
+                            for i, p in enumerate(new_flags):
+                                if 'march' not in p:
+                                    continue
+                                opt = p.split('=')
+                                if len(opt) != 2:
+                                    # Inexpected, but do not crash
+                                    continue
+                                opt_val = opt[1]
+                                if not opt_val.endswith('-avx'):
+                                    # OK
+                                    continue
+                                # Check the version of GCC
+                                version = gcc_version_str.split('.')
+                                if len(version) != 3:
+                                    # Unexpected, but should not be a problem
+                                    continue
+                                mj, mn, patch = [int(vp) for vp in version]
+                                if (((mj, mn) == (4, 6) and patch < 4) or
+                                        ((mj, mn) == (4, 7) and patch < 3) or
+                                        ((mj, mn) == (4, 8) and patch < 1)):
+                                    new_flags[i] = p.rstrip('-avx')
+
                             # Go back to split arguments, like
                             # ["-option", "value"],
                             # as this is the way g++ expects them split.
@@ -1741,37 +1774,9 @@ class GCC_compiler(object):
             # link with libpython.
             cxxflags.append('-DMS_WIN64')
 
-        #DSE Patch 1 for supporting OSX frameworks; add -framework Python
         if sys.platform == 'darwin':
+            # Use the already-loaded python symbols.
             cxxflags.extend(['-undefined', 'dynamic_lookup'])
-            python_inc = distutils.sysconfig.get_python_inc()
-            # link with the framework library *if specifically requested*
-            # config.mac_framework_link is by default False, since on some mac
-            # installs linking with -framework causes a Bus Error
-            if (python_inc.count('Python.framework') > 0 and
-                config.cmodule.mac_framework_link):
-                cxxflags.extend(['-framework', 'Python'])
-            if 'Anaconda' in sys.version:
-                new_path = os.path.join(sys.prefix, "lib")
-                new_path = os.path.realpath(new_path)
-                v = os.getenv("DYLD_FALLBACK_LIBRARY_PATH", None)
-                if v is not None:
-                    # This will resolve symbolic links
-                    v = os.path.realpath(v)
-
-                # The python __import__ don't seam to take into account
-                # the new env variable "DYLD_FALLBACK_LIBRARY_PATH"
-                # when we set with os.environ['...'] = X or os.putenv()
-                # So we tell the user and tell him what todo.
-                if v is None or new_path not in v.split(":"):
-                    raise Exception(
-                        "The environment variable "
-                        "'DYLD_FALLBACK_LIBRARY_PATH' does not contain "
-                        "the '%s' path in its value. This will make "
-                        "Theano unable to compile c code. Update "
-                        "'DYLD_FALLBACK_LIBRARY_PATH' to contain the "
-                        "said value, this will fix this error."
-                        % new_path)
 
         return cxxflags
 
@@ -1798,6 +1803,11 @@ class GCC_compiler(object):
             fd, path = tempfile.mkstemp(suffix='.c', prefix=tmp_prefix)
             exe_path = path[:-2]
             try:
+                # Python3 compatibility: try to cast Py3 strings as Py2 strings
+                try:
+                    src_code = b(src_code)
+                except:
+                    pass
                 os.write(fd, src_code)
                 os.close(fd)
                 fd = None

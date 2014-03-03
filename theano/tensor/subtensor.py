@@ -47,6 +47,23 @@ class AdvancedIndexingError(TypeError):
 # Helpful functions to deal with Subtensor and IncSubtensor
 ##########
 
+def make_constant(args):
+    """
+    Convert python litterals to theano constants in subtensor arguments.
+    """
+    def conv(a):
+            if a is None:
+                return a
+            elif isinstance(a, slice):
+                return slice(conv(a.start),
+                             conv(a.stop),
+                             conv(a.step))
+            elif isinstance(a, (int, long, numpy.integer)):
+                return scal.ScalarConstant(scal.int64, a)
+            else:
+                return a
+    return tuple(map(conv, args))
+
 def get_idx_list(inputs, idx_list):
     '''
     Given a list of inputs to the subtensor and its idx_list reorders
@@ -318,11 +335,11 @@ class Subtensor(Op):
         if (isinstance(entry, gof.Variable)
                 and entry.type in tensor_types
                 and numpy.all(entry.type.broadcastable)):
-            return scal.Scalar(entry.type.dtype)
+            return scal.get_scalar_type(entry.type.dtype)
         elif (isinstance(entry, gof.Type)
                 and entry in tensor_types
                 and numpy.all(entry.broadcastable)):
-            return scal.Scalar(entry.dtype)
+            return scal.get_scalar_type(entry.dtype)
         elif slice_ok and isinstance(entry, slice):
             a = entry.start
             b = entry.stop
@@ -347,24 +364,56 @@ class Subtensor(Op):
                 slice_c = None
 
             return slice(slice_a, slice_b, slice_c)
-        # There is a bug in numpy that results in isinstance(x, int) returning
-        # False for numpy integers.
-        # See <http://projects.scipy.org/numpy/ticket/2235>.
-        elif isinstance(entry, numpy.integer):
-            return entry
-        # On Windows 64-bit, shapes are returned as Python long, as they can
-        # be bigger than what a Python int can hold.
-        # Shapes should always fit in a numpy.int64, and we support them better
-        # 2) In Python3, long replaced int. So we must assert it fit in int64.
-        elif isinstance(entry, (int, long)):
-            entry64 = numpy.int64(entry)
-            return entry64
+        elif isinstance(entry, (int, long, numpy.integer)):
+            # Disallow the use of python scalars in idx_list
+            raise TypeError("Python scalar in idx_list."
+                            "Please report this error to theano-dev.")
         else:
             raise AdvancedIndexingError(Subtensor.e_indextype, entry)
 
+    def get_constant_idx(self, inputs, allow_partial=False):
+        """
+        Return the idx_list with constant inputs replaced by their
+        python scalar equivalent.  May raise
+        `theano.tensor.NotScalarConstantError` if the idx contains
+        non-constant entries.
+
+        If allow_partial is True, then entries that are not constant
+        will stay as their input variable rather than raising an
+        exception.
+
+        None entries are always left as-is.
+
+        Example usage (where v, a are appropriately typed theano variables):
+
+            >>> b = a[v, 1:3]
+            >>> b.owner.op.idx_list
+            (Scalar(int64), slice(Scalar(int64), Scalar(int64), None))
+            >>> b.owner.op.get_constant_idx(b.owner.inputs, allow_partial=True)
+            [v, slice(1, 3, None)]
+            >>> b.owner.op.get_constant_idx(b.owner.inputs)
+            NotScalarConstantError: v
+        """
+        real_idx = get_idx_list(inputs, self.idx_list)
+        def conv(val):
+            if val is None:
+                return None
+            elif isinstance(val, slice):
+                return slice(conv(val.start),
+                             conv(val.stop),
+                             conv(val.step))
+            else:
+                try:
+                    return get_scalar_constant_value(val)
+                except theano.tensor.NotScalarConstantError:
+                    if allow_partial:
+                        return val
+                    else:
+                        raise
+        return map(conv, real_idx)
+
     def __init__(self, idx_list):
         self.idx_list = tuple(map(self.convert, idx_list))
-        self.perform_cache_cdata = None
 
     @staticmethod
     def my_as_scalar(a):
@@ -404,31 +453,21 @@ class Subtensor(Op):
                     % (input.type, expected_type))
 
         # infer the broadcasting pattern
-        padded = (idx_list
-                + [slice(None, None, None)] * (x.type.ndim - len(idx_list)))
+        padded = (self.get_constant_idx((None,)+inputs, allow_partial=True)
+                  + [slice(None, None, None)] * (x.type.ndim - len(idx_list)))
         broadcastable = []
         for i, (p, bc) in enumerate(izip(padded, x.type.broadcastable)):
             if isinstance(p, slice):
                 if bc and p.start in [None, 0]:
-                    # No need to check step when there is only
-                    # one element.
-                    # We could call get_canonical_form_slice() to
-                    # catch more broadcast case. I let this to
-                    # later.
-                    if p.stop is None:
-                        broadcastable.append(bc)
+                    start = p.start
+                    if start is None:
+                        start = 0
+                    if (p.stop is None or
+                        (isinstance(p.stop, (int, numpy.integer)) and
+                         p.stop > start)):
+                        broadcastable.append(True)
                         continue
-                    try:
-                        if p.start is None:
-                            start = 0
-                        else:
-                            start = get_scalar_constant_value(p.start)
-                        stop = get_scalar_constant_value(p.stop)
-                        if stop > start:
-                            broadcastable.append(True)
-                            continue
-                    except theano.tensor.NotScalarConstantError:
-                        pass
+
                 broadcastable.append(False)
 
         return gof.Apply(self,
@@ -440,18 +479,9 @@ class Subtensor(Op):
         out, = out_
         x = inputs[0]
 
-        # The subtensor (or idx_list) does not depend on the inputs.
-        # (and cdata was cached on initial call)
-        if self.perform_cache_cdata is not None:
-            out[0] = numpy.asarray(x.__getitem__(self.perform_cache_cdata))
-            return
-
         cdata = get_idx_list(inputs, self.idx_list)
         if len(cdata) == 1:
             cdata = cdata[0]
-        # (first call caches cdata here)
-        if len(inputs) == 1:
-            self.perform_cache_cdata = cdata
 
         out[0] = numpy.asarray(x.__getitem__(cdata))
 
@@ -644,8 +674,14 @@ class Subtensor(Op):
         len_is_slice = len(is_slice)
 
         len_subtensor_spec = spec_pos()
+        subensor_spec = "npy_intp subtensor_spec[%(len_subtensor_spec)s];" % locals()
+        if len_subtensor_spec == 0:
+            subensor_spec = "npy_intp * subtensor_spec = NULL;"
 
-        is_slice_init = ",".join([str(s) for s in is_slice])
+        if is_slice:
+            is_slice_init = "int is_slice[] = {" + ",".join([str(s) for s in is_slice]) + "};"
+        else:
+            is_slice_init = "int* is_slice = NULL;"
         subtensor_init = "\n".join(init_cmds)
 
         x, = inputs[:1]
@@ -673,8 +709,8 @@ class Subtensor(Op):
         // The subtensor is created by iterating over the dimensions
         // and updating stride, shape, and data pointers
 
-        int is_slice[] = {%(is_slice_init)s};
-        npy_intp subtensor_spec[%(len_subtensor_spec)s];
+        %(is_slice_init)s
+        %(subensor_spec)s
         %(subtensor_init)s;
         int spec_pos = 0; //position in subtensor_spec
         int inner_ii = 0; // the current dimension of zview
@@ -1255,7 +1291,7 @@ class IncSubtensor(Op):
 
         copy_into = self.copy_into("zview", y)
 
-        add_to_zview = self.add_to_zview(y, fail)
+        add_to_zview = self.add_to_zview(name, y, fail)
 
         make_modification = """
         if (%(op_is_set)s)
@@ -1353,7 +1389,7 @@ class IncSubtensor(Op):
         """
         return """PyArray_CopyInto(%(view)s, %(source)s)""" % locals()
 
-    def add_to_zview(self, x, fail):
+    def add_to_zview(self, name, x, fail):
         """ Return C code to add x to zview. Should DECREF zview if the
         add fails."""
 

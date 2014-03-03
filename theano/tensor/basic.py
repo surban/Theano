@@ -25,6 +25,8 @@ from theano.gof.python25 import partial, any, all
 from theano.gof.utils import hashtype
 from theano import compile, printing
 from theano.printing import pprint, min_informative_str
+from theano.compile import Shape, shape  #For history
+
 
 # We use these exceptions as well.
 import theano.scalar.sharedvar
@@ -555,7 +557,7 @@ def get_scalar_constant_value(v):
             data = v.data
         return numpy_scalar(data)
 
-    if v.owner:
+    if getattr(v, 'owner', None):
         if isinstance(v.owner.op, (Alloc, DimShuffle, Rebroadcast,
                                    compile.ops.OutputGuard,
                                    compile.DeepCopyOp)):
@@ -588,14 +590,10 @@ def get_scalar_constant_value(v):
             v.owner.op.perform(v.owner, const, ret)
             return ret[0][0]
         if isinstance(v.owner.op, theano.tensor.subtensor.Subtensor) and v.ndim == 0:
-            # This condition depends on Subtensor always embedding constant
-            # indices in the Op rather than making them inputs to the Apply
-            # node.
-            if isinstance(v.owner.inputs[0], TensorConstant) and \
-                len(v.owner.inputs) == 1:
+            if isinstance(v.owner.inputs[0], TensorConstant):
+                cdata = tuple(v.owner.op.get_constant_idx(v.owner.inputs))
                 try:
-                    return v.owner.inputs[0].data.__getitem__(
-                    tuple(v.owner.op.idx_list))
+                    return v.owner.inputs[0].data.__getitem__(cdata)
                 except IndexError:
                     raise IndexError(
                             str(tuple(v.owner.op.idx_list)) +
@@ -618,10 +616,12 @@ def get_scalar_constant_value(v):
                            v.owner.inputs[0].owner.inputs) and
                 len(v.owner.op.idx_list) == 1):
 
+                idx = v.owner.op.idx_list[0]
+                if isinstance(idx, gof.Type):
+                    idx = get_scalar_constant_value(v.owner.inputs[1])
                 # Note the '+ 1' is because the first argument to Join is the
                 # axis.
-                ret = v.owner.inputs[0].owner.inputs[
-                    v.owner.op.idx_list[0] + 1]
+                ret = v.owner.inputs[0].owner.inputs[idx + 1]
                 ret = get_scalar_constant_value(ret)
                 # join can cast implicitly its input in some case.
                 return theano._asarray(ret, dtype=v.type.dtype)
@@ -633,14 +633,13 @@ def get_scalar_constant_value(v):
                 # We put this check in case there is change in the future
                 python_all(var.ndim == 0 for var in
                            v.owner.inputs[0].owner.inputs) and
-                len(v.owner.op.idx_list) == 1 and
-                #idx_list can contain Scalar Type object.
-                isinstance(v.owner.op.idx_list[0], (int, long,
-                                                    numpy.integer))):
-
+                len(v.owner.op.idx_list) == 1):
+                idx = v.owner.op.idx_list[0]
+                if isinstance(idx, gof.Type):
+                    idx = get_scalar_constant_value(v.owner.inputs[1])
                 # Python 2.4 does not support indexing with numpy.integer
                 # So we cast it.
-                idx = int(v.owner.op.idx_list[0])
+                idx = int(idx)
                 ret = v.owner.inputs[0].owner.inputs[idx]
                 ret = get_scalar_constant_value(ret)
                 # MakeVector can cast implicitly its input in some case.
@@ -656,6 +655,8 @@ def get_scalar_constant_value(v):
                 op = owner.op
                 idx_list = op.idx_list
                 idx = idx_list[0]
+                if isinstance(idx, gof.Type):
+                    idx = get_scalar_constant_value(owner.inputs[1])
                 grandparent = leftmost_parent.owner.inputs[0]
                 gp_broadcastable = grandparent.type.broadcastable
                 ndim = grandparent.type.ndim
@@ -991,7 +992,7 @@ class ScalarFromTensor(Op):
         assert t.type.broadcastable == ()
         return Apply(self,
                      [t],
-                     [scal.Scalar(dtype=t.type.dtype).make_variable()])
+                     [scal.get_scalar_type(dtype=t.type.dtype).make_variable()])
 
     def perform(self, node, inp, out_):
         s, = inp
@@ -1125,83 +1126,6 @@ def cast(x, dtype):
 ##########################
 
 
-class Shape(Op):
-    """
-    L{Op} to return the shape of a matrix.
-
-    @note: Non-differentiable.
-    """
-    def __hash__(self):
-        return hash(type(self))
-
-    def __eq__(self, other):
-        return type(self) == type(other)
-
-    def __str__(self):
-        return self.__class__.__name__
-
-    def make_node(self, x):
-        # Must work for all type that have a shape attribute.
-        # This will fail at execution time.
-        x = as_tensor_variable(x)
-        # Each type variable should implement their .shape attribute
-        # and have the fct infer_shape() implemented in the op that convert
-        # the type to TensorVariable to have the optimization working
-        # correctly.
-        return Apply(self, [x], [lvector()])
-
-    def perform(self, node, inp, out_):
-        x, = inp
-        out, = out_
-        out[0] = theano._asarray(x.shape, dtype='int64')
-
-    def infer_shape(self, node, in_shapes):
-        return [[len(in_shapes[0])]]
-
-    def connection_pattern(self, node):
-        # the grad returns the gradient with respect to the
-        # elements of a tensor variable
-        # the elements of the tensor variable do not participate
-        # in the computation of the shape, so they are not really
-        # part of the graph
-        return [[False]]
-
-    def grad(self, inp, grads):
-        # the grad returns the gradient with respect to the
-        # elements of a tensor variable
-        # the elements of the tensor variable do not participate
-        # in the computation of the shape, so they are not really
-        # part of the graph
-        return [DisconnectedType()()]
-
-    def R_op(self, inputs, eval_points):
-        return [None]
-
-    def c_code(self, node, nodename, inp, out, sub):
-        x, = inp
-        z, = out
-        if isinstance(node.inputs[0].type, TensorType):
-            return """
-            npy_intp shape[] = {PyArray_NDIM(%(x)s)};
-            if(%(z)s == NULL || (PyArray_DIMS(%(z)s)[0] != shape[0]))
-            {
-                Py_XDECREF(%(z)s);
-                %(z)s = (PyArrayObject*) PyArray_SimpleNew(1, shape, NPY_INT64);
-            }
-            for(int i=0;i<shape[0];i++)
-            {
-                ((npy_int64*)PyArray_GETPTR1(%(z)s, i))[0] = PyArray_DIMS(%(x)s)[i];
-            }
-            """ % locals()
-        else:
-            #TODO: if your type is not listed here, make a damn registry of
-            #      shape_i ops for various types of variables.
-            #      Do not continue this madness.
-            return super(Shape, self).c_code(node, nodename, (x,), (out,), sub)
-
-    def c_code_cache_version(self):
-        return (1,)
-
 @constructor
 def old_shape(a):
     """
@@ -1222,10 +1146,6 @@ def old_shape(a):
         # all shape components are known at compile time, so we return
         # a tuple directly.  This tuple is like the numpy.ndarray.shape tuple.
         return va.type.shape
-
-shape = Shape()
-_shape = shape  # was used in the past, now use shape directly.
-pprint.assign(_shape, printing.MemberPrinter('shape'))
 
 
 class SpecifyShape(Op):
@@ -1435,18 +1355,21 @@ class MaxAndArgmax(Op):
         x, axis = inp
         max, argmax = out
         fail = sub["fail"]
-        assert NoneConst.equals(node.inputs[1]) or node.inputs[1].ndim == 0
-        ret = """
-        int axis;
-        if((PyObject*)%(axis)s == Py_None){
-            axis = NPY_MAXDIMS;
-        }else{
+
+        if NoneConst.equals(node.inputs[1]):
+            axis_code = "axis = NPY_MAXDIMS;"
+        else:
+            assert node.inputs[1].ndim == 0
+            axis_code = """
             axis = ((dtype_%(axis)s*)PyArray_DATA(%(axis)s))[0];
             if(axis > PyArray_NDIM(%(x)s)-1 || axis < -PyArray_NDIM(%(x)s)){
                 PyErr_SetString(PyExc_ValueError, "MaxAndArgmax, bad axis argument");
                 %(fail)s
             }
-        }
+            """ % locals()
+        ret = """
+        int axis;
+        %(axis_code)s
         %(max)s = (PyArrayObject*)PyArray_Max(%(x)s, axis, NULL);
         if(%(max)s == NULL){
             PyErr_SetString(PyExc_ValueError,
@@ -2748,7 +2671,8 @@ pprint.assign(Sum(), printing.FunctionPrinter('sum'))
 
 
 @constructor
-def prod(input, axis=None, dtype=None, keepdims=False, acc_dtype=None):
+def prod(input, axis=None, dtype=None, keepdims=False, acc_dtype=None,
+         no_zeros_in_input=False):
     """
     Computes the product along the given axis(es) of a tensor `input`
 
@@ -2762,7 +2686,8 @@ def prod(input, axis=None, dtype=None, keepdims=False, acc_dtype=None):
     For full documentation see ``tensor.elemwise.Prod``.
     """
 
-    out = elemwise.Prod(axis, dtype=dtype, acc_dtype=acc_dtype)(input)
+    out = elemwise.Prod(axis, dtype=dtype, acc_dtype=acc_dtype,
+                        no_zeros_in_input=no_zeros_in_input)(input)
 
     if keepdims:
         out = makeKeepDims(input, out, axis)
@@ -3180,6 +3105,48 @@ def batched_dot(x, y):
             non_sequences=None)
     return result
 
+
+def batched_tensordot(x, y, axes=2):
+    """
+    :param x: A Tensor with sizes e.g.: for 3D (dim1, dim3, dim2)
+    :param y: A Tensor with sizes e.g.: for 3D (dim1, dim2, dim4)
+    :param axes: an integer or array. If an integer, the number of axes
+                 to sum over. If an array, it must have two array
+                 elements containing the axes to sum over in each tensor.
+
+                 If an integer i, it is converted to an array containing
+                 the last i dimensions of the first tensor and the first
+                 i dimensions of the second tensor (excluding the first 
+                 (batch) dimension):
+                     axes = [range(a.ndim - i, b.ndim), range(1,i+1)]
+
+                 If an array, its two elements must contain compatible axes
+                 of the two tensors. For example, [[1, 2], [2, 4]] means sum
+                 over the 2nd and 3rd axes of a and the 3rd and 5th axes of b.
+                 (Remember axes are zero-indexed!) The 2nd axis of a and the
+                 3rd axis of b must have the same shape; the same is true for
+                 the 3rd axis of a and the 5th axis of b.
+    :type axes: int or array-like of length 2
+    
+    A hybrid of batch_dot and tensordot, this function computes the 
+    tensordot product between the two tensors, by iterating over the 
+    first dimension using scan to perform a sequence of tensordots.    
+    """
+    if isinstance(axes, (list, numpy.ndarray)):
+        if isinstance(axes, list):
+            axes = numpy.asarray(axes)
+        else:
+            axes = axes.copy()
+        assert numpy.greater(axes,0).all(), "All axes should be greater than one, as the first axis is iterated over (batch-wise scan)"
+        axes -= 1
+    
+    result, updates = theano.scan(fn=lambda x_mat, y_mat:
+            theano.tensor.tensordot(x_mat, y_mat, axes),
+            outputs_info=None,
+            sequences=[x, y],
+            non_sequences=None)
+    return result
+   
 
 def split(x, splits_size, n_splits, axis=0):
     the_split = Split(n_splits)

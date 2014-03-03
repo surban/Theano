@@ -164,6 +164,8 @@ def conv3d(signals, filters,
            border_mode='valid'):
     """Convolve spatio-temporal filters with a movie.
 
+    It flips the filters.
+
     :param signals: timeseries of images whose pixels have color channels.
             shape: [Ns, Ts, C, Hs, Ws]
     :param filters: spatio-temporal filters
@@ -173,6 +175,13 @@ def conv3d(signals, filters,
     :param border_mode: The only one tested is 'valid'.
 
     :note: Work on the GPU.
+           Another way to define signals: (batch,  time, in channel, row, column)
+           Another way to define filters: (out channel,time,in channel, row, column)
+
+    :see: Someone made a script that shows how to swap the axes between
+          both 3d convolution implementations in Theano. See the last
+          `attachment <https://groups.google.com/d/msg/theano-users/1S9_bZgHxVw/0cQR9a4riFUJ>`_.
+
     """
 
     if isinstance(border_mode, str):

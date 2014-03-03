@@ -131,6 +131,9 @@ class FromFunctionOptimizer(Optimizer):
     def __call__(self, *args, **kwargs):
         return self.fn(*args, **kwargs)
 
+    def __str__(self):
+        return self.__name__
+
 
 def optimizer(f):
     """decorator for FromFunctionOptimizer"""
@@ -626,7 +629,10 @@ class MergeOptimizer(Optimizer):
         print >> stream, blanc, "  replace_time", replace_time
         print >> stream, blanc, "  validate_time", validate_time
         print >> stream, blanc, "  callback_time", callback_time
-        print >> stream, blanc, "  callback_times", callbacks_time
+        print >> stream, blanc, "  callbacks_time"
+        for i in sorted(callbacks_time.iteritems(), key=lambda a: a[1]):
+            if i[1] > 0:
+                print i
         print >> stream, blanc, "  nb_merged", nb_merged
         print >> stream, blanc, "  nb_constant", nb_constant
 
@@ -1252,7 +1258,7 @@ class NavigatorOptimizer(Optimizer):
                     pruner(node)
             if chin is not None:
                 def on_change_input(self, fgraph, node, i, r, new_r, reason):
-                    chin(node, i, r, new_r)
+                    chin(node, i, r, new_r, reason)
 
         u = Updater()
         fgraph.attach_feature(u)
@@ -1490,7 +1496,6 @@ class EquilibriumOptimizer(NavigatorOptimizer):
     def __init__(self,
                  optimizers,
                  failure_callback=None,
-                 max_depth=None,
                  max_use_ratio=None):
         """
         :param optimizers:  list or set of local or global optimizations to
@@ -1498,8 +1503,6 @@ class EquilibriumOptimizer(NavigatorOptimizer):
 
         :param max_use_ratio: each optimizer can be applied at most
             (size of graph * this number) times
-
-        :param max_depth: TODO what does this do? (EquilibriumDB sets it to 5)
 
         """
 
@@ -1520,7 +1523,6 @@ class EquilibriumOptimizer(NavigatorOptimizer):
                         self.local_optimizers_map.setdefault(c, []).append(opt)
             else:
                 self.global_optimizers.append(opt)
-        self.max_depth = max_depth
         self.max_use_ratio = max_use_ratio
         assert self.max_use_ratio is not None, (
                 'max_use_ratio has to be a number')
@@ -1701,7 +1703,7 @@ class EquilibriumOptimizer(NavigatorOptimizer):
                                          lopt))
 
         count_opt = []
-        not_used = 0
+        not_used = []
         not_used_time = 0
         process_count = {}
         for o in opt.global_optimizers + list(opt.get_local_optimizers()):
@@ -1713,7 +1715,7 @@ class EquilibriumOptimizer(NavigatorOptimizer):
             if count > 0:
                 count_opt.append((time_opts[opt], count, opt))
             else:
-                not_used += 1
+                not_used.append((time_opts[opt], opt))
                 not_used_time += time_opts[opt]
 
         if count_opt:
@@ -1723,8 +1725,13 @@ class EquilibriumOptimizer(NavigatorOptimizer):
             for (t, count, opt) in count_opt[::-1]:
                 print >> stream, blanc, '  %.3fs - %d - %s' % (
                     t, count, opt)
-            print >> stream, blanc, '  %.3fs - in %d optimization that where not used' % (
-                not_used_time, not_used)
+            print >> stream, blanc, '  %.3fs - in %d optimization that where not used (display only those with a runtime > 0)' % (
+                not_used_time, len(not_used))
+            not_used.sort()
+            for (t, opt) in not_used[::-1]:
+                if t > 0:
+                    # Skip opt that have 0 times, they probably wasn't even tried.
+                    print >> stream, blanc + "  ", '  %.3fs - %s' % (t, opt)
             print >> stream
 
     @staticmethod
@@ -1896,31 +1903,3 @@ def pre_greedy_local_optimizer(list_optimizations, out):
     final_outs, optimized_nodes = local_recursive_function(
         list_optimizations, out, {}, 0)
     return final_outs[out_index]
-
-
-############
-### Misc ###
-############
-
-class InplaceOptimizer(Optimizer):
-
-    def __init__(self, inplace):
-        self.inplace = inplace
-
-    def apply(self, fgraph):
-        self.inplace(fgraph)
-
-    def add_requirements(self, fgraph):
-        fgraph.attach_feature(dh.DestroyHandler())
-
-
-class PureThenInplaceOptimizer(Optimizer):
-
-    def __init__(self, pure, inplace):
-        self.pure = pure
-        self.inplace = inplace
-
-    def apply(self, fgraph):
-        self.pure(fgraph)
-        fgraph.attach_feature(dh.DestroyHandler())
-        self.inplace(fgraph)

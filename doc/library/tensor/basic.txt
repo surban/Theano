@@ -816,7 +816,7 @@ Reductions
      * an *int* - computed along this axis
      * a *list of ints* - computed along these axes
 
-.. function:: prod(x, axis=None, dtype=None, keepdims=False, acc_dtype=None)
+.. function:: prod(x, axis=None, dtype=None, keepdims=False, acc_dtype=None, no_zeros_in_input=False)
 
     :Parameter: *x* -  symbolic Tensor (or compatible)
     :Parameter: *axis* - axis or axes along which to compute the product
@@ -843,6 +843,21 @@ Reductions
         - for uint dtypes, we use at least uint64;
         - for float dtypes, we use at least float64;
         - for complex dtypes, we use at least complex128.
+
+    :Parameter: *no_zeros_in_input* - The grad of prod is complicated
+         as we need to handle 3 different cases: without zeros in the
+         input reduced group, with 1 zero or with more zeros.
+
+	 This could slow you down, but more importantly, we currently
+	 don't support the second derivative of the 3 cases. So you
+	 cannot take the second derivative of the default prod().
+
+	 To remove the handling of the special cases of 0 and so get
+	 some small speed up and allow second derivative set
+	 ``no_zeros_in_inputs`` to ``True``. It defaults to ``False``.
+
+	 **It is the user responsibility to make sure there are no zeros
+	 in the inputs. If there are, the grad will be wrong.**
 
     :Returns: product of every term in *x* along *axis*
 
@@ -1437,7 +1452,7 @@ Linear Algebra
         print(b.shape) #(5,6,4,3)
         print(c.shape) #(2,3,4,5,6,4,3)
 
-    See the documentation of numpy.tensordot for more examples.
+    :note: See the documentation of `numpy.tensordot <http://docs.scipy.org/doc/numpy/reference/generated/numpy.tensordot.html>`_ for more examples.
 
 .. function:: batched_dot(X, Y)
 
@@ -1462,6 +1477,40 @@ Linear Algebra
     :type Y: symbolic tensor
 
     :return: tensor of products
+
+.. function:: batched_tensordot(X, Y, axes=2)
+
+    :param x: A Tensor with sizes e.g.: for 3D (dim1, dim3, dim2)
+    :param y: A Tensor with sizes e.g.: for 3D (dim1, dim2, dim4)
+    :param axes: an integer or array. If an integer, the number of axes
+                 to sum over. If an array, it must have two array
+                 elements containing the axes to sum over in each tensor.
+
+                 If an integer i, it is converted to an array containing
+                 the last i dimensions of the first tensor and the first
+                 i dimensions of the second tensor (excluding the first 
+                 (batch) dimension):
+                     axes = [range(a.ndim - i, b.ndim), range(1,i+1)]
+
+                 If an array, its two elements must contain compatible axes
+                 of the two tensors. For example, [[1, 2], [2, 4]] means sum
+                 over the 2nd and 3rd axes of a and the 3rd and 5th axes of b.
+                 (Remember axes are zero-indexed!) The 2nd axis of a and the
+                 3rd axis of b must have the same shape; the same is true for
+                 the 3rd axis of a and the 5th axis of b.
+    :type axes: int or array-like of length 2
+    
+    :returns: a tensor with shape equal to the concatenation of a's shape
+              (less any dimensions that were summed over) and b's shape
+              (less first dimension and any dimensions that were summed over).
+    :rtype: tensor of tensordots
+    
+    A hybrid of batch_dot and tensordot, this function computes the 
+    tensordot product between the two tensors, by iterating over the 
+    first dimension using scan to perform a sequence of tensordots.
+    
+    :note: See :func:`tensordot` and :func:`batched_dot` for 
+        supplementary documentation.
 
 
 

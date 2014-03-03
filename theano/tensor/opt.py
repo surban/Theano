@@ -7,11 +7,12 @@ Tensor optimizations addressing the ops in basic.py
 import logging
 _logger = logging.getLogger('theano.tensor.opt')
 
-import operator
 import itertools
-import sys
-import traceback
 from itertools import izip
+import operator
+import sys
+import time
+import traceback
 
 import numpy
 import numpy as N  # guys... please don't do this in the library :(
@@ -25,7 +26,8 @@ from theano.gof.utils import MethodNotDefined
 from theano.configparser import config
 from theano.tensor.elemwise import Elemwise, DimShuffle
 from theano.tensor.subtensor import (get_idx_list, get_canonical_form_slice,
-                                     Subtensor, IncSubtensor, AdvancedIncSubtensor1)
+                                     Subtensor, IncSubtensor, make_constant,
+                                     AdvancedIncSubtensor1)
 from theano import scalar
 from theano.tensor import basic as T
 from theano import compile  # to register the optimizer built by this file
@@ -35,7 +37,7 @@ from theano.gof.python25 import any, all
 from theano.gof.opt import (Optimizer, pre_constant_merge,
                             pre_greedy_local_optimizer)
 from theano.gof.opt import merge_optimizer
-from theano.gof import toolbox, DestroyHandler
+from theano.gof import toolbox
 from theano.tensor.basic import get_scalar_constant_value, ShapeError, NotScalarConstantError
 from theano.compat.six import StringIO
 
@@ -370,12 +372,20 @@ def local_0_dot_x(node):
     if replace:
         constant_zero = T.constant(0, dtype=node.outputs[0].type.dtype)
         if x.ndim == 2 and y.ndim == 2:
+            constant_zero = assert_(constant_zero,
+                                    T.eq(x.shape[1], y.shape[0]))
             return [T.alloc(constant_zero, x.shape[0], y.shape[1])]
         elif x.ndim == 1 and y.ndim == 2:
+            constant_zero = assert_(constant_zero,
+                                    T.eq(x.shape[0], y.shape[0]))
             return [T.alloc(constant_zero, y.shape[1])]
         elif x.ndim == 2 and y.ndim == 1:
+            constant_zero = assert_(constant_zero,
+                                    T.eq(x.shape[1], y.shape[0]))
             return [T.alloc(constant_zero, x.shape[0])]
         elif x.ndim == 1 and y.ndim == 1:
+            constant_zero = assert_(constant_zero,
+                                    T.eq(x.shape[0], y.shape[0]))
             return [constant_zero]
         else:
             _logger.warning("Optimization Warning: "
@@ -1625,8 +1635,8 @@ def local_useless_subtensor(node):
         if not hasattr(node.fgraph, 'shape_feature'):
             return
         shape_of = node.fgraph.shape_feature.shape_of
-        node_input_idx = 1
-        for pos, idx in enumerate(node.op.idx_list):
+        cdata = node.op.get_constant_idx(node.inputs, allow_partial=True)
+        for pos, idx in enumerate(cdata):
             if not isinstance(idx, slice):
                 # If idx is not a slice, this means we remove this dimension
                 # from the output, so the subtensor is not useless
@@ -1651,8 +1661,8 @@ def local_useless_subtensor(node):
             if isinstance(idx.stop, (int, numpy.integer)):
                 if idx.stop < length_pos_data:
                     return False
-            elif isinstance(idx.stop, theano.scalar.Scalar):
-                length_pos_shape_i = node.inputs[node_input_idx]
+            elif isinstance(idx.stop, gof.Variable):
+                length_pos_shape_i = idx.stop
                 # length_pos is a tensor variable, but length_pos_shape_i
                 # is a scalar variable. We try to see if they represent
                 # the same underlying variable.
@@ -1675,9 +1685,6 @@ def local_useless_subtensor(node):
                 assert str(length_pos.type.dtype) == "int64"
                 assert str(length_pos_shape_i.type.dtype) in ["int8", "int16",
                                                               "int32", "int64"]
-                # We already know that start and step are not variables
-                # and so they don't appear in the input of the node
-                node_input_idx += 1
 
                 # length_pos_shape_i cannot be None
                 if length_pos_shape_i != length_pos:
@@ -1737,8 +1744,7 @@ def local_subtensor_lift(node):
                 return [u.owner.op(*new_inputs)]
 
         if isinstance(u.owner.op, T.Rebroadcast):
-            # make sure that Subtensor and Rebroadcast only have 1 input/output
-            assert len(node.inputs) == 1
+            # make sure that Rebroadcast has only 1 input
             assert len(u.owner.inputs) == 1
 
             # Subtensor might reduce dim., adapt broadcast pattern accordingly
@@ -1760,7 +1766,7 @@ def local_subtensor_lift(node):
                 new_axis += [(j, u.broadcastable[i])]
                 j += 1
 
-            subt_x = Subtensor(node.op.idx_list)(u.owner.inputs[0])
+            subt_x = node.op(u.owner.inputs[0], *node.inputs[1:])
             rbcast_subt_x = T.Rebroadcast(*new_axis)(subt_x)
 
             return [rbcast_subt_x]
@@ -1951,6 +1957,7 @@ def local_subtensor_merge(node):
             else:
                 merged_slices += slices1[pos_1:]
 
+            merged_slices = make_constant(merged_slices)
             subtens = Subtensor(merged_slices)
             sl_ins = Subtensor.collapse(
                 merged_slices,
@@ -2559,12 +2566,12 @@ def local_fill_cut(node):
     # scalars, but we can't ignore the large matrix because it gives
     # the shape of the result.
 
-    if not opt.check_chain(node, T.Elemwise):
+    if node.op != T.Elemwise:
         return False
 
     output = node.outputs[0]
     try:
-        #reference is some input with the same type as the input but
+        #reference is some input with the same type as the output but
         #that is not produced by a fill
         reference = [input
                      for input in node.inputs
@@ -2574,16 +2581,18 @@ def local_fill_cut(node):
         return False
 
     new_inputs = []
+    new = False
     for input in node.inputs:
-        if opt.check_chain(input, T.fill):
+        if input.owner and input.owner.op == T.fill:
             model, filling = input.owner.inputs
             if encompasses_broadcastable(reference.type.broadcastable,
                                          filling.type.broadcastable):
                 new_inputs.append(filling)
+                new = True
                 continue
         new_inputs.append(input)
 
-    if new_inputs == node.inputs:
+    if not new:
         return False
 
     rval = node.op(*new_inputs)
@@ -2787,9 +2796,9 @@ class Canonizer(gof.LocalOptimizer):
         pairs = [self.get_num_denum(input2) for input2 in parent.inputs]
 
         if parent.op == self.main:
-            # If we have main(x, y), numx, denumx, numy and denumy
-            # then num is concat(numx, numy) and denum is
-            # concat(denumx, denumy) note that main() can have any
+            # If we have main(x, y, ...), numx, denumx, numy, denumy, ...
+            # then num is concat(numx, numy, num...) and denum is
+            # concat(denumx, denumy, denum...) note that main() can have any
             # number of arguments >= 0 concat is list concatenation
             num = reduce(list.__iadd__, map(operator.itemgetter(0), pairs))
             denum = reduce(list.__iadd__, map(operator.itemgetter(1), pairs))
@@ -2865,12 +2874,13 @@ class Canonizer(gof.LocalOptimizer):
         else:
             return v
 
-    def simplify(self, num, denum):
+    def simplify(self, num, denum, out_type):
         """
         Shorthand for:
         self.simplify_constants(*self.simplify_factors(num, denum))
         """
-        rval = self.simplify_constants(*self.simplify_factors(num, denum))
+        rval = self.simplify_constants(*self.simplify_factors(num, denum),
+                                       out_type=out_type)
         for reason, simplifier in self.external_simplifiers:
             # TODO: document that 'reason' is associated with this
             #       simplification to help auditing when things go
@@ -2894,7 +2904,7 @@ class Canonizer(gof.LocalOptimizer):
                 denum.remove(v)
         return num, denum
 
-    def simplify_constants(self, orig_num, orig_denum):
+    def simplify_constants(self, orig_num, orig_denum, out_type=None):
         """
 
         Finds all constants in orig_num and orig_denum (using
@@ -2912,7 +2922,6 @@ class Canonizer(gof.LocalOptimizer):
 
         # Lists representing the numerator and denumerator
         num, denum = list(orig_num), list(orig_denum)
-        out_type = self.merge_num_denum(orig_num, orig_denum).type
 
         # Lists representing the *constant* elements of num and denum
         numct, denumct = [], []
@@ -2981,29 +2990,26 @@ class Canonizer(gof.LocalOptimizer):
         if op not in [self.main, self.inverse, self.reciprocal]:
             return False
 
-        out = node.outputs[0]
         assert len(node.outputs) == 1
+        out = node.outputs[0]
 
         # check if any of the clients of this node would be part of
         # this canonized graph...  if so, we do nothing and wait for
         # them to be transformed.
-        def _bypass_dimshuffle(n):
-            if (isinstance(getattr(n, 'op', None), DimShuffle) and
-                len(n.outputs[0].clients) <= 1):
-                return _bypass_dimshuffle(n.outputs[0].clients[0][0])
-            else:
-                return n
         for c, c_idx in out.clients:
             if c == 'output':
                 continue
-            if getattr(_bypass_dimshuffle(c), 'op', '') in [
-                self.main, self.inverse, self.reciprocal]:
+            while (isinstance(getattr(c, 'op', None), DimShuffle) and
+                   len(c.outputs[0].clients) <= 1):
+                c = c.outputs[0].clients[0][0]
+            if getattr(c, 'op', '') in [self.main, self.inverse,
+                                        self.reciprocal]:
                 return False
 
         # Here we make the canonical version of the graph around this node
         # See the documentation of get_num_denum and simplify
         orig_num, orig_denum = self.get_num_denum(node.outputs[0])
-        num, denum = self.simplify(list(orig_num), list(orig_denum))
+        num, denum = self.simplify(list(orig_num), list(orig_denum), out.type)
 
         def same(x, y):
             return len(x) == len(y) and all(N.all(xe == ye) for xe, ye in
@@ -3387,20 +3393,6 @@ def local_sum_alloc(node):
                     pass
 
 
-@gof.local_optimizer([T.mul])
-def local_mul_to_neg(node):
-    if node.op == T.mul and N.all(
-        local_mul_canonizer.get_constant(node.inputs[0]) == -1.0):
-        other_prod = local_mul_canonizer.merge_num_denum(node.inputs[1:], [])
-        if other_prod.type == node.outputs[0].type:
-            return [-other_prod]
-        # else the multiplication is also acting as a cast, so we
-        # might as well leave it alone.  I don't think it's better to
-        # turn this into a negation in the wrong type, followed by an
-        # explicit cast.
-register_specialize(local_mul_to_neg)
-
-
 @register_specialize
 @gof.local_optimizer([T.neg])
 def local_neg_neg(node):
@@ -3447,7 +3439,7 @@ def local_mul_zero(node):
             except NotScalarConstantError:
                 continue
             #print 'MUL by value', value, node.inputs
-            if N.all(value == 0):
+            if value == 0:
                 #print '... returning zeros'
                 return _fill_chain(theano._asarray(0, dtype=otype.dtype),
                                    node.inputs)
@@ -3485,9 +3477,9 @@ register_canonicalize(local_inv_canon)
 @gof.local_optimizer([T.pow])
 def local_pow_canonicalize(node):
     if node.op == T.pow:
-        if N.all(local_mul_canonizer.get_constant(node.inputs[1]) == 0):
+        if local_mul_canonizer.get_constant(node.inputs[1]) == 0:
             return [broadcast_like(1, node.outputs[0], node.fgraph)]
-        if N.all(local_mul_canonizer.get_constant(node.inputs[1]) == 1):
+        if local_mul_canonizer.get_constant(node.inputs[1]) == 1:
             return [broadcast_like(node.inputs[0], node.outputs[0], node.fgraph)]
     else:
         return False
@@ -3581,7 +3573,7 @@ def local_pow_specialize_device(node):
             # 512 is too small for the cpu and too big for some gpu!
             if abs(y) == int(abs(y)) and abs(y) <= 512:
                 pow2 = [xsym]
-                pow2_scal = [theano.scalar.Scalar(xsym.dtype)()]
+                pow2_scal = [theano.scalar.get_scalar_type(xsym.dtype)()]
                 y_to_do = abs(y)
                 for i in xrange(int(numpy.log2(y_to_do))):
                     pow2.append(T.sqr(pow2[i]))
@@ -3616,7 +3608,15 @@ def local_pow_specialize_device(node):
 
 @gof.local_optimizer([T.mul])
 def local_mul_specialize(node):
-    """Remove special-case constants from mul arguments
+    """Remove special-case constants from mul arguments and useless neg in inputs.
+
+    mul(-1, x) -> neg(x)
+    mul(1, x, y) -> mul(x, y)
+    mul(0, ...) -> alloc(0, shapes...)
+
+    This is not done if we would add more nodes in the graph, like with:
+
+    mul(-1, x, y) -/-> neg(mul(x, y))
     """
     # here, we are past the point of canonicalization, so we don't
     # want to put in un-necessary fills.
@@ -3626,19 +3626,23 @@ def local_mul_specialize(node):
         #the idea here is that we have pow(x, y)
         neg = False
         new_inputs = []
+        nb_neg_node = 0
+        nb_cst = 0
         for input in node.inputs:
             # remove any neg arguments
             while input.owner and input.owner.op == T.neg:
                 neg ^= True
                 input = input.owner.inputs[0]
+                nb_neg_node += 1
 
             # remove special case arguments of 1, -1 or 0
             y = local_mul_canonizer.get_constant(input)
-            if N.all(y == 1.0):
-                continue
-            elif N.all(y == -1.0):
+            if y == 1.0:
+                nb_cst += 1
+            elif y == -1.0:
+                nb_cst += 1
                 neg ^= True  # toggles
-            elif N.all(y == 0.0):
+            elif y == 0.0:
                 # if we find any zero, we just return right away
                 return [broadcast_like(0, node.outputs[0], node.fgraph)]
             else:
@@ -3652,10 +3656,17 @@ def local_mul_specialize(node):
                     else:
                         rval = new_inputs[0]
                 else:
-                    if neg:
-                        rval = -T.mul(*new_inputs)
-                    else:
-                        rval = T.mul(*new_inputs)
+                    # The next case would cause a replace by an equivalent case.
+                    if (neg and
+                        nb_neg_node == 0 and
+                        nb_cst == 1):
+                        return
+                    elif neg:
+                        # Don't add an extra neg node as we can't
+                        # fully replace this mul by a neg.
+                        m1 = numpy.asarray(-1, dtype=node.outputs[0].dtype)
+                        new_inputs = [m1] + new_inputs
+                    rval = T.mul(*new_inputs)
 
                 return [broadcast_like(rval, node.outputs[0], node.fgraph)]
             else:
@@ -3711,9 +3722,6 @@ def local_add_specialize(node):
     else:
         return False
 register_specialize(local_add_specialize)
-
-# neg_to_mul = out2in(gof.LocalOptGroup(local_neg_to_mul))
-# mul_to_neg = out2in(gof.LocalOptGroup(local_mul_to_neg))
 
 mul_canonizer = in2out(gof.LocalOptGroup(local_mul_canonizer, local_fill_cut,
                                          local_fill_sink),
@@ -3871,7 +3879,8 @@ register_canonicalize(local_add_canonizer, name='local_add_canonizer')
 ##################
 
 
-def distribute_greedy(pos_pairs, neg_pairs, num, denum, minscore=0):
+def distribute_greedy(pos_pairs, neg_pairs, num, denum,
+                      out_type, minscore=0):
     # each pair in pos_pairs and neg_pairs is a num/denum pair. this
     # function attempts to add num and denum to the corresponding parts
     # of each pair, and counts how many multiplications/divisions can
@@ -3887,10 +3896,10 @@ def distribute_greedy(pos_pairs, neg_pairs, num, denum, minscore=0):
     # score is number of operations saved, higher is better
     score = len(num) + div_cost * len(denum)
     new_pos_pairs = list(itertools.starmap(local_mul_canonizer.simplify,
-                                           [(n + num, d + denum) for (n, d)
+                                           [(n + num, d + denum, out_type) for (n, d)
                                             in pos_pairs]))
     new_neg_pairs = list(itertools.starmap(local_mul_canonizer.simplify,
-                                           [(n + num, d + denum) for (n, d)
+                                           [(n + num, d + denum, out_type) for (n, d)
                                             in neg_pairs]))
     for (n, d), (nn, dd) in zip(pos_pairs + neg_pairs, new_pos_pairs +
                                 new_neg_pairs):
@@ -3903,7 +3912,7 @@ def distribute_greedy(pos_pairs, neg_pairs, num, denum, minscore=0):
     return True, new_pos_pairs, new_neg_pairs
 
 
-def attempt_distribution(factor, num, denum):
+def attempt_distribution(factor, num, denum, out_type):
     # we try to insert each num and each denum in the factor
     # returns: changes?, new_factor, new_num, new_denum
     # if there are changes, new_num and new_denum contain all the numerators
@@ -3916,13 +3925,13 @@ def attempt_distribution(factor, num, denum):
     change = False
     for n in list(num):
         success, pos_pairs, neg_pairs = distribute_greedy(pos_pairs,
-                                                          neg_pairs, [n], [])
+                                                          neg_pairs, [n], [], out_type)
         if success:
             change = True
             num.remove(n)
     for d in list(denum):
         success, pos_pairs, neg_pairs = distribute_greedy(pos_pairs,
-                                                          neg_pairs, [], [d])
+                                                          neg_pairs, [], [d], out_type)
         if success:
             change = True
             denum.remove(d)
@@ -3936,7 +3945,7 @@ def attempt_distribution(factor, num, denum):
                                    neg_pairs))), num, denum
 
 
-@gof.local_optimizer([T.mul])
+@gof.local_optimizer([T.mul, T.true_div, T.inv])
 def local_greedy_distributor(node):
     """
     This optimization tries to apply distributivity of multiplication
@@ -3948,9 +3957,10 @@ def local_greedy_distributor(node):
     The following expressions are simplified:
     1. ((a/x + b/y) * x * y) --> a*y + b*x
     2. ((a/x + b) * x) --> a + b*x
+    3. There are other forms too where node is a true_div.
 
     The following expressions are not simplified:
-    3. ((a + b) * x) -/-> a*x + b*x
+    4. ((a + b) * x) -/-> a*x + b*x
 
     This optimization aims to reduce computational cost. It may also
     increase numerical stability, e.g. when x and/or y tend to 0 in
@@ -3966,12 +3976,13 @@ def local_greedy_distributor(node):
 
     change = False
 
+    out_type = out.type
     for candidate in list(num):
         if candidate not in num:
             continue
         num.remove(candidate)
         _change, candidate, num, denum = attempt_distribution(candidate,
-                                                              num, denum)
+                                                              num, denum, out_type)
         change |= _change
         new_num.append(candidate)
 
@@ -3980,7 +3991,7 @@ def local_greedy_distributor(node):
             continue
         denum.remove(candidate)
         _change, candidate, denum, num = attempt_distribution(candidate,
-                                                              denum, num)
+                                                              denum, num, out_type)
         change |= _change
         new_denum.append(candidate)
 
@@ -4064,20 +4075,22 @@ local_one_plus_erf = gof.PatternSub((T.add,
                                      dict(pattern='y', constraint=_is_1),
                                      (T.erf, 'x')),
                                     (T.erfc, (T.neg, 'x')),
-                                    allow_multiple_clients=True,)
-register_canonicalize(local_one_plus_erf, name='local_one_plus_erf')
-register_stabilize(local_one_plus_erf, name='local_one_plus_erf')
-register_specialize(local_one_plus_erf, name='local_one_plus_erf')
+                                    allow_multiple_clients=True,
+                                    name='local_one_plus_erf')
+register_canonicalize(local_one_plus_erf)
+register_stabilize(local_one_plus_erf)
+register_specialize(local_one_plus_erf)
 
 #1-erf(x)=>erfc(x)
 local_one_minus_erf = gof.PatternSub((T.sub,
-                                     dict(pattern='y', constraint=_is_1),
-                                     (T.erf, 'x')),
-                                    (T.erfc, 'x'),
-                                    allow_multiple_clients=True,)
-register_canonicalize(local_one_minus_erf, name='local_one_minus_erf')
-register_stabilize(local_one_minus_erf, name='local_one_minus_erf')
-register_specialize(local_one_minus_erf, name='local_one_minus_erf')
+                                      dict(pattern='y', constraint=_is_1),
+                                      (T.erf, 'x')),
+                                     (T.erfc, 'x'),
+                                     allow_multiple_clients=True,
+                                     name='local_one_minus_erf',)
+register_canonicalize(local_one_minus_erf)
+register_stabilize(local_one_minus_erf)
+register_specialize(local_one_minus_erf)
 
 local_one_minus_erf2 = gof.PatternSub((T.add,
                                       1,
@@ -4092,34 +4105,37 @@ register_specialize(local_one_minus_erf2)
 #1+(-erf(x))=>erfc(x) This is a different graph then the previous as
 #the canonicalize don't work completly
 local_one_plus_neg_erf = gof.PatternSub((T.add,
-                                     dict(pattern='y', constraint=_is_1),
-                                     (T.neg, (T.erf, 'x'))),
-                                    (T.erfc, 'x'),
-                                    allow_multiple_clients=True,)
-register_canonicalize(local_one_plus_neg_erf, name='local_one_plus_neg_erf')
-register_stabilize(local_one_plus_neg_erf, name='local_one_plus_neg_erf')
-register_specialize(local_one_plus_neg_erf, name='local_one_plus_neg_erf')
+                                         dict(pattern='y', constraint=_is_1),
+                                         (T.neg, (T.erf, 'x'))),
+                                        (T.erfc, 'x'),
+                                        allow_multiple_clients=True,
+                                        name='local_one_plus_neg_erf')
+register_canonicalize(local_one_plus_neg_erf)
+register_stabilize(local_one_plus_neg_erf)
+register_specialize(local_one_plus_neg_erf)
 
 #(-1)+erf(x) => -erfc(x) don't need erf(x)+(-1) as the canonicalize
 #will put the -1 as the first argument.
 local_erf_minus_one = gof.PatternSub((T.add,
-                                     dict(pattern='y', constraint=_is_minus1),
-                                     (T.erf, 'x')),
-                                    (T.neg, (T.erfc, 'x')),
-                                    allow_multiple_clients=True,)
-register_canonicalize(local_erf_minus_one, name='local_erf_minus_one')
-register_stabilize(local_erf_minus_one, name='local_erf_minus_one')
-register_specialize(local_erf_minus_one, name='local_erf_minus_one')
+                                      dict(pattern='y', constraint=_is_minus1),
+                                      (T.erf, 'x')),
+                                     (T.neg, (T.erfc, 'x')),
+                                     allow_multiple_clients=True,
+                                     name='local_erf_minus_one')
+register_canonicalize(local_erf_minus_one)
+register_stabilize(local_erf_minus_one)
+register_specialize(local_erf_minus_one)
 
 #1-erfc(x) => erf(x)
 local_one_minus_erfc = gof.PatternSub((T.sub,
-                                     dict(pattern='y', constraint=_is_1),
-                                     (T.erfc, 'x')),
-                                    (T.erf, 'x'),
-                                    allow_multiple_clients=True,)
-register_canonicalize(local_one_minus_erfc, name='local_one_minus_erfc')
-register_stabilize(local_one_minus_erfc, name='local_one_minus_erfc')
-register_specialize(local_one_minus_erfc, name='local_one_minus_erfc')
+                                       dict(pattern='y', constraint=_is_1),
+                                       (T.erfc, 'x')),
+                                      (T.erf, 'x'),
+                                      allow_multiple_clients=True,
+                                      name='local_one_minus_erfc')
+register_canonicalize(local_one_minus_erfc)
+register_stabilize(local_one_minus_erfc)
+register_specialize(local_one_minus_erfc)
 
 local_one_minus_erfc2 = gof.PatternSub((T.add,
                                         1,
@@ -4144,30 +4160,32 @@ register_specialize(local_one_minus_erfc3)
 #1+(-erfc(x)) => erf(x) This is a different graph then the previous as
 #the canonicalize don't work completly
 local_one_add_neg_erfc = gof.PatternSub((T.add,
-                                     dict(pattern='y', constraint=_is_1),
-                                     (T.neg, (T.erfc, 'x'))),
-                                    (T.erf, 'x'),
-                                    allow_multiple_clients=True,)
-register_canonicalize(local_one_add_neg_erfc, name='local_one_add_neg_erfc')
-register_stabilize(local_one_add_neg_erfc, name='local_one_add_neg_erfc')
-register_specialize(local_one_add_neg_erfc, name='local_one_add_neg_erfc')
+                                         dict(pattern='y', constraint=_is_1),
+                                         (T.neg, (T.erfc, 'x'))),
+                                        (T.erf, 'x'),
+                                        allow_multiple_clients=True,
+                                        name='local_one_add_neg_erfc')
+register_canonicalize(local_one_add_neg_erfc)
+register_stabilize(local_one_add_neg_erfc)
+register_specialize(local_one_add_neg_erfc)
 
 #(-1)+erfc(-x)=>erf(x)
 local_erf_neg_minus_one = gof.PatternSub((T.add,
-                                     dict(pattern='y', constraint=_is_minus1),
-                                     (T.erfc, (T.neg, 'x'))),
-                                    (T.erf, 'x'),
-                                    allow_multiple_clients=True,)
-register_canonicalize(local_erf_neg_minus_one, name='local_erf_neg_minus_one')
-register_stabilize(local_erf_neg_minus_one, name='local_erf_neg_minus_one')
-register_specialize(local_erf_neg_minus_one, name='local_erf_neg_minus_one')
+                                          dict(pattern='y', constraint=_is_minus1),
+                                          (T.erfc, (T.neg, 'x'))),
+                                         (T.erf, 'x'),
+                                         allow_multiple_clients=True,
+                                         name='local_erf_neg_minus_one')
+register_canonicalize(local_erf_neg_minus_one)
+register_stabilize(local_erf_neg_minus_one)
+register_specialize(local_erf_neg_minus_one)
 
 #(-1)+erfc(-1*x)=>erf(x)
 local_erf_neg_minus_one2 = gof.PatternSub((T.add,
-                                     dict(pattern='y', constraint=_is_minus1),
-                                     (T.erfc, (T.mul, -1, 'x'))),
-                                    (T.erf, 'x'),
-                                    allow_multiple_clients=True,
+                                           dict(pattern='y', constraint=_is_minus1),
+                                           (T.erfc, (T.mul, -1, 'x'))),
+                                          (T.erf, 'x'),
+                                          allow_multiple_clients=True,
                                           name='local_erf_neg_minus_one2')
 register_canonicalize(local_erf_neg_minus_one2)
 register_stabilize(local_erf_neg_minus_one2)
@@ -4635,7 +4653,7 @@ def local_elemwise_fusion_op(OP, max_input_fct=lambda node: 1024):
                         elif ii in tmp_input:
                             tmp_s_input.append(tmp_scalar[tmp_input.index(ii)])
                         else:
-                            tmp = scalar.Scalar(ii.dtype).make_variable()
+                            tmp = scalar.get_scalar_type(ii.dtype).make_variable()
                             try:
                                 tmp.tag.test_value = gof.op.get_test_value(ii).flatten()[0]
                             except AttributeError:
@@ -4689,7 +4707,7 @@ def local_elemwise_fusion_op(OP, max_input_fct=lambda node: 1024):
                 if inputs.count(i) == node.inputs.count(i):
                     s = s_inputs[inputs.index(i)]
                 else:
-                    s = scalar.Scalar(i.dtype).make_variable()
+                    s = scalar.get_scalar_type(i.dtype).make_variable()
                     try:
                         if theano.config.compute_test_value != 'off':
                             v = gof.op.get_test_value(i)
@@ -4767,12 +4785,21 @@ class FusionOptimizer(Optimizer):
 
     def add_requirements(self, fgraph):
         fgraph.attach_feature(toolbox.ReplaceValidate())
-        fgraph.attach_feature(DestroyHandler())
 
     def apply(self, fgraph):
         did_something = True
+        nb_iter = 0
+        nb_replacement = 0
+        nb_inconsistency_replace = 0
+        time_toposort = 0
+        if fgraph.profile:
+            validate_before = fgraph.profile.validate_time
+            callbacks_before = fgraph.execute_callbacks_times.copy()
+            callback_before = fgraph.execute_callbacks_time
         while did_something:
+            t0 = time.time()
             nodelist = list(fgraph.toposort())
+            time_toposort += time.time() - t0
             nodelist.reverse()
             did_something = False
             for node in nodelist:
@@ -4786,18 +4813,56 @@ class FusionOptimizer(Optimizer):
                                 zip(node.outputs, new_outputs),
                                 reason=self.__class__.__name__)
                             did_something = True
+                            nb_replacement += 1
                         except InconsistencyError:
+                            nb_inconsistency_replace += 1
                             pass
+            nb_iter += 1
+
+        if fgraph.profile:
+            validate_time = fgraph.profile.validate_time - validate_before
+            callback_time = fgraph.execute_callbacks_time - callback_before
+            callbacks_time = {}
+            for k, v in fgraph.execute_callbacks_times.iteritems():
+                if k in callbacks_before:
+                    callbacks_time[k] = v - callbacks_before[k]
+                else:
+                    callbacks_time[k] = v
+        else:
+            validate_time = None
+            callback_time = None
+            callbacks_time = {}
+        return (self, nb_iter, nb_replacement,
+                nb_inconsistency_replace,
+                validate_time, callback_time, callbacks_time,
+                time_toposort)
+
+    @staticmethod
+    def print_profile(stream, prof, level=0):
+        blanc = ('    ' * level)
+        print >> stream, blanc, "FusionOptimizer"
+        print >> stream, blanc, " nb_iter", prof[1]
+        print >> stream, blanc, " nb_replacement", prof[2]
+        print >> stream, blanc, " nb_inconsistency_replace", prof[3]
+        print >> stream, blanc, " validate_time", prof[4]
+        print >> stream, blanc, " callback_time", prof[5]
+        print >> stream, blanc, " callbacks_time"
+        for i in sorted(prof[6].iteritems(), key=lambda a: a[1]):
+            if i[1] > 0:
+                print i
+        print >> stream, blanc, " time_toposort", prof[7]
+
 
 if config.tensor.local_elemwise_fusion:
     _logger.debug("enabling optimization fusion elemwise in fast_run")
+    #Must be after gpu(48.5) and before AddDestroyHandler(49.5)
     compile.optdb.register('elemwise_fusion',
-                           FusionOptimizer(local_elemwise_fusion), 71.00,
+                           FusionOptimizer(local_elemwise_fusion), 49,
                            'fast_run', 'fusion', 'local_elemwise_fusion',
                            'FusionOptimizer')
 else:
     _logger.debug("not enabling optimization fusion elemwise in fast_run")
     compile.optdb.register('elemwise_fusion',
-                           FusionOptimizer(local_elemwise_fusion), 71.00,
+                           FusionOptimizer(local_elemwise_fusion), 49,
                            'fusion', 'local_elemwise_fusion',
                            'FusionOptimizer')

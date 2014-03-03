@@ -563,7 +563,7 @@ class GpuAlloc(HideC, Alloc):
         return Apply(self, [value] + res.inputs[1:], [otype()])
 
     def c_headers(self):
-        return ['<compyte/numpy_compat.h>']
+        return ['<numpy_compat.h>']
 
     def perform(self, node, inputs, outs):
         out, = outs
@@ -652,15 +652,6 @@ class GpuAlloc(HideC, Alloc):
         return (2,)
 
 gpu_alloc = GpuAlloc()
-
-
-class GpuShape(HideC, tensor.Shape):
-    """
-    Implement Shape on the gpu.
-    """
-    def make_node(self, x):
-        return Apply(self, [x], [tensor.lvector()])
-gpu_shape = GpuShape()
 
 
 class GpuReshape(HideC, tensor.Reshape):

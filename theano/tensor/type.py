@@ -240,7 +240,7 @@ class TensorType(Type):
                     % (self.__class__.__name__, self.dtype))
 
     def to_scalar_type(self):
-        return scal.Scalar(dtype=self.dtype)
+        return scal.get_scalar_type(dtype=self.dtype)
 
     def __eq__(self, other):
         """Compare True iff other is the same kind of TensorType"""
@@ -538,23 +538,23 @@ class TensorType(Type):
 
     def c_headers(self):
         """Override `CLinkerObject.c_headers` """
-        return scal.Scalar(self.dtype).c_headers()
+        return scal.get_scalar_type(self.dtype).c_headers()
 
     def c_libraries(self):
-        return scal.Scalar(self.dtype).c_libraries()
+        return scal.get_scalar_type(self.dtype).c_libraries()
 
     def c_compile_args(self):
-        return scal.Scalar(self.dtype).c_compile_args()
+        return scal.get_scalar_type(self.dtype).c_compile_args()
 
     def c_support_code(self):
         """Override `CLinkerObject.c_support_code` """
-        return scal.Scalar(self.dtype).c_support_code()
+        return scal.get_scalar_type(self.dtype).c_support_code()
 
     def c_init_code(self):
-        return scal.Scalar(self.dtype).c_init_code()
+        return scal.get_scalar_type(self.dtype).c_init_code()
 
     def c_code_cache_version(self):
-        scalar_version = scal.Scalar(self.dtype).c_code_cache_version()
+        scalar_version = scal.get_scalar_type(self.dtype).c_code_cache_version()
         if scalar_version:
             return (11,) + scalar_version
         else:
@@ -610,6 +610,25 @@ theano.compile.register_view_op_c_code(
         Py_XINCREF(%(oname)s);
         """,
         version=1)
+
+
+# Register TensorType C code for Shape Op.
+theano.compile.register_shape_c_code(
+    TensorType,
+    """
+    npy_intp shape[] = {PyArray_NDIM(%(iname)s)};
+    if(%(oname)s == NULL || (PyArray_DIMS(%(oname)s)[0] != shape[0]))
+    {
+        Py_XDECREF(%(oname)s);
+        %(oname)s = (PyArrayObject*) PyArray_SimpleNew(1, shape, NPY_INT64);
+    }
+    for(int i=0;i<shape[0];i++)
+    {
+        ((npy_int64*)PyArray_GETPTR1(%(oname)s, i))[0] = PyArray_DIMS(%(iname)s)[i];
+    }
+    """,
+    version=1)
+
 
 # Register TensorType C code for ViewOp.
 theano.compile.register_shape_i_c_code(

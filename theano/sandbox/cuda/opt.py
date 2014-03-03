@@ -14,7 +14,7 @@ import theano.ifelse
 
 from theano.compile import optdb
 from theano.gof import (local_optimizer, EquilibriumDB, SequenceDB, ProxyDB,
-                        Optimizer, toolbox, DestroyHandler)
+                        Optimizer, toolbox)
 from theano.gof.python25 import all, any
 from theano.sandbox.cuda.basic_ops import (
     device_properties, gpu_eye,
@@ -62,7 +62,7 @@ optdb.register('gpu_opt',
 # inside the elemwise. When there is no float64 op, this is working.
 optdb.register('gpu_after_fusion',
                ProxyDB(gpu_seqopt),
-               optdb.__position__.get('elemwise_fusion', 71) + .1,
+               optdb.__position__.get('elemwise_fusion', 49) + .1,
                'gpu')
 
 
@@ -88,7 +88,6 @@ class InputToGpuOptimizer(Optimizer):
 
     def add_requirements(self, fgraph):
         fgraph.attach_feature(toolbox.ReplaceValidate())
-        fgraph.attach_feature(DestroyHandler())
 
     def apply(self, fgraph):
         for input in fgraph.inputs:
@@ -630,8 +629,11 @@ def local_gpu_careduce(node):
                     if rval.type == node.outputs[0].type:
                         return [rval]
                     else:
-                        print >> sys.stderr, \
-                                "WARNING: local_gpu_careduce got type wrong"
+                        print >> sys.stderr, (
+                            "WARNING: local_gpu_careduce got type wrong",
+                            rval.type, node.outputs[0].type,
+                            node.inputs[0].type,
+                            node)
                         return None
                 else:
 
@@ -670,8 +672,11 @@ def local_gpu_careduce(node):
                         if unreshaped_reduce.type == node.outputs[0].type:
                             return [unreshaped_reduce]
                         else:
-                            print >> sys.stderr, \
-                                "WARNING: local_gpu_careduce got type wrong"
+                            print >> sys.stderr, (
+                                "WARNING: local_gpu_careduce got type wrong",
+                                unreshaped_reduce.type, node.outputs[0].type,
+                                node.inputs[0].type,
+                                node)
                             return None
 
     return False
@@ -1069,8 +1074,9 @@ def local_gpu_conv(node):
         assert a.ndim == 4
         atol = None
         if a.shape[-1] * a.shape[-2] > 100:
+            #For float32 the default atol is 1e-5
             atol = 3e-5
-        return tensor.TensorType.values_eq_approx(a, b, atol=atol)
+        return CudaNdarrayType.values_eq_approx(a, b, atol=atol)
 
     if node.op == gpu_from_host:
         #gpu_from_host(conv) -> gpu_conv(gpu_from_host)
@@ -1332,9 +1338,10 @@ gpu_local_elemwise_fusion = tensor.opt.local_elemwise_fusion_op(
         max_inputs_to_GpuElemwise)
 if config.gpu.local_elemwise_fusion:
     _logger.debug("enabling optimization fusion of gpu elemwise in fast_run")
+    #Must be after cpu fusion at 40, gpu at 48.5 and before AddDestroyHandler at 49.5
     optdb.register('gpu_elemwise_fusion',
                    tensor.opt.FusionOptimizer(gpu_local_elemwise_fusion),
-                   71.00, 'fast_run', 'fusion',
+                   49, 'fast_run', 'fusion',
                    'local_elemwise_fusion', 'gpu')
 else:
     _logger.debug(("not enabling optimization fusion of gpu elemwise in "
