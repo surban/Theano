@@ -48,7 +48,13 @@ else:
         pass
     if pycuda_available:
         if hasattr(pycuda.driver.Context, "attach"):
-            pycuda.driver.Context.attach()
+            # surban: Calling pycuda.driver.Context.attach() only causes PyCUDA to call a cuCtxAttach() that increments
+            # currents context's reference count and add it to PyCUDA's context stack. This does NOT set the context
+            # used by PyCUDA. The correct way to interoperate PyCUDA and Theano is to let PyCUDA create the CUDA
+            # context and activate it. Since Theano uses the CUDA Runtime API it will automatically use PyCUDA's
+            # context because it is the current context.
+            pass
+            #pycuda.driver.Context.attach(0)
         else:
             # Now we always import this file when we call
             # theano.sandbox.cuda.use. So this should not happen
