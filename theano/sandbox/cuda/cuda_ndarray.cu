@@ -3038,6 +3038,7 @@ CudaNdarray_gpu_init(PyObject* _unused, PyObject* args)
     }
 
     int deviceCount;
+    printf("Theano: cudaGetDeviceCount()\n");
     cudaError err = cudaGetDeviceCount(&deviceCount);
     if(cudaSuccess != err) {
         return PyErr_Format(PyExc_EnvironmentError,
@@ -3075,6 +3076,7 @@ CudaNdarray_gpu_init(PyObject* _unused, PyObject* args)
     }
 
     if(card_number_provided) {
+        printf("Theano: cudaSetDevice()\n");
         err = cudaSetDevice(card_nb);
         if(cudaSuccess != err) {
             return PyErr_Format(PyExc_EnvironmentError,
