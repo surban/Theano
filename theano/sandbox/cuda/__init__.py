@@ -1,3 +1,4 @@
+from __future__ import print_function
 import atexit
 import errno
 import logging
@@ -9,14 +10,34 @@ import sys
 import theano
 from theano.compat import get_unbound_function
 from theano.compile import optdb
+from theano.gof import EquilibriumDB, SequenceDB
 from theano.gof.cmodule import get_lib_extension
 from theano.gof.compilelock import get_lock, release_lock
 from theano.configparser import config, AddConfigVar, StrParam, BoolParam
 import nvcc_compiler
 
+# ignore_newtrees is to speed the optimization as this is the pattern
+# we use for optimization. Otherwise, we can iterate 100s of time on
+# the graph and apply only a few optimizations each time.
+gpu_optimizer = EquilibriumDB(ignore_newtrees=False)
+gpu_seqopt = SequenceDB()
+
+
+def register_opt(*tags, **kwargs):
+    if any([not isinstance(t, str) for t in tags]):
+        raise RuntimeError("Bad call to register_opt."
+                           " All tags must be strings.", tags)
+
+    def f(local_opt):
+        name = (kwargs and kwargs.pop('name')) or local_opt.__name__
+        gpu_optimizer.register(name, local_opt, 'fast_run', 'fast_compile',
+                               'gpu', *tags, **kwargs)
+        return local_opt
+    return f
+
+
 _logger_name = 'theano.sandbox.cuda'
 _logger = logging.getLogger(_logger_name)
-_logger.setLevel(logging.WARNING)
 
 AddConfigVar('pycuda.init',
         """If True, always initialize PyCUDA when Theano want to
@@ -33,9 +54,8 @@ AddConfigVar('cublas.lib',
         """Name of the cuda blas library for the linker.""",
         StrParam('cublas'))
 
-
-#is_nvcc_available called here to initialize global vars in
-#nvcc_compiler module
+# is_nvcc_available called here to initialize global vars in
+# nvcc_compiler module
 nvcc_compiler.is_nvcc_available()
 
 # Compile cuda_ndarray.cu
@@ -51,7 +71,7 @@ cuda_available = True
 # Global variable to avoid displaying the same warning multiple times.
 cuda_warning_is_displayed = False
 
-#This variable is set to True when we enable cuda.(i.e. when use() is called)
+# This variable is set to True when we enable cuda.(i.e. when use() is called)
 cuda_enabled = False
 
 
@@ -68,7 +88,7 @@ def set_cuda_disabled():
     global cuda_available, cuda_warning_is_displayed
     cuda_available = False
 
-#cuda_ndarray compile and import
+# cuda_ndarray compile and import
 cuda_path = os.path.abspath(os.path.split(__file__)[0])
 
 cuda_ndarray_loc = os.path.join(config.compiledir, 'cuda_ndarray')
@@ -156,10 +176,11 @@ if compile_cuda_ndarray and cuda_available:
                             'cuda_ndarray',
                             code,
                             location=cuda_ndarray_loc,
-                            include_dirs=[cuda_path], libs=[config.cublas.lib],
+                            include_dirs=[cuda_path],
+                            libs=[config.cublas.lib],
                             preargs=['-O3'] + compiler.compile_args())
                     from cuda_ndarray.cuda_ndarray import *
-            except Exception, e:
+            except Exception as e:
                 _logger.error("Failed to compile cuda_ndarray.cu: %s", str(e))
                 set_cuda_disabled()
     finally:
@@ -192,7 +213,7 @@ if cuda_available:
         else:
             try:
                 os.symlink(cuda_ndarray_so, libcuda_ndarray_so)
-            except OSError, e:
+            except OSError as e:
                 # This may happen for instance when running multiple
                 # concurrent jobs, if two of them try to create the
                 # symlink simultaneously.
@@ -214,6 +235,8 @@ if cuda_available:
     except EnvironmentError, e:
         cuda_available = False
         cuda_initialization_error_message = " ".join(e.args)
+else:
+    cuda_initialization_error_message = 'cuda unavilable'
 
 
 class GpuOp(theano.gof.Op):
@@ -239,7 +262,7 @@ class GpuOp(theano.gof.Op):
                                              compute_map, no_recycling)
 
 theano.compile.debugmode.default_make_thunk.append(
-                                        get_unbound_function(GpuOp.make_thunk))
+    get_unbound_function(GpuOp.make_thunk))
 
 # We must do those import to be able to create the full doc when
 # nvcc is not available
@@ -265,22 +288,22 @@ if cuda_available:
 
     shared_constructor = float32_shared_constructor
 
-    import basic_ops
-    from basic_ops import (
+    from . import basic_ops
+    from .basic_ops import (
             GpuFromHost, HostFromGpu, GpuElemwise,
             GpuDimShuffle, GpuCAReduce, GpuReshape, GpuContiguous,
             GpuSubtensor, GpuIncSubtensor,
             GpuAdvancedSubtensor1, GpuAdvancedIncSubtensor1,
-            GpuFlatten, GpuShape, GpuAlloc,
+            GpuFlatten, GpuShape, GpuAlloc, GpuSplit,
             GpuJoin, fscalar, fvector, fmatrix, frow, fcol,
             ftensor3, ftensor4,
             scalar, vector, matrix, row, col,
             tensor3, tensor4)
-    from basic_ops import (host_from_gpu, gpu_from_host,
+    from .basic_ops import (host_from_gpu, gpu_from_host,
             as_cuda_array, as_cuda_ndarray_variable)
-    import opt
     import cuda_ndarray
-    from rng_curand import CURAND_RandomStreams
+    from . import opt, dnn
+    from .rng_curand import CURAND_RandomStreams
 
 
 def use(device,
@@ -368,6 +391,8 @@ def use(device,
                 # event if another device is selected later.
                 cuda_ndarray.cuda_ndarray.CudaNdarray.zeros((2, 3))
                 use.device_number = active_device_number()
+                # This is needed to initialize the cublas handle.
+                gpu_init(use.device_number)
 
             if test_driver:
                 import theano.sandbox.cuda.tests.test_driver
@@ -380,8 +405,8 @@ def use(device,
                                  " this property")
 
             if config.print_active_device:
-                print >> sys.stderr, "Using gpu device %d: %s" % (
-                        active_device_number(), active_device_name())
+                print("Using gpu device %d: %s" % (
+                        active_device_number(), active_device_name()), file=sys.stderr)
             if device_properties(use.device_number)['regsPerBlock'] < 16384:
                 # We will try to use too much register per bloc at many places
                 # when there is only 8k register per multi-processor.
@@ -392,7 +417,7 @@ def use(device,
                         " crash when we try to use features"
                         " that your GPU does not support.")
 
-        except (EnvironmentError, ValueError, RuntimeError), e:
+        except (EnvironmentError, ValueError, RuntimeError) as e:
             _logger.error(("ERROR: Not using GPU."
                            " Initialisation of device %s failed:\n%s"),
                           str(device), e)
@@ -414,19 +439,20 @@ def use(device,
         cuda_enabled = True
 
     if default_to_move_computation_to_gpu:
+        # Do not add inplace tag here. We do not want to
+        # enable/disable gpu opt based on the inplace tag.
         optdb.add_tags('gpu_opt',
-                       'fast_run',
-                       'inplace')
+                       'fast_compile',
+                       'fast_run')
         optdb.add_tags('gpu_after_fusion',
-                       'fast_run',
-                       'inplace')
+                       'fast_run')
 
     if force:
         try:
-            #in case the device if just gpu,
+            # in case the device if just gpu,
             # we check that the driver init it correctly.
             cuda_ndarray.cuda_ndarray.CudaNdarray.zeros((5, 5))
-        except (Exception, NameError), e:
+        except (Exception, NameError) as e:
             # NameError when no gpu present as cuda_ndarray is not loaded.
             e.args += ("ERROR: GPU forced but failed. ",)
             raise

@@ -137,7 +137,7 @@ Theano defines the following modes by name:
 - ``'DebugMode``: Verify the correctness of all optimizations, and compare C and Python 
     implementations. This mode can take much longer than the other modes, but can identify
     several kinds of problems.
-- ``'ProfileMode'``(deprecated): Same optimization as FAST_RUN, but print some profiling information.
+- ``'ProfileMode'`` (deprecated): Same optimization as FAST_RUN, but print some profiling information.
 
 The default mode is typically ``FAST_RUN``, but it can be controlled via
 the configuration variable :attr:`config.mode`,
@@ -179,7 +179,6 @@ c|py [#cpy1]_  yes        yes                "+++"      Try C code. If none exis
 c|py_nogc      no         yes                "++"       As c|py, but without gc
 c              no         yes                "+"        Use only C code (if none available for an op, raise an error)
 py             yes        yes                "+++"      Use only Python code
-c&py [#cpy2]_  no         yes                "+++++"    Use C and Python code
 ProfileMode    no         no                 "++++"     (Deprecated) Compute some extra profiling info
 DebugMode      no         yes                VERY HIGH  Make many checks on what Theano computes
 =============  =========  =================  =========  ===
@@ -190,7 +189,6 @@ DebugMode      no         yes                VERY HIGH  Make many checks on what
          Theano function calls, in order not to
          reallocate memory, and lower the overhead (make it faster...).
 .. [#cpy1] Default
-.. [#cpy2] Deprecated
 
 
 For more detail, see :ref:`Mode<libdoc_compile_mode>` in the library.
@@ -300,9 +298,6 @@ would normally, by specifying the mode parameter.
 
 >>> # with functions
 >>> f = theano.function([input1,input2],[output1], mode=profmode)
->>> # with modules
->>> m = theano.Module()
->>> minst = m.make(mode=profmode)
 
 Retrieving Timing Information
 -----------------------------

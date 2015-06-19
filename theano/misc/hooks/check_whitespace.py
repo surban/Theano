@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from __future__ import print_function
 __docformat__ = 'restructuredtext en'
 
 import difflib
@@ -10,11 +11,19 @@ import sys
 import tabnanny
 import tokenize
 
-import argparse
+try:
+    import argparse
+except ImportError:
+    raise ImportError(
+        "check_whitespace.py need Python module argparse introduced in"
+        " Python 2.7. It is available in pypi for compatibility."
+        " You can install it with this command 'pip install argparse'")
+
 import reindent
 from theano.compat.six import StringIO
 
 SKIP_WHITESPACE_CHECK_FILENAME = ".hg/skip_whitespace_check"
+
 
 def get_parse_error(code):
     """
@@ -30,11 +39,11 @@ def get_parse_error(code):
     code_buffer = StringIO(code)
     try:
         tabnanny.process_tokens(tokenize.generate_tokens(code_buffer.readline))
-    except tokenize.TokenError, err:
+    except tokenize.TokenError as err:
         return "Could not parse code: %s" % err
-    except IndentationError, err:
+    except IndentationError as err:
         return "Indentation error: %s" % err
-    except tabnanny.NannyNag, err:
+    except tabnanny.NannyNag as err:
         return "Ambiguous tab at line %d; line is '%s'." % (err.get_lineno(), err.get_line())
     return None
 
@@ -44,6 +53,7 @@ def clean_diff_line_for_python_bug_2142(diff_line):
         return diff_line
     else:
         return diff_line + "\n\\ No newline at end of file\n"
+
 
 def get_correct_indentation_diff(code, filename):
     """
@@ -71,30 +81,34 @@ def get_correct_indentation_diff(code, filename):
     else:
         return None
 
+
 def is_merge():
     parent2 = os.environ.get("HG_PARENT2", None)
     return parent2 is not None and len(parent2) > 0
+
 
 def parent_commit():
     parent1 = os.environ.get("HG_PARENT1", None)
     return parent1
 
+
 class MercurialRuntimeError(Exception):
     pass
+
 
 def run_mercurial_command(hg_command):
     hg_executable = os.environ.get("HG", "hg")
     hg_command_tuple = hg_command.split()
     hg_command_tuple.insert(0, hg_executable)
-    #If you install your own mercurial version in your home
-    #hg_executable does not always have execution permission.
+    # If you install your own mercurial version in your home
+    # hg_executable does not always have execution permission.
     if not os.access(hg_executable, os.X_OK):
         hg_command_tuple.insert(0, sys.executable)
     try:
         hg_subprocess = Popen(hg_command_tuple, stdout=PIPE, stderr=PIPE)
-    except OSError, e:
-        print >> sys.stderr, "Can't find the hg executable!"
-        print e
+    except OSError as e:
+        print("Can't find the hg executable!", file=sys.stderr)
+        print(e)
         sys.exit(1)
 
     hg_out, hg_err = hg_subprocess.communicate()
@@ -102,26 +116,32 @@ def run_mercurial_command(hg_command):
         raise MercurialRuntimeError(hg_err)
     return hg_out
 
+
 def parse_stdout_filelist(hg_out_filelist):
     files = hg_out_filelist.split()
     files = [f.strip(string.whitespace + "'") for f in files]
-    files = filter(operator.truth, files) # get rid of empty entries
+    files = filter(operator.truth, files)  # get rid of empty entries
     return files
+
 
 def changed_files():
     hg_out = run_mercurial_command("tip --template '{file_mods}'")
     return parse_stdout_filelist(hg_out)
 
+
 def added_files():
     hg_out = run_mercurial_command("tip --template '{file_adds}'")
     return parse_stdout_filelist(hg_out)
 
+
 def is_python_file(filename):
     return filename.endswith(".py")
+
 
 def get_file_contents(filename, revision="tip"):
     hg_out = run_mercurial_command("cat -r %s %s" % (revision, filename))
     return hg_out
+
 
 def save_commit_message(filename):
     commit_message = run_mercurial_command("tip --template '{desc}'")
@@ -129,11 +149,13 @@ def save_commit_message(filename):
     save_file.write(commit_message)
     save_file.close()
 
+
 def save_diffs(diffs, filename):
     diff = "\n\n".join(diffs)
     diff_file = open(filename, "w")
     diff_file.write(diff)
     diff_file.close()
+
 
 def should_skip_commit():
     if not os.path.exists(SKIP_WHITESPACE_CHECK_FILENAME):
@@ -142,6 +164,7 @@ def should_skip_commit():
     whitespace_check_changeset = whitespace_check_file.read()
     whitespace_check_file.close()
     return whitespace_check_changeset == parent_commit()
+
 
 def save_skip_next_commit():
     whitespace_check_file = open(SKIP_WHITESPACE_CHECK_FILENAME, "w")
@@ -185,7 +208,7 @@ def main(argv=None):
     # -i and -s are incompatible; if you skip checking, you end up with a not-correctly-indented
     # file, which -i then causes you to ignore!
     if args.skip_after_failure and args.incremental:
-        print >> sys.stderr, "*** check whitespace hook misconfigured! -i and -s are incompatible."
+        print("*** check whitespace hook misconfigured! -i and -s are incompatible.", file=sys.stderr)
         return 1
 
     if is_merge():
@@ -209,19 +232,19 @@ def main(argv=None):
         code = get_file_contents(filename)
         parse_error = get_parse_error(code)
         if parse_error is not None:
-            print >> sys.stderr, "*** %s has parse error: %s" % (filename, parse_error)
+            print("*** %s has parse error: %s" % (filename, parse_error), file=sys.stderr)
             block_commit = True
         else:
             # parsing succeeded, it is safe to check indentation
             if not args.no_indentation:
-                was_clean = None # unknown
+                was_clean = None  # unknown
                 # only calculate was_clean if it will matter to us
                 if args.incremental or args.incremental_with_patch:
                     if filename in changed_filenames:
                         old_file_contents = get_file_contents(filename, revision=parent_commit())
                         was_clean = get_correct_indentation_diff(old_file_contents, "") is None
                     else:
-                        was_clean = True # by default -- it was newly added and thus had no prior problems
+                        was_clean = True  # by default -- it was newly added and thus had no prior problems
 
                 check_indentation = was_clean or not args.incremental
                 if check_indentation:
@@ -230,21 +253,21 @@ def main(argv=None):
                         if was_clean or not args.incremental_with_patch:
                             block_commit = True
                         diffs.append(indentation_diff)
-                        print >> sys.stderr, "%s is not correctly indented" % filename
+                        print("%s is not correctly indented" % filename, file=sys.stderr)
 
     if len(diffs) > 0:
         diffs_filename = ".hg/indentation_fixes.patch"
         save_diffs(diffs, diffs_filename)
-        print >> sys.stderr, "*** To fix all indentation issues, run: cd `hg root` && patch -p0 < %s" % diffs_filename
+        print("*** To fix all indentation issues, run: cd `hg root` && patch -p0 < %s" % diffs_filename, file=sys.stderr)
 
     if block_commit:
         save_filename = ".hg/commit_message.saved"
         save_commit_message(save_filename)
-        print >> sys.stderr, "*** Commit message saved to %s" % save_filename
+        print("*** Commit message saved to %s" % save_filename, file=sys.stderr)
 
         if args.skip_after_failure:
             save_skip_next_commit()
-            print >> sys.stderr, "*** Next commit attempt will not be checked. To change this, rm %s" % SKIP_WHITESPACE_CHECK_FILENAME
+            print("*** Next commit attempt will not be checked. To change this, rm %s" % SKIP_WHITESPACE_CHECK_FILENAME, file=sys.stderr)
 
     return int(block_commit)
 

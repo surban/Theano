@@ -1,14 +1,25 @@
 import copy
+import pdb
+import sys
+import traceback as tb
+import warnings
 
 import numpy
 
 import theano
-from theano.compat import all, PY3
+from theano.compat import PY3
 from theano.scalar import ComplexError, IntegerDivisionError
 from theano.gof import Constant, Variable
 from theano.gof.utils import hashtype
 from theano.tensor.utils import hash_from_ndarray
 from theano.tensor.type import TensorType
+from theano.configparser import config
+
+
+def equal_slices(s1, s2):
+    return (s1.start == s2.start and
+            s1.stop == s2.stop and
+            s1.step == s2.step)
 
 
 class AsTensorError(TypeError):
@@ -27,8 +38,8 @@ class _tensor_py_operators:
         return theano.tensor.basic.neg(self)
 
     # CASTS
-    #### REMOVED THESE BECAUSE PYTHON appears to require __int__ to return
-    #### an int. -JB 20081112
+    # REMOVED THESE BECAUSE PYTHON appears to require __int__ to return
+    # an int. -JB 20081112
     #def __int__(self): return convert_to_int32(self)
     #def __float__(self): return convert_to_float64(self)
     #def __complex__(self): return convert_to_complex128(self)
@@ -108,7 +119,7 @@ class _tensor_py_operators:
     # def __ior__(self, other):
     #    return _or_inplace(self, other)
     #
-    #def __ixor__(self, other):
+    # def __ixor__(self, other):
     #    return _xor_inplace(self, other)
 
     # ARITHMETIC - NORMAL
@@ -179,6 +190,9 @@ class _tensor_py_operators:
         except (NotImplementedError, AsTensorError):
             return NotImplemented
 
+    def __divmod__(self, other):
+        return theano.tensor.basic.divmod(self, other)
+
     def __truediv__(self, other):
         return theano.tensor.basic.true_div(self, other)
 
@@ -191,21 +205,21 @@ class _tensor_py_operators:
     def __rfloordiv__(self, other):
         return theano.tensor.basic.floor_div(other, self)
 
-    ##### DO NOT USE THESE BECAUSE INPLACE OPS SHOULD BE INSERTED
-    ##### BY OPTIMIZATIONS ONLY
+    # DO NOT USE THESE BECAUSE INPLACE OPS SHOULD BE INSERTED
+    # BY OPTIMIZATIONS ONLY
     ## ARITHMETIC - INPLACE
-    #def __iadd__(self, other):
+    # def __iadd__(self, other):
     #    return _add_inplace(self, other)
-    #def __isub__(self, other):
+    # def __isub__(self, other):
     #    return _sub_inplace(self, other)
     #
-    #def __imul__(self, other):
+    # def __imul__(self, other):
     #    return _mul_inplace(self, other)
     #
-    #def __idiv__(self, other):
+    # def __idiv__(self, other):
     #    return _div_inplace(self, other)
     #
-    #def __ipow__(self, other):
+    # def __ipow__(self, other):
     #    return _pow_inplace(self, other)
 
     # ARITHMETIC - RIGHT-OPERAND
@@ -223,6 +237,9 @@ class _tensor_py_operators:
 
     def __rmod__(self, other):
         return theano.tensor.basic.mod(other, self)
+
+    def __rdivmod__(self, other):
+        return theano.tensor.basic.divmod(other, self)
 
     def __rpow__(self, other):
         return theano.tensor.basic.pow(other, self)
@@ -336,17 +353,12 @@ class _tensor_py_operators:
     def astype(self, dtype):
         return theano.tensor.cast(self, dtype)
 
-    # SLICING
-    # Do not define __getslice__ here:
-    # When calling t[1:], for instance, the arguments passed to __getslice__
-    # are (1, sys.maxsize), which is a pain to deal with, and can even not be
-    # an int (but a long).
-    # If __getslice__ does not exist, __getitem__ is called instead, with
-    # argument slice(1, None, None), which is much more desirable.
-    # __getslice__ is deprecated in python 2.6 anyway.
-
+    # SLICING/INDEXING
     def __getitem__(self, args):
-        if not isinstance(args, tuple):
+        if (isinstance(args, list) and
+                any([isinstance(a, slice) for a in args])):
+            pass
+        elif not isinstance(args, tuple):
             args = args,
         # Convert python literals to theano constants
         args = theano.tensor.subtensor.make_constant(args)
@@ -358,7 +370,7 @@ class _tensor_py_operators:
         axis = None
         for i, arg in enumerate(args):
             try:
-                if arg != numpy.newaxis:
+                if arg is not numpy.newaxis:
                     theano.tensor.subtensor.Subtensor.convert(arg)
             except theano.tensor.subtensor.AdvancedIndexingError:
                 if advanced:
@@ -370,15 +382,17 @@ class _tensor_py_operators:
 
         if advanced:
             if (axis is not None
-                and all(a == slice(None) for a in args[:axis])
-                and all(a == slice(None) for a in args[axis + 1:])
+                and all(isinstance(a, slice) and
+                        equal_slices(a, slice(None)) for a in args[:axis])
+                and all(isinstance(a, slice) and
+                        equal_slices(a, slice(None)) for a in args[axis + 1:])
                 and isinstance(args[axis], (
-                        numpy.ndarray,
-                        list,
-                        TensorVariable,
-                        TensorConstant,
-                        theano.tensor.sharedvar.TensorSharedVariable))):
-                return self.take(arg, axis)
+                    numpy.ndarray,
+                    list,
+                    TensorVariable,
+                    TensorConstant,
+                    theano.tensor.sharedvar.TensorSharedVariable))):
+                return self.take(args[axis], axis)
             else:
                 return theano.tensor.subtensor.advanced_subtensor(self, *args)
         else:
@@ -405,8 +419,9 @@ class _tensor_py_operators:
                 return rval
             else:
                 return theano.tensor.subtensor.Subtensor(args)(
-                    self, *theano.tensor.subtensor.Subtensor.collapse(args,
-                    lambda entry: isinstance(entry, Variable)))
+                    self, *theano.tensor.subtensor.Subtensor.collapse(
+                        args,
+                        lambda entry: isinstance(entry, Variable)))
 
     def take(self, indices, axis=None, mode='raise'):
         return theano.tensor.subtensor.take(self, indices, axis, mode)
@@ -509,13 +524,11 @@ class _tensor_py_operators:
 
     def sort(self, axis=-1, kind='quicksort', order=None):
         """See `theano.tensor.sort`"""
-        from theano.tensor.sort import sort
-        return sort(self, axis, kind, order)
+        return theano.tensor.sort(self, axis, kind, order)
 
     def argsort(self, axis=-1, kind='quicksort', order=None):
         """See `theano.tensor.argsort`"""
-        from theano.tensor.sort import argsort
-        return argsort(self, axis, kind, order)
+        return theano.tensor.argsort(self, axis, kind, order)
 
     def clip(self, a_min, a_max):
         "Clip (limit) the values in an array."
@@ -529,16 +542,14 @@ class _tensor_py_operators:
 
     def repeat(self, repeats, axis=None):
         """See `theano.tensor.repeat`"""
-        from theano.tensor.extra_ops import repeat
-        return repeat(self, repeats, axis)
+        return theano.tensor.extra_ops.repeat(self, repeats, axis)
 
     def round(self, mode="half_away_from_zero"):
         """See `theano.tensor.round`"""
         return theano.tensor.basic.round(self, mode)
 
     def trace(self):
-        from theano.sandbox.linalg import trace
-        return trace(self)
+        return theano.tensor.nlinalg.trace(self)
 
     # TO TRUMP NUMPY OPERATORS
     __array_priority__ = 1000
@@ -549,10 +560,83 @@ class _tensor_py_operators:
     def zeros_like(model, dtype=None):
         return theano.tensor.basic.zeros_like(model, dtype=dtype)
 
+    def cumsum(self, axis=None):
+        return theano.tensor.extra_ops.cumsum(self, axis)
+
+    def cumprod(self, axis=None):
+        return theano.tensor.extra_ops.cumprod(self, axis)
+
+    def ptp(self, axis=None):
+        """see 'theano.tensor.ptp'"""
+
+        return theano.tensor.ptp(self, axis)
+
+    def swapaxes(self, axis1, axis2):
+        """Return 'tensor.swapaxes(self, axis1, axis2)
+
+        If a matrix is provided with the right axes, its transpose
+        will be returned.
+
+        """
+        return theano.tensor.basic.swapaxes(self, axis1, axis2)
+
+    def fill(self, value):
+        """Fill inputted tensor with the assigned value"""
+        return theano.tensor.basic.fill(self, value)
+
+    def choose(self, a, choices, out=None, mode='raise'):
+        """Construct an array from an index array and a set of arrays to choose from."""
+        return theano.tensor.basic.choose(self, a, choices, out=None,
+                                          mode='raise')
+
+    def squeeze(self):
+        """Remove broadcastable dimensions from
+        the shape of an array.
+
+        It returns the input array, but with the
+        broadcastable dimensions removed. This is
+        always `x` itself or a view into `x`.
+        """
+        return theano.tensor.extra_ops.squeeze(self)
+
+    def compress(self, a, axis=None):
+        """Return selected slices only
+        """
+        return theano.tensor.extra_ops.compress(self, a, axis=axis)
+
 
 class TensorVariable(_tensor_py_operators, Variable):
     """Subclass to add the tensor operators to the basic `Variable` class."""
 
+    def __init__(self, type, owner=None, index=None, name=None):
+        super(TensorVariable, self).__init__(type, owner=owner,
+                                             index=index, name=name)
+        if (config.warn_float64 != 'ignore' and type.dtype == 'float64'):
+            msg = ('You are creating a TensorVariable '
+                   'with float64 dtype. You requested an action via '
+                   'the Theano flag warn_float64={ignore,warn,raise,pdb}.')
+            if config.warn_float64 == "warn":
+                # Get the user stack. We don't want function inside the
+                # tensor and gof directory to be shown to the user.
+                x = tb.extract_stack()
+                nb_rm = 0
+                while x:
+                    file_path = x[-1][0]
+                    rm = False
+                    for p in ["theano/tensor/",
+                              "theano/gof/"]:
+                        if p in file_path:
+                            x = x[:-1]
+                            nb_rm += 1
+                            rm = True
+                            break
+                    if not rm:
+                        break
+                warnings.warn(msg, stacklevel=1 + nb_rm)
+            elif config.warn_float64 == "raise":
+                raise Exception(msg)
+            elif config.warn_float64 == 'pdb':
+                import pdb; pdb.set_trace()
 TensorType.Variable = TensorVariable
 
 
@@ -681,6 +765,7 @@ class TensorConstant(_tensor_py_operators, Constant):
             other = theano.tensor.basic.constant(other)
         return (isinstance(other, TensorConstant) and
                 self.signature() == other.signature())
+
     def __copy__(self):
         # We need to do this to remove the cached attribute
         return type(self)(self.type, self.data, self.name)

@@ -1,11 +1,12 @@
 """Define random number Type (`RandomStateType`) and Op (`RandomFunction`)."""
+from __future__ import print_function
 __docformat__ = "restructuredtext en"
 import sys
 from copy import copy
 
 import numpy
 
-#local imports
+# local imports
 import theano
 from theano import tensor
 from theano.tensor import opt
@@ -75,6 +76,11 @@ class RandomStateType(gof.Type):
             else:
                 raise NotImplementedError()
         return size
+
+    @staticmethod
+    def may_share_memory(a, b):
+        return a is b
+
 # Register RandomStateType's C code for ViewOp.
 theano.compile.register_view_op_c_code(
         RandomStateType,
@@ -178,11 +184,15 @@ class RandomFunction(gof.Op):
         draw.
 
         """
-        shape = tensor.as_tensor_variable(shape, ndim=1)
+        shape_ = tensor.as_tensor_variable(shape, ndim=1)
+        if shape == ():
+            shape = shape_.astype('int32')
+        else:
+            shape = shape_
         assert shape.type.ndim == 1
         assert (shape.type.dtype == 'int64') or (shape.type.dtype == 'int32')
         if not isinstance(r.type, RandomStateType):
-            print >> sys.stderr, 'WARNING: RandomState instances should be in RandomStateType'
+            print('WARNING: RandomState instances should be in RandomStateType', file=sys.stderr)
             if 0:
                 raise TypeError('r must be RandomStateType instance', r)
         # the following doesn't work because we want to ignore the
@@ -200,7 +210,7 @@ class RandomFunction(gof.Op):
     def infer_shape(self, node, i_shapes):
         r, shp = node.inputs[0:2]
 
-        #if shp is a constant array of len 0, then it means 'automatic shape'
+        # if shp is a constant array of len 0, then it means 'automatic shape'
         unknown_shape = len(getattr(shp, 'data', [0, 1, 2])) == 0
 
         # if ndim_added == 0 and shape != () then shape
@@ -209,7 +219,7 @@ class RandomFunction(gof.Op):
         else:
             # if shape == () then it will depend on args
             # if ndim_added != 0 and shape != () then it will depend on args
-            #Use the default infer_shape implementation.
+            # Use the default infer_shape implementation.
             raise tensor.ShapeError()
 
         return [None, [sample_shp[i] for i in xrange(node.outputs[1].ndim)]]
@@ -493,14 +503,14 @@ def binomial(random_state, size=None, n=1, p=0.5, ndim=None,
     """
     if prob is not None:
         p = prob
-        print >> sys.stderr, "DEPRECATION WARNING: the parameter prob to the binomal fct have been renamed to p to have the same name as numpy."
+        print("DEPRECATION WARNING: the parameter prob to the binomal fct have been renamed to p to have the same name as numpy.", file=sys.stderr)
     n = tensor.as_tensor_variable(n)
     p = tensor.as_tensor_variable(p)
     ndim, size, bcast = _infer_ndim_bcast(ndim, size, n, p)
     if n.dtype == 'int64':
-        ### THIS WORKS AROUND A NUMPY BUG on 32bit machine
-        ###  Erase when the following works on a 32bit machine:
-        ###  numpy.random.binomial(
+        # THIS WORKS AROUND A NUMPY BUG on 32bit machine
+        # Erase when the following works on a 32bit machine:
+        # numpy.random.binomial(
         #          n=numpy.asarray([2,3,4], dtype='int64'),
         #          p=numpy.asarray([.1, .2, .3], dtype='float64'))
         n = tensor.cast(n, 'int32')
@@ -622,12 +632,13 @@ def choice(random_state, size=None, a=2, replace=True, p=None, ndim=None,
                                                          broadcastable=bcast))
     return op(random_state, size, a, replace, p)
 
+
 def poisson(random_state, size=None, lam=1.0, ndim=None, dtype='int64'):
     """
     Draw samples from a Poisson distribution.
 
     The Poisson distribution is the limit of the Binomial distribution for large N.
-    
+
     :param lam: float or ndarray-like of the same shape as size parameter
         Expectation of interval, should be >= 0.
 
@@ -639,7 +650,7 @@ def poisson(random_state, size=None, lam=1.0, ndim=None, dtype='int64'):
     size or ndim must be given
     """
     lam = tensor.as_tensor_variable(lam)
-    
+
     ndim, size, bcast = _infer_ndim_bcast(ndim, size)
 
     op = RandomFunction("poisson", tensor.TensorType(dtype=dtype,
@@ -677,7 +688,7 @@ def permutation_helper(random_state, n, shape):
     for i in numpy.ndindex(*shape):
         out[i] = random_state.permutation(n)
 
-    #print 'RETURNING', out.shape
+    # print 'RETURNING', out.shape
     return out
 
 
@@ -695,8 +706,16 @@ def permutation(random_state, size=None, n=1, ndim=None, dtype='int64'):
     :note:
         Note that the output will then be of dimension ndim+1.
     """
-    ndim, size, bcast = _infer_ndim_bcast(ndim, size)
-    #print "NDIM", ndim, size
+    if size is None or size == ():
+        if not(ndim is None or ndim == 1):
+            raise TypeError(
+                "You asked for just one permutation but asked for more then 1 dimensions.")
+        ndim = 1
+        size = ()
+        bcast = ()
+    else:
+        ndim, size, bcast = _infer_ndim_bcast(ndim, size)
+    # print "NDIM", ndim, size
     op = RandomFunction(permutation_helper,
             tensor.TensorType(dtype=dtype, broadcastable=bcast + (False,)),
             ndim_added=1)
@@ -871,7 +890,7 @@ class RandomStreamsBase(object):
         """
         if prob is not None:
             p = prob
-            print >> sys.stderr, "DEPRECATION WARNING: the parameter prob to the binomal fct have been renamed to p to have the same name as numpy."
+            print("DEPRECATION WARNING: the parameter prob to the binomal fct have been renamed to p to have the same name as numpy.", file=sys.stderr)
         return self.gen(binomial, size, n, p, ndim=ndim, dtype=dtype)
 
     def uniform(self, size=None, low=0.0, high=1.0, ndim=None, dtype=None):
@@ -907,7 +926,7 @@ class RandomStreamsBase(object):
         """
         return self.gen(random_integers, size, low, high, ndim=ndim,
                         dtype=dtype)
-    
+
     def choice(self, size=None, a=2, replace=True, p=None, ndim=None,
                dtype='int64'):
         """
@@ -924,7 +943,7 @@ class RandomStreamsBase(object):
     def poisson(self, size=None, lam=None, ndim=None, dtype='int64'):
         """
         Draw samples from a Poisson distribution.
-  
+
         The Poisson distribution is the limit of the Binomial distribution for large N.
 
         If the size argument is ambiguous on the number of dimensions,

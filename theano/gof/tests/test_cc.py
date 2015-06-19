@@ -1,3 +1,4 @@
+from __future__ import print_function
 
 import unittest
 
@@ -22,7 +23,7 @@ class TDouble(Type):
     def filter(self, data):
         return float(data)
 
-    def c_declare(self, name, sub):
+    def c_declare(self, name, sub, check_input=True):
         return "double %(name)s; void* %(name)s_bad_thing;" % locals()
 
     def c_init(self, name, sub):
@@ -35,7 +36,7 @@ class TDouble(Type):
     def c_literal(self, data):
         return str(data)
 
-    def c_extract(self, name, sub):
+    def c_extract(self, name, sub, check_input=True):
         return """
         if (!PyFloat_Check(py_%(name)s)) {
             PyErr_SetString(PyExc_TypeError, "not a double!");
@@ -112,7 +113,7 @@ class MyOp(Op):
         return ()
 
 
-#class Unary(MyOp):
+# class Unary(MyOp):
 #    def __init__(self):
 #        MyOp.__init__(self, 1, self.__class__.__name__)
 
@@ -192,7 +193,6 @@ def test_clinker_straightforward():
     assert fn(2.0, 2.0, 2.0) == 2.0
 
 
-@attr('slow')
 def test_clinker_literal_inlining():
     if not theano.config.cxx:
         raise SkipTest("G++ not available, so we need to skip this test.")
@@ -203,12 +203,11 @@ def test_clinker_literal_inlining():
     fn = lnk.make_function()
     assert abs(fn(2.0, 2.0) + 0.12345678) < 1e-9
     code = lnk.code_gen()
-    #print "=== Code generated ==="
-    #print code
+    # print "=== Code generated ==="
+    # print code
     assert "4.12345678" in code  # we expect the number to be inlined
 
 
-@attr('slow')
 def test_clinker_single_node():
     if not theano.config.cxx:
         raise SkipTest("G++ not available, so we need to skip this test.")
@@ -219,7 +218,6 @@ def test_clinker_single_node():
     assert fn(2.0, 7.0) == 9
 
 
-@attr('slow')
 def test_clinker_dups():
     if not theano.config.cxx:
         raise SkipTest("G++ not available, so we need to skip this test.")
@@ -232,7 +230,6 @@ def test_clinker_dups():
     # note: for now the behavior of fn(2.0, 7.0) is undefined
 
 
-@attr('slow')
 def test_clinker_not_used_inputs():
     if not theano.config.cxx:
         raise SkipTest("G++ not available, so we need to skip this test.")
@@ -244,7 +241,6 @@ def test_clinker_not_used_inputs():
     assert fn(2.0, 1.5, 1.0) == 3.5
 
 
-@attr('slow')
 def test_clinker_dups_inner():
     if not theano.config.cxx:
         raise SkipTest("G++ not available, so we need to skip this test.")
@@ -273,7 +269,6 @@ def test_opwiseclinker_straightforward():
         assert fn(2.0, 2.0, 2.0) == -6
 
 
-@attr('slow')
 def test_opwiseclinker_constant():
     x, y, z = inputs()
     x = Constant(tdouble, 7.2, name='x')
@@ -307,7 +302,6 @@ def test_duallinker_straightforward():
     assert res == 15.3
 
 
-@attr('slow')
 def test_duallinker_mismatch():
     if not theano.config.cxx:
         raise SkipTest("G++ not available, so we need to skip this test.")
@@ -332,7 +326,7 @@ def test_duallinker_mismatch():
         # are the same.
         res = fn(1.0, 2.0, 3.0)
         raise Exception("An exception should have been raised here!")
-    except MyExc, e:
+    except MyExc as e:
         pass
 
 
@@ -365,6 +359,6 @@ def test_c_fail_error():
     try:
         res = fn(1.5, 3.0)
     except RuntimeError:
-        print 'Yay, TEST PASSED'
+        print('Yay, TEST PASSED')
         return  # test passed
     assert 0  # test failed

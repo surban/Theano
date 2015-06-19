@@ -1,3 +1,4 @@
+from __future__ import print_function
 
 import sys
 import os
@@ -65,18 +66,20 @@ if __name__ == '__main__':
     options.update(dict([x, y or True] for x, y in
         getopt.getopt(sys.argv[1:],
                       'o:',
-                      ['epydoc', 'rst', 'help', 'nopdf'])[0]))
+                      ['epydoc', 'rst', 'help', 'nopdf', 'cache', 'test'])[0]))
     if options['--help']:
-        print 'Usage: %s [OPTIONS]' % sys.argv[0]
-        print '  -o <dir>: output the html files in the specified dir'
-        print '  --rst: only compile the doc (requires sphinx)'
-        print '  --nopdf: do not produce a PDF file from the doc, only HTML'
-        print '  --epydoc: only compile the api documentation',
-        print '(requires epydoc)'
-        print '  --help: this help'
+        print('Usage: %s [OPTIONS]' % sys.argv[0])
+        print('  -o <dir>: output the html files in the specified dir')
+        print('  --cache: use the doctree cache')
+        print('  --rst: only compile the doc (requires sphinx)')
+        print('  --nopdf: do not produce a PDF file from the doc, only HTML')
+        print('  --epydoc: only compile the api documentation', end=' ')
+        print('(requires epydoc)')
+        print('  --test: run all the code samples in the documentaton')
+        print('  --help: this help')
         sys.exit(0)
 
-    if not (options['--epydoc'] or options['--rst']):
+    if not (options['--epydoc'] or options['--rst'] or options['--test']):
         # Default is now rst
         options['--rst'] = True
 
@@ -112,18 +115,25 @@ if __name__ == '__main__':
         # Generate PDF doc
         # TODO
 
+    def call_sphinx(builder, workdir, extraopts=None):
+        import sphinx
+        if extraopts is None:
+            extraopts = []
+        if not options['--cache']:
+            extraopts.append('-E')
+        sphinx.main(['', '-b', builder] + extraopts +
+                    [os.path.join(throot, 'doc'), workdir])
+
     if options['--all'] or options['--rst']:
         mkdir("doc")
-        import sphinx
         sys.path[0:0] = [os.path.join(throot, 'doc')]
-        sphinx.main(['', '-E', os.path.join(throot, 'doc'), '.'])
+        call_sphinx('html', '.')
 
         if not options['--nopdf']:
             # Generate latex file in a temp directory
             import tempfile
             workdir = tempfile.mkdtemp()
-            sphinx.main(['', '-E', '-b', 'latex',
-                os.path.join(throot, 'doc'), workdir])
+            call_sphinx('latex', workdir)
             # Compile to PDF
             os.chdir(workdir)
             os.system('make')
@@ -131,7 +141,12 @@ if __name__ == '__main__':
                 shutil.copy(os.path.join(workdir, 'theano.pdf'), outdir)
                 os.chdir(outdir)
                 shutil.rmtree(workdir)
-            except OSError, e:
-                print 'OSError:', e
-            except IOError, e:
-                print 'IOError:', e
+            except OSError as e:
+                print('OSError:', e)
+            except IOError as e:
+                print('IOError:', e)
+
+    if options['--test']:
+        mkdir("doc")
+        sys.path[0:0] = [os.path.join(throot, 'doc')]
+        call_sphinx('doctest', '.')

@@ -1,6 +1,4 @@
 """Provide a simple user friendly API to Theano-managed memory"""
-__docformat__ = 'restructuredtext en'
-
 # Standard imports
 import copy
 import logging
@@ -9,9 +7,10 @@ import logging
 import numpy
 
 # Theano imports
-from theano.gof import Container, Variable, generic
+from theano.gof import Container, Variable, generic, utils
 
 _logger = logging.getLogger('theano.compile.sharedvalue')
+__docformat__ = 'restructuredtext en'
 
 
 class SharedVariable(Variable):
@@ -21,7 +20,7 @@ class SharedVariable(Variable):
 
     """
 
-    #Container object
+    # Container object
     container = None
     """
     A container to use for this SharedVariable when it is an implicit
@@ -49,7 +48,8 @@ class SharedVariable(Variable):
         or copied, so they must have the correct type.
 
         :param allow_downcast: Only applies if `strict` is False.
-        True -> allow assigned value to lose precision when cast during assignment.
+        True -> allow assigned value to lose precision when cast
+                during assignment.
         False -> never allow precision loss.
         None -> only allow downcasting of a Python float to a scalar floatX.
 
@@ -65,17 +65,18 @@ class SharedVariable(Variable):
         if container is not None:
             self.container = container
             if (value is not None) or (strict is not None):
-                raise TypeError(
-                   'value and strict are ignored if you pass a container here')
+                raise TypeError('value and strict are ignored if you pass '
+                                'a container here')
         else:
             if container is not None:
                 raise TypeError('Error to specify both value and container')
-            self.container = Container(self,
-                    storage=[type.filter(value, strict=strict,
-                                         allow_downcast=allow_downcast)],
-                    readonly=False,
-                    strict=strict,
-                    allow_downcast=allow_downcast)
+            self.container = Container(
+                self,
+                storage=[type.filter(value, strict=strict,
+                                     allow_downcast=allow_downcast)],
+                readonly=False,
+                strict=strict,
+                allow_downcast=allow_downcast)
 
     def get_value(self, borrow=False, return_internal_type=False):
         """Get the non-symbolic value associated with this SharedVariable.
@@ -114,11 +115,11 @@ class SharedVariable(Variable):
 
     def clone(self):
         cp = self.__class__(
-                name=self.name,
-                type=self.type,
-                value=None,
-                strict=None,
-                container=self.container)
+            name=self.name,
+            type=self.type,
+            value=None,
+            strict=None,
+            container=self.container)
         cp.tag = copy.copy(self.tag)
         return cp
 
@@ -140,8 +141,8 @@ class SharedVariable(Variable):
                    type(value))
 
         raise TypeError(
-                "The generic 'SharedVariable' object is not subscriptable. "
-                "This shared variable contains %s" % msg)
+            "The generic 'SharedVariable' object is not subscriptable. "
+            "This shared variable contains %s" % msg)
 
     def _value_get(self):
         raise Exception("sharedvar.value does not exist anymore. Use "
@@ -169,25 +170,47 @@ def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):
     """Return a SharedVariable Variable, initialized with a copy or
     reference of `value`.
 
-    This function iterates over constructor functions (see
-    `shared_constructor`) to find a suitable SharedVariable subclass.
+    This function iterates over
+    :ref:`constructor functions <shared_constructor>`
+    to find a suitable SharedVariable subclass.
+    The suitable one is the first constructor that accept the given value.
+
+    This function is meant as a convenient default.  If you want to use a
+    specific shared variable constructor, consider calling it directly.
+
+    ``theano.shared`` is a shortcut to this function.
 
     :note: By passing kwargs, you effectively limit the set of
-    potential constructors to those that can accept those kwargs.
+        potential constructors to those that can accept those kwargs.
 
-    :note: Some shared variable have 'borrow' as extra kwargs.
-           `See <http://deeplearning.net/software/theano/tutorial/aliasing.html#borrowing-when-creating-shared-variables>`_ for detail.
+    :note: Some shared variable have ``borrow`` as extra kwargs.
+           `See <http://deeplearning.net/software/theano/tutorial/aliasing.\
+html#borrowing-when-creating-shared-variables>`_ for detail.
+
+    :note: Some shared variable have ``broadcastable`` as extra kwargs.
+        As shared variable shapes can change, all dimensions default
+        to not being broadcastable, even if ``value`` has a shape of 1
+        along some dimension. This parameter allows you to create
+        for example a `row` or `column` 2d tensor.
+
+    .. attribute:: constructors
+
+        A list of shared variable constructors that will be tried in reverse
+        order.
 
     """
 
     try:
         if isinstance(value, Variable):
-            raise TypeError(" Shared variable constructor needs numeric values and not symbolic variables.")
+            raise TypeError("Shared variable constructor needs numeric "
+                            "values and not symbolic variables.")
 
         for ctor in reversed(shared.constructors):
             try:
-                return ctor(value, name=name, strict=strict,
-                            allow_downcast=allow_downcast, **kwargs)
+                var = ctor(value, name=name, strict=strict,
+                           allow_downcast=allow_downcast, **kwargs)
+                utils.add_tag_trace(var)
+                return var
             except TypeError:
                 continue
             # This may happen when kwargs were supplied
@@ -196,7 +219,7 @@ def shared(value, name=None, strict=False, allow_downcast=None, **kwargs):
             # This was done on purpose, the rationale being that if kwargs
             # were supplied, the user didn't want them to be ignored.
 
-    except MemoryError, e:
+    except MemoryError as e:
         e.args = e.args + ('you might consider'
                            ' using \'theano.shared(..., borrow=True)\'',)
         raise
@@ -214,4 +237,4 @@ shared.constructors = []
 def generic_constructor(value, name=None, strict=False, allow_downcast=None):
     """SharedVariable Constructor"""
     return SharedVariable(type=generic, value=value, name=name, strict=strict,
-            allow_downcast=allow_downcast)
+                          allow_downcast=allow_downcast)

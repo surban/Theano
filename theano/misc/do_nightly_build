@@ -1,31 +1,33 @@
 #!/bin/bash
 date
 START=`date +%s`
-ARGS=$@
+ARGS="$@"
 PROFILING=""
 RELEASE=""
 
 if [ "$1" == "--release" ]; then
     RELEASE="True"
     shift
-    ARGS=$@
+    ARGS="$@"
 fi
 
 if [ "$1" == "--buildbot" ]; then
+    shift
+    ARGS="$@"
     #we set the compiledir to the /Tmp dir to make the test faster by bypassing the nfs network.
-    COMPILEDIR=/Tmp/lisa_theano_compile_dir_theano
+    BASE_COMPILEDIR=/Tmp/lisa_theano_compile_dir_theano
     ROOT_CWD=/Tmp/nightly_build
-    FLAGS=compiledir=$COMPILEDIR
+    FLAGS=base_compiledir=$BASE_COMPILEDIR
+    COMPILEDIR=`THEANO_FLAGS=$FLAGS python -c "from __future__ import print_function; import theano; print(theano.config.compiledir)"`
     cd ${ROOT_CWD}/Theano
     git rev-parse HEAD
     #Run tests from inside the Theano directory to prevent import problem.
-    ARGS=""
-    PROFILING="--with-coverage --cover-package=theano"
+#    PROFILING="--with-coverage --cover-package=theano"
     NOSETESTS=${ROOT_CWD}/Theano/bin/theano-nose
     export PYTHONPATH=${ROOT_CWD}:$PYTHONPATH
 else
-    COMPILEDIR=`python -c "import theano; print theano.config.compiledir"`
-    NOSETESTS=`python -c "import theano; print theano.__path__[0]"`/../bin/theano-nose
+    COMPILEDIR=`python -c "from __future__ import print_function; import theano; print(theano.config.compiledir)"`
+    NOSETESTS=`python -c "from __future__ import print_function; import theano; print(theano.__path__[0])"`/../bin/theano-nose
 fi
 
 echo "Number of elements in the compiledir:"
@@ -52,6 +54,21 @@ if [ "$RELEASE" ]; then
     echo "Number of elements in the compiledir:"
     ls ${COMPILEDIR}|wc -l
     echo
+
+    echo "Executing tests with linker=vm,floatX=float32"
+    echo "THEANO_FLAGS=${FLAGS},linker=vm,floatX=float32 ${NOSETESTS} ${ARGS}"
+    THEANO_FLAGS=${FLAGS},linker=vm,floatX=float32 ${NOSETESTS} ${ARGS}
+    echo "Number of elements in the compiledir:"
+    ls ${COMPILEDIR}|wc -l
+    echo
+
+    echo "Executing tests with cxx="
+    echo "THEANO_FLAGS=${FLAGS},cxx= ${NOSETESTS} ${ARGS}"
+    THEANO_FLAGS=${FLAGS},cxx= ${NOSETESTS} ${ARGS}
+    echo "Number of elements in the compiledir:"
+    ls ${COMPILEDIR}|wc -l
+    echo
+
 fi
 
 echo "Executing tests with mode=FAST_RUN"
@@ -81,15 +98,16 @@ echo "Executing tests with mode=DEBUG_MODE with seed of the day $seed"
 echo "THEANO_FLAGS=${FLAGS},unittests.rseed=$seed,mode=DEBUG_MODE,DebugMode.check_strides=0,DebugMode.patience=3,DebugMode.check_preallocated_output= ${NOSETESTS} ${ARGS}"
 THEANO_FLAGS=${FLAGS},unittests.rseed=$seed,mode=DEBUG_MODE,DebugMode.check_strides=0,DebugMode.patience=3,DebugMode.check_preallocated_output= ${NOSETESTS} ${ARGS}
 
+echo "Number of elements in the compiledir:"
+ls ${COMPILEDIR}|wc -l
+echo
+
 #We put this at the end as it have a tendency to loop infinitly.
 #Until we fix the root of the problem we let the rest run, then we can kill this one in the morning.
 # with --batch=1000" # The buildbot freeze sometimes when collecting the tests to run
 echo "Executing tests with mode=FAST_COMPILE"
 echo "THEANO_FLAGS=${FLAGS},mode=FAST_COMPILE ${NOSETESTS} ${ARGS}"
 THEANO_FLAGS=${FLAGS},mode=FAST_COMPILE ${NOSETESTS} ${ARGS}
-echo "Number of elements in the compiledir:"
-ls ${COMPILEDIR}|wc -l
-echo
 
 echo "Number of elements in the compiledir:"
 ls ${COMPILEDIR}|wc -l
@@ -97,5 +115,5 @@ echo
 
 echo
 END=`date +%s`
-python -c "print 'Total test time: %dm %ds'%((${END} - ${START})/60, (${END} - ${START})%60)"
+python -c "from __future__ import print_function; print('Total test time: %dm %ds'%((${END} - ${START})/60, (${END} - ${START})%60))"
 date

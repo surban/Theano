@@ -17,13 +17,17 @@
 # is relative to the documentation root, use os.path.abspath to make it
 # absolute, like shown here.
 #sys.path.append(os.path.abspath('some/directory'))
+import os
+import sys
+theano_path = os.path.join(os.path.dirname(__file__), os.pardir)
+sys.path.append(os.path.abspath(theano_path))
 
 # General configuration
 # ---------------------
 
 # Add any Sphinx extension module names here, as strings. They can be
 # extensions coming with Sphinx (named 'sphinx.ext.*') or your custom ones.
-extensions = ['sphinx.ext.autodoc', 'sphinx.ext.todo']
+extensions = ['sphinx.ext.autodoc', 'sphinx.ext.todo', 'sphinx.ext.doctest']
 
 todo_include_todos = True
 
@@ -45,15 +49,15 @@ master_doc = 'index'
 
 # General substitutions.
 project = 'Theano'
-copyright = '2008--2013, LISA lab'
+copyright = '2008--2015, LISA lab'
 
 # The default replacements for |version| and |release|, also used in various
 # other places throughout the built documents.
 #
 # The short X.Y version.
-version = '0.6'
+version = '0.7'
 # The full version, including alpha/beta/rc tags.
-release = '0.6'
+release = '0.7'
 
 # There are two options for replacing |today|: either, you set today to some
 # non-false value, then it is used:

@@ -1,9 +1,10 @@
+from __future__ import print_function
 import sys
 import time
 
+import theano
 from theano import config
-from theano.gof.python25 import partial
-from theano.gof.python25 import OrderedDict
+from theano.compat import partial, OrderedDict
 from theano.gof import graph
 
 
@@ -31,7 +32,7 @@ class Feature(object):
     by various operations on FunctionGraphs. It can be used to enforce
     graph properties at all stages of graph optimization.
 
-    See toolbox and ext modules for common extensions.
+    See :func:`theano.gof.toolbox` for common extensions.
     """
 
     def on_attach(self, function_graph):
@@ -104,7 +105,32 @@ class Bookkeeper(Feature):
             self.on_prune(fgraph, node, 'Bookkeeper.detach')
 
 
+class GetCheckpoint:
+
+    def __init__(self, history, fgraph):
+        self.h = history
+        self.fgraph = fgraph
+
+    def __call__(self):
+        return len(self.h.history[self.fgraph])
+
+
+class LambdExtract:
+
+    def __init__(self, fgraph, node, i, r, reason=None):
+        self.fgraph = fgraph
+        self.node = node
+        self.i = i
+        self.r = r
+        self.reason = reason
+
+    def __call__(self):
+        return self.fgraph.change_input(self.node, self.i, self.r,
+                                        reason=("Revert", self.reason))
+
+
 class History(Feature):
+    pickle_rm_attr = ["checkpoint", "revert"]
 
     def __init__(self):
         self.history = {}
@@ -114,7 +140,14 @@ class History(Feature):
             raise AlreadyThere("History feature is already present or in"
                                " conflict with another plugin.")
         self.history[fgraph] = []
-        fgraph.checkpoint = lambda: len(self.history[fgraph])
+        # Don't call unpickle here, as ReplaceValidate.on_attach()
+        # call to History.on_attach() will call the
+        # ReplaceValidate.unpickle and not History.unpickle
+        fgraph.checkpoint = GetCheckpoint(self, fgraph)
+        fgraph.revert = partial(self.revert, fgraph)
+
+    def unpickle(self, fgraph):
+        fgraph.checkpoint = GetCheckpoint(self, fgraph)
         fgraph.revert = partial(self.revert, fgraph)
 
     def on_detach(self, fgraph):
@@ -126,8 +159,7 @@ class History(Feature):
         if self.history[fgraph] is None:
             return
         h = self.history[fgraph]
-        h.append(lambda: fgraph.change_input(node, i, r,
-                                          reason=("Revert", reason)))
+        h.append(LambdExtract(fgraph, node, i, r, reason))
 
     def revert(self, fgraph, checkpoint):
         """
@@ -144,47 +176,64 @@ class History(Feature):
 
 
 class Validator(Feature):
+    pickle_rm_attr = ["validate", "consistent"]
 
     def on_attach(self, fgraph):
         for attr in ('validate', 'validate_time'):
             if hasattr(fgraph, attr):
                 raise AlreadyThere("Validator feature is already present or in"
                                    " conflict with another plugin.")
+        # Don't call unpickle here, as ReplaceValidate.on_attach()
+        # call to History.on_attach() will call the
+        # ReplaceValidate.unpickle and not History.unpickle
+        fgraph.validate = partial(self.validate_, fgraph)
+        fgraph.consistent = partial(self.consistent_, fgraph)
 
-        def validate():
-            t0 = time.time()
-            ret = fgraph.execute_callbacks('validate')
-            t1 = time.time()
-            if fgraph.profile:
-                fgraph.profile.validate_time += t1 - t0
-            return ret
-
-        fgraph.validate = validate
-
-        def consistent():
-            try:
-                fgraph.validate()
-                return True
-            except Exception:
-                return False
-        fgraph.consistent = consistent
+    def unpickle(self, fgraph):
+        fgraph.validate = partial(self.validate_, fgraph)
+        fgraph.consistent = partial(self.consistent_, fgraph)
 
     def on_detach(self, fgraph):
         del fgraph.validate
         del fgraph.consistent
 
+    def validate_(self, fgraph):
+        t0 = time.time()
+        ret = fgraph.execute_callbacks('validate')
+        t1 = time.time()
+        if fgraph.profile:
+            fgraph.profile.validate_time += t1 - t0
+        return ret
+
+    def consistent_(self, fgraph):
+        try:
+            fgraph.validate()
+            return True
+        except Exception:
+            return False
+
 
 class ReplaceValidate(History, Validator):
+    pickle_rm_attr = (["replace_validate", "replace_all_validate",
+                       "replace_all_validate_remove"] +
+                      History.pickle_rm_attr + Validator.pickle_rm_attr)
 
     def on_attach(self, fgraph):
-        History.on_attach(self, fgraph)
-        Validator.on_attach(self, fgraph)
-        for attr in ('replace_validate', 'replace_all_validate'):
+        for attr in ('replace_validate', 'replace_all_validate',
+                     'replace_all_validate_remove'):
             if hasattr(fgraph, attr):
                 raise AlreadyThere("ReplaceValidate feature is already present"
                                    " or in conflict with another plugin.")
+        History.on_attach(self, fgraph)
+        Validator.on_attach(self, fgraph)
+        self.unpickle(fgraph)
+
+    def unpickle(self, fgraph):
+        History.unpickle(self, fgraph)
+        Validator.unpickle(self, fgraph)
         fgraph.replace_validate = partial(self.replace_validate, fgraph)
-        fgraph.replace_all_validate = partial(self.replace_all_validate, fgraph)
+        fgraph.replace_all_validate = partial(self.replace_all_validate,
+                                              fgraph)
         fgraph.replace_all_validate_remove = partial(
             self.replace_all_validate_remove, fgraph)
 
@@ -206,23 +255,25 @@ class ReplaceValidate(History, Validator):
         for r, new_r in replacements:
             try:
                 fgraph.replace(r, new_r, reason=reason, verbose=False)
-            except Exception, e:
-                if ('The type of the replacement must be the same' not in
-                    str(e) and 'does not belong to this FunctionGraph' not in str(e)):
+            except Exception as e:
+                msg = str(e)
+                s1 = 'The type of the replacement must be the same'
+                s2 = 'does not belong to this FunctionGraph'
+                if (s1 not in msg and s2 not in msg):
                     out = sys.stderr
-                    print >> out, "<<!! BUG IN FGRAPH.REPLACE OR A LISTENER !!>>",
-                    print >> out, type(e), e, reason
+                    print("<<!! BUG IN FGRAPH.REPLACE OR A LISTENER !!>>",
+                          type(e), e, reason, file=out)
                 # this might fail if the error is in a listener:
                 # (fgraph.replace kinda needs better internal error handling)
                 fgraph.revert(chk)
                 raise
         try:
             fgraph.validate()
-        except Exception, e:
+        except Exception as e:
             fgraph.revert(chk)
             raise
         if verbose:
-            print reason, r, new_r
+            print(reason, r, new_r)
         return chk
 
     def replace_all_validate_remove(self, fgraph, replacements,
@@ -237,15 +288,22 @@ class ReplaceValidate(History, Validator):
                 fgraph.revert(chk)
                 if warn:
                     out = sys.stderr
-                    print >> out, (
+                    print(
                         "WARNING: An optimization wanted to replace a Variable"
                         " in the graph, but the replacement for it doesn't"
                         " remove it. We disabled the optimization."
                         " Your function runs correctly, but it would be"
                         " appreciated if you submit this problem to the"
-                        " mailing list theano-users so that we can fix it.")
-                    print >> out, reason, replacements
+                        " mailing list theano-users so that we can fix it.",
+                        file=out)
+                    print(reason, replacements, file=out)
                 raise ReplacementDidntRemovedError()
+
+    def __getstate__(self):
+        d = self.__dict__.copy()
+        if "history" in d:
+            del d["history"]
+        return d
 
 
 class NodeFinder(Bookkeeper):
@@ -256,7 +314,8 @@ class NodeFinder(Bookkeeper):
 
     def on_attach(self, fgraph):
         if self.fgraph is not None:
-            raise Exception("A NodeFinder instance can only serve one FunctionGraph.")
+            raise Exception("A NodeFinder instance can only serve one "
+                            "FunctionGraph.")
         if hasattr(fgraph, 'get_nodes'):
             raise AlreadyThere("NodeFinder is already present or in conflict"
                                " with another plugin.")
@@ -277,12 +336,12 @@ class NodeFinder(Bookkeeper):
             self.d.setdefault(node.op, []).append(node)
         except TypeError:  # node.op is unhashable
             return
-        except Exception, e:
-            print >> sys.stderr, 'OFFENDING node', type(node), type(node.op)
+        except Exception as e:
+            print('OFFENDING node', type(node), type(node.op), file=sys.stderr)
             try:
-                print >> sys.stderr, 'OFFENDING node hash', hash(node.op)
+                print('OFFENDING node hash', hash(node.op), file=sys.stderr)
             except Exception:
-                print >> sys.stderr, 'OFFENDING node not hashable'
+                print('OFFENDING node not hashable', file=sys.stderr)
             raise e
 
     def on_prune(self, fgraph, node, reason):
@@ -311,24 +370,24 @@ class PrintListener(Feature):
 
     def on_attach(self, fgraph):
         if self.active:
-            print "-- attaching to: ", fgraph
+            print("-- attaching to: ", fgraph)
 
     def on_detach(self, fgraph):
         if self.active:
-            print "-- detaching from: ", fgraph
+            print("-- detaching from: ", fgraph)
 
     def on_import(self, fgraph, node, reason):
         if self.active:
-            print "-- importing: %s, reason: %s" % (node, reason)
+            print("-- importing: %s, reason: %s" % (node, reason))
 
     def on_prune(self, fgraph, node, reason):
         if self.active:
-            print "-- pruning: %s, reason: %s" % (node, reason)
+            print("-- pruning: %s, reason: %s" % (node, reason))
 
     def on_change_input(self, fgraph, node, i, r, new_r, reason=None):
         if self.active:
-            print "-- changing (%s.inputs[%s]) from %s to %s" % (
-                node, i, r, new_r)
+            print("-- changing (%s.inputs[%s]) from %s to %s" % (
+                node, i, r, new_r))
 
 
 class PreserveNames(Feature):
@@ -338,3 +397,26 @@ class PreserveNames(Feature):
             new_r.name = r.name
 
 
+class NoOutputFromInplace(Feature):
+
+    def validate(self, fgraph):
+        if not hasattr(fgraph, 'destroyers'):
+            return True
+        for out in list(fgraph.outputs):
+
+            if out.owner is None:
+                continue
+
+            # Validate that the node that produces the output does not produce
+            # it by modifying something else inplace.
+            node = out.owner
+            op = node.op
+            out_idx = node.outputs.index(out)
+            if hasattr(op, 'destroy_map') and out_idx in op.destroy_map.keys():
+                raise theano.gof.InconsistencyError(
+                    "A function graph Feature has requested (probably for ",
+                    "efficiency reasons for scan) that outputs of the graph",
+                    "be prevented from being the result of inplace ",
+                    "operations. This has prevented output ", out, " from ",
+                    "being computed by modifying another variable ",
+                    "inplace.")

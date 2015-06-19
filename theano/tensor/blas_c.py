@@ -1,10 +1,15 @@
+import numpy
+
 from theano import config
 
 from theano.tensor.opt import in2out
 from theano.tensor.blas import ldflags, blas_header_text, blas_header_version
-from theano.tensor.blas import blas_optdb, optdb, local_optimizer, EquilibriumOptimizer
+from theano.tensor.blas import (
+    blas_optdb, optdb, local_optimizer, EquilibriumOptimizer)
 from theano.tensor.blas import Ger, ger, ger_destructive
 from theano.tensor.blas import Gemv, gemv_inplace, gemv_no_inplace
+from theano.tensor import basic as T
+import theano.compile
 
 
 class BaseBLAS(object):
@@ -24,9 +29,9 @@ class BaseBLAS(object):
         return blas_header_text()
 
 
-####### ####### #######
+# ##### ####### #######
 # GER
-####### ####### #######
+# ##### ####### #######
 
 def ger_c_code(A, a, x, y, Z, destructive, fail):
     return """
@@ -105,15 +110,25 @@ def ger_c_code(A, a, x, y, Z, destructive, fail):
         {
             float * zoutdata = (float*)PyArray_DATA(%(Z)s);
             const float * zdata = (float*)PyArray_DATA(%(A)s);
+            const float * xdata = (float*)PyArray_DATA(%(x)s);
+            const float * ydata = (float*)PyArray_DATA(%(y)s);
+            const float * adata = (float*)PyArray_DATA(%(a)s);
+            const float alpha = adata[0];
+            float tmp, xx;
             int Ai = PyArray_STRIDES(%(A)s)[0]/sizeof(float);
             int Aj = PyArray_STRIDES(%(A)s)[1]/sizeof(float);
             int Zi = PyArray_STRIDES(%(Z)s)[0]/sizeof(float);
             int Zj = PyArray_STRIDES(%(Z)s)[1]/sizeof(float);
+            int xi = PyArray_STRIDES(%(x)s)[0]/sizeof(float);
+            int yj = PyArray_STRIDES(%(y)s)[0]/sizeof(float);
             for (int i = 0; i < dims[0]; ++i)
             {
+                xx = alpha * xdata[xi * i];
                 for (int j = 0; j < dims[1]; ++j)
                 {
-                    zoutdata[Zi*i+Zj*j] = zdata[Ai*i+Aj*j];
+                    tmp = zdata[Ai*i+Aj*j];
+                    tmp += xx * ydata[yj * j];
+                    zoutdata[Zi*i+Zj*j] = tmp;
                 }
             }
         }
@@ -121,15 +136,26 @@ def ger_c_code(A, a, x, y, Z, destructive, fail):
         {
             double * zoutdata = (double*) PyArray_DATA(%(Z)s);
             const double * zdata = (double*)PyArray_DATA(%(A)s);
+            const double * xdata = (double*)PyArray_DATA(%(x)s);
+            const double * ydata = (double*)PyArray_DATA(%(y)s);
+            const double * adata = (double*)PyArray_DATA(%(a)s);
+            const double alpha = adata[0];
+            double tmp, xx;
+
             int Ai = PyArray_STRIDES(%(A)s)[0]/sizeof(double);
             int Aj = PyArray_STRIDES(%(A)s)[1]/sizeof(double);
             int Zi = PyArray_STRIDES(%(Z)s)[0]/sizeof(double);
             int Zj = PyArray_STRIDES(%(Z)s)[1]/sizeof(double);
+            int xi = PyArray_STRIDES(%(x)s)[0]/sizeof(double);
+            int yj = PyArray_STRIDES(%(y)s)[0]/sizeof(double);
             for (int i = 0; i < dims[0]; ++i)
             {
+                xx = alpha * xdata[xi * i];
                 for (int j = 0; j < dims[1]; ++j)
                 {
-                    zoutdata[Zi*i+Zj*j] = zdata[Ai*i+Aj*j];
+                    tmp = zdata[Ai*i+Aj*j];
+                    tmp += xx * ydata[yj * j];
+                    zoutdata[Zi*i+Zj*j] = tmp;
                 }
             }
         }
@@ -149,92 +175,140 @@ def ger_c_code(A, a, x, y, Z, destructive, fail):
             %(Z)s = %(A)s;
             Py_INCREF(%(Z)s);
         }
-    }
-
-    {
-        int Nz0 = PyArray_DIMS(%(Z)s)[0];
-        int Nz1 = PyArray_DIMS(%(Z)s)[1];
-        int Sx = PyArray_STRIDES(%(x)s)[0] / elemsize;
-        int Sy = PyArray_STRIDES(%(y)s)[0] / elemsize;
-
-        /* create appropriate strides for Z, if it is a row or column matrix.
-         * In that case, the value of the stride does not really matter, but
-         * some versions of BLAS insist that:
-         *  - they are not smaller than the number of elements in the array,
-         *  - they are not 0.
-         */
-        int Sz0 = (Nz0 > 1) ? (PyArray_STRIDES(%(Z)s)[0] / elemsize) : (Nz1 + 1);
-        int Sz1 = (Nz1 > 1) ? (PyArray_STRIDES(%(Z)s)[1] / elemsize) : (Nz0 + 1);
-
-        dtype_%(x)s* x_data = (dtype_%(x)s*) PyArray_DATA(%(x)s);
-        dtype_%(y)s* y_data = (dtype_%(y)s*) PyArray_DATA(%(y)s);
-        // gemv expects pointers to the beginning of memory arrays,
-        // but numpy provides provides a pointer to the first element,
-        // so when the stride is negative, we need to get the last one.
-        if (Sx < 0)
-            x_data += (Nz0 - 1) * Sx;
-        if (Sy < 0)
-            y_data += (Nz1 - 1) * Sy;
-
-        if (PyArray_STRIDES(%(Z)s)[0] == elemsize)
+        npy_intp dims[2];
+        dims[0] = PyArray_DIMS(%(A)s)[0];
+        dims[1] = PyArray_DIMS(%(A)s)[1];
+        if ((dims[0] * dims[1]) < 100000)
         {
             if (PyArray_DESCR(%(Z)s)->type_num == NPY_FLOAT)
             {
-                //fprintf(stderr, "A\\n");
-                float alpha = ((dtype_%(a)s*)PyArray_DATA(%(a)s))[0];
-                sger_(&Nz0, &Nz1, &alpha,
-                    (float*)x_data, &Sx,
-                    (float*)y_data, &Sy,
-                    (float*)(PyArray_DATA(%(Z)s)), &Sz1);
+                float * zoutdata = (float*)PyArray_DATA(%(Z)s);
+                const float * xdata = (float*)PyArray_DATA(%(x)s);
+                const float * ydata = (float*)PyArray_DATA(%(y)s);
+                const float * adata = (float*)PyArray_DATA(%(a)s);
+                const float alpha = adata[0];
+                float tmp, axi;
+                int Zi = PyArray_STRIDES(%(Z)s)[0]/sizeof(float);
+                int Zj = PyArray_STRIDES(%(Z)s)[1]/sizeof(float);
+                int xi = PyArray_STRIDES(%(x)s)[0]/sizeof(float);
+                int yj = PyArray_STRIDES(%(y)s)[0]/sizeof(float);
+                for (int i = 0; i < dims[0]; ++i)
+                {
+                    axi = alpha * xdata[xi * i];
+                    for (int j = 0; j < dims[1]; ++j)
+                    {
+                        zoutdata[Zi*i+Zj*j] += axi * ydata[yj * j];
+                    }
+                }
             }
             else if (PyArray_DESCR(%(Z)s)->type_num == NPY_DOUBLE)
             {
-                double alpha = ((dtype_%(a)s*)PyArray_DATA(%(a)s))[0];
-                dger_(&Nz0, &Nz1, &alpha,
-                    (double*)x_data, &Sx,
-                    (double*)y_data, &Sy,
-                    (double*)(PyArray_DATA(%(Z)s)), &Sz1);
-            }
-            else {
-                PyErr_SetString(PyExc_NotImplementedError,
-                                "not float nor double");
-                %(fail)s
-            }
-        }
-        else if (PyArray_STRIDES(%(Z)s)[1] == elemsize)
-        {
-            if (PyArray_DESCR(%(Z)s)->type_num == NPY_FLOAT)
-            {
-                //fprintf(stderr, "B %%i %%i %%i %%i\\n", Nz0, Nz1, Sz0, Sz1);
-                float alpha = ((dtype_%(a)s*)(PyArray_DATA(%(a)s)))[0];
-                //fprintf(stderr, "alpha=%%f\\n", alpha);
-                //fprintf(stderr, "sx  sy %%i %%i\\n", Sx, Sy);
-                sger_(&Nz1, &Nz0, &alpha,
-                    (float*)y_data, &Sy,
-                    (float*)x_data, &Sx,
-                    (float*)(PyArray_DATA(%(Z)s)), &Sz0);
-            }
-            else if (PyArray_DESCR(%(Z)s)->type_num == NPY_DOUBLE)
-            {
-                double alpha = ((dtype_%(a)s*)PyArray_DATA(%(a)s))[0];
-                dger_(&Nz1, &Nz0, &alpha,
-                    (double*)y_data, &Sy,
-                    (double*)x_data, &Sx,
-                    (double*)(PyArray_DATA(%(Z)s)), &Sz0);
-            }
-            else
-            {
-                PyErr_SetString(PyExc_NotImplementedError,
-                                "not float nor double");
-                %(fail)s
+                double * zoutdata = (double*) PyArray_DATA(%(Z)s);
+                const double * xdata = (double*)PyArray_DATA(%(x)s);
+                const double * ydata = (double*)PyArray_DATA(%(y)s);
+                const double * adata = (double*)PyArray_DATA(%(a)s);
+                const double alpha = adata[0];
+                double tmp, axi;
+
+                int Zi = PyArray_STRIDES(%(Z)s)[0]/sizeof(double);
+                int Zj = PyArray_STRIDES(%(Z)s)[1]/sizeof(double);
+                int xi = PyArray_STRIDES(%(x)s)[0]/sizeof(double);
+                int yj = PyArray_STRIDES(%(y)s)[0]/sizeof(double);
+                for (int i = 0; i < dims[0]; ++i)
+                {
+                    axi = alpha * xdata[xi * i];
+                    for (int j = 0; j < dims[1]; ++j)
+                    {
+                        zoutdata[Zi*i+Zj*j] += axi * ydata[yj * j];
+                    }
+                }
             }
         }
         else
         {
-            PyErr_SetString(PyExc_AssertionError,
-                "A is a double-strided matrix, and should have been copied "
-                "into a memory-contiguous one.");
-            %(fail)s
+            int Nz0 = PyArray_DIMS(%(Z)s)[0];
+            int Nz1 = PyArray_DIMS(%(Z)s)[1];
+            int Sx = PyArray_STRIDES(%(x)s)[0] / elemsize;
+            int Sy = PyArray_STRIDES(%(y)s)[0] / elemsize;
+
+            /* create appropriate strides for Z, if it is a row or column matrix.
+             * In that case, the value of the stride does not really matter, but
+             * some versions of BLAS insist that:
+             *  - they are not smaller than the number of elements in the array,
+             *  - they are not 0.
+             */
+            int Sz0 = (Nz0 > 1) ? (PyArray_STRIDES(%(Z)s)[0] / elemsize) : (Nz1 + 1);
+            int Sz1 = (Nz1 > 1) ? (PyArray_STRIDES(%(Z)s)[1] / elemsize) : (Nz0 + 1);
+
+            dtype_%(x)s* x_data = (dtype_%(x)s*) PyArray_DATA(%(x)s);
+            dtype_%(y)s* y_data = (dtype_%(y)s*) PyArray_DATA(%(y)s);
+            // gemv expects pointers to the beginning of memory arrays,
+            // but numpy provides provides a pointer to the first element,
+            // so when the stride is negative, we need to get the last one.
+            if (Sx < 0)
+                x_data += (Nz0 - 1) * Sx;
+            if (Sy < 0)
+                y_data += (Nz1 - 1) * Sy;
+
+            if (PyArray_STRIDES(%(Z)s)[0] == elemsize)
+            {
+                if (PyArray_DESCR(%(Z)s)->type_num == NPY_FLOAT)
+                {
+                    //fprintf(stderr, "A\\n");
+                    float alpha = ((dtype_%(a)s*)PyArray_DATA(%(a)s))[0];
+                    sger_(&Nz0, &Nz1, &alpha,
+                        (float*)x_data, &Sx,
+                        (float*)y_data, &Sy,
+                        (float*)(PyArray_DATA(%(Z)s)), &Sz1);
+                }
+                else if (PyArray_DESCR(%(Z)s)->type_num == NPY_DOUBLE)
+                {
+                    double alpha = ((dtype_%(a)s*)PyArray_DATA(%(a)s))[0];
+                    dger_(&Nz0, &Nz1, &alpha,
+                        (double*)x_data, &Sx,
+                        (double*)y_data, &Sy,
+                        (double*)(PyArray_DATA(%(Z)s)), &Sz1);
+                    
+
+                }
+                else {
+                    PyErr_SetString(PyExc_NotImplementedError,
+                                    "not float nor double");
+                    %(fail)s
+                }
+            }
+            else if (PyArray_STRIDES(%(Z)s)[1] == elemsize)
+            {
+                if (PyArray_DESCR(%(Z)s)->type_num == NPY_FLOAT)
+                {
+                    float alpha = ((dtype_%(a)s*)(PyArray_DATA(%(a)s)))[0];
+                    sger_(&Nz1, &Nz0, &alpha,
+                        (float*)y_data, &Sy,
+                        (float*)x_data, &Sx,
+                        (float*)(PyArray_DATA(%(Z)s)), &Sz0);
+                }
+                else if (PyArray_DESCR(%(Z)s)->type_num == NPY_DOUBLE)
+                {
+                    double alpha = ((dtype_%(a)s*)PyArray_DATA(%(a)s))[0];
+                    dger_(&Nz1, &Nz0, &alpha,
+                        (double*)y_data, &Sy,
+                        (double*)x_data, &Sx,
+                        (double*)(PyArray_DATA(%(Z)s)), &Sz0);
+                }
+                else
+                {
+                    PyErr_SetString(PyExc_NotImplementedError,
+                                    "not float nor double");
+                    %(fail)s
+                }
+            }
+            else
+            {
+                PyErr_SetString(PyExc_AssertionError,
+                    "A is a double-strided matrix, and should have been copied "
+                    "into a memory-contiguous one.");
+                %(fail)s
+            }
         }
     }
 
@@ -246,12 +320,12 @@ class CGer(BaseBLAS, Ger):
         A, a, x, y = inp
         Z, = out
         code = ger_c_code(A, a, x, y, Z,
-            destructive=int(self.destructive),
-            fail=sub['fail'])
+                          destructive=int(self.destructive),
+                          fail=sub['fail'])
         return code
 
     def c_code_cache_version(self):
-        return (8, blas_header_version())
+        return (9, blas_header_version())
 cger_inplace = CGer(True)
 cger_no_inplace = CGer(False)
 
@@ -271,22 +345,23 @@ def use_c_ger(node):
 
 @local_optimizer([CGer(False)])
 def make_c_ger_destructive(node):
-    if node.op == cger_no_inplace:
+    if isinstance(node.op, CGer) and not node.op.destructive:
         return [cger_inplace(*node.inputs)]
 
 
-####### ####### #######
+# ##### ####### #######
 # GEMV
-####### ####### #######
+# ##### ####### #######
 
 
-def gemv_c_code(aa, xx, yy, zz, alpha, beta, destructive, fail):
+def gemv_c_code(aa, xx, yy, zz, alpha, beta, destructive, fail,
+                force_init_beta=False):
     """
     zz <- beta * aa + alpha * dot(xx, yy)
 
     where xx is a matrix, yy and aa are vectors (ergo zz is vector)
     """
-    return """
+    code = """
 
     int elemsize ;
     float fbeta;
@@ -353,7 +428,7 @@ def gemv_c_code(aa, xx, yy, zz, alpha, beta, destructive, fail):
         {
             if (%(zz)s) Py_XDECREF(%(zz)s);
             %(zz)s = (PyArrayObject*)PyArray_SimpleNew(1,
-                PyArray_DIMS(%(aa)s), type_num_%(aa)s);
+                PyArray_DIMS(%(aa)s), PyArray_TYPE((PyArrayObject*) py_%(aa)s));
             if(!%(zz)s) {
                 PyErr_SetString(PyExc_MemoryError,
                                 "failed to alloc gemv output");
@@ -378,7 +453,7 @@ def gemv_c_code(aa, xx, yy, zz, alpha, beta, destructive, fail):
                     zoutdata[Zi*i] = fbeta * zdata[Ai*i];
                 }
             }
-            else if (PyArray_DESCR(%(xx)s)->type_num == NPY_DOUBLE)
+            else if (PyArray_DESCR(%(zz)s)->type_num == NPY_DOUBLE)
             {
                 double * zoutdata = (double*) PyArray_DATA(%(zz)s);
                 const double * zdata = (double*)PyArray_DATA(%(aa)s);
@@ -396,6 +471,40 @@ def gemv_c_code(aa, xx, yy, zz, alpha, beta, destructive, fail):
                 %(fail)s
             }
             fbeta = dbeta = 1.0;
+        }
+        else if (%(force_init_beta)d)
+        {
+            if (PyArray_CHKFLAGS(%(zz)s, NPY_ARRAY_C_CONTIGUOUS))
+            {
+                memset((void *)PyArray_DATA(%(zz)s), 0, PyArray_SIZE(%(zz)s)*PyArray_ITEMSIZE(%(zz)s));
+            }
+            else
+            {
+                if (PyArray_DESCR(%(zz)s)->type_num == NPY_FLOAT)
+                {
+                    float *zoutdata = (float *)PyArray_DATA(%(zz)s);
+                    int Zi = PyArray_STRIDES(%(zz)s)[0]/sizeof(float);
+                    for (int i = 0; i < PyArray_DIMS(%(aa)s)[0]; ++i)
+                    {
+                        zoutdata[Zi*i] = 0.0f;
+                    }
+                }
+                else if (PyArray_DESCR(%(zz)s)->type_num == NPY_DOUBLE)
+                {
+                    double *zoutdata = (double *)PyArray_DATA(%(zz)s);
+                    int Zi = PyArray_STRIDES(%(zz)s)[0]/sizeof(double);
+                    for (int i = 0; i < PyArray_DIMS(%(aa)s)[0]; ++i)
+                    {
+                        zoutdata[Zi*i] = 0.0;
+                    }
+                }
+                else
+                {
+                    PyErr_SetString(PyExc_AssertionError,
+                                    "neither float nor double dtype");
+                    %(fail)s
+                }
+            }
         }
     }
     else
@@ -566,23 +675,91 @@ def gemv_c_code(aa, xx, yy, zz, alpha, beta, destructive, fail):
         }
     }
 
-    """ % locals()
+    """
+    return code % locals()
 
 
 class CGemv(BaseBLAS, Gemv):
+    def __init__(self, inplace, force_init_beta=False):
+        super(CGemv, self).__init__(inplace)
+        self.force_init_beta = force_init_beta
+
     def c_code(self, node, name, inp, out, sub):
         aa, alpha, xx, yy, beta = inp
         zz, = out
         code = gemv_c_code(
-                aa, xx, yy, zz, alpha, beta,
-                destructive=int(self.inplace),
-                fail=sub['fail'])
+            aa, xx, yy, zz, alpha, beta,
+            destructive=int(self.inplace),
+            fail=sub['fail'],
+            force_init_beta=self.force_init_beta
+        )
         return code
 
     def c_code_cache_version(self):
-        return (10, blas_header_version())
+        return (11, blas_header_version())
 cgemv_inplace = CGemv(inplace=True)
 cgemv_no_inplace = CGemv(inplace=False)
+
+
+def check_force_gemv_init():
+    if check_force_gemv_init._force_init_beta is None:
+        """
+        Test issue 1569.
+        Namely when evaulating
+
+            beta*aa + alpha*dot(xx, yy)
+
+        where we set aa = betas = zeros of the correct dimensions we do not
+        actually set aa = zeros and instead let the BLAS perform beta*aa with
+        uninitialized memory for speed. Occasionally the memory contains values
+        that are equivalent to NaN in which case the product beta*aa contains
+        NaN's for correctly implemented BLAS libraries. In this situation, since
+        we are introducing the NaN's, we need to test whether the BLAS performs
+        correctly. If it *does*, i.e. it actually performs the multiplication
+        beta*aa which will result in NaN's in the result, then we need intialize
+        the memory to zeros.
+        """
+        tv = theano.config.compute_test_value
+        tvo = theano.config.compute_test_value_opt
+        theano.config.compute_test_value = 'off'
+        theano.config.compute_test_value_opt = 'off'
+        try:
+            aa = T.vector('aa')
+            yy = T.vector('yy')
+            xx = T.matrix('xx')
+            f = theano.function(
+                [aa, yy, xx],
+                gemv_no_inplace(aa, 1., xx, yy, 0.),
+                theano.compile.Mode(optimizer='fast_compile').excluding('gpu',
+                                                                        'gpuarray'),
+                profile=False
+                )
+        finally:
+            theano.config.compute_test_value = tv
+            theano.config.compute_test_value_opt = tvo
+
+        # Here we introduce NaNs into the data, if they are returned by the BLAS
+        # then we want gemv_c_code to initiliaze the memory to 0 so that we
+        # don't inadvertantly introduce NaNs to the users data.
+        aa_data = numpy.array(
+            float('NaN')*numpy.ones((2,)),
+            dtype=theano.config.floatX
+        )
+        yy_data = numpy.array(
+            numpy.ones((2,))*2,
+            dtype=theano.config.floatX
+        )
+        xx_data = numpy.array(
+            numpy.ones((2, 2)),
+            dtype=theano.config.floatX
+        )
+        zz = f(aa_data, yy_data, xx_data)
+
+        check_force_gemv_init._force_init_beta = numpy.isnan(zz).any()
+
+    return check_force_gemv_init._force_init_beta
+
+check_force_gemv_init._force_init_beta = None
 
 
 @local_optimizer([gemv_inplace, gemv_no_inplace])
@@ -592,7 +769,30 @@ def use_c_gemv(node):
     # Only float32 and float64 are supported for now.
     if (node.op == gemv_no_inplace and
             node.outputs[0].dtype in ['float32', 'float64']):
-        return [CGemv(inplace=False)(*node.inputs)]
+
+        """
+        We want to maintain the behavoir of any operation that the user adds
+        even if it results in NaNs. However we do not want optimizations to
+        introduce NaNs.
+
+        GEMV is not always implemented consistenly across BLAS libraries.
+        Sometimes, when beta is 0, they do not perform the multiplication with
+        beta. Other implmentations do. This can cause problems for the inplace
+        GEMV implementation if NaNs happen to be in the newly allocated but
+        uninitalized memory. When the multiplication is not done we do not need
+        to initialize the output memory resulting in a speed up. Otherwise we
+        must initialize the memory to avoid introducing NaN's in the output
+        that weren't in the original graph.
+
+        The following check determines whether the output memory needs to be
+        initiliazed. It is done here, as opposed to in global scope, because
+        the setup has not been completed at that time and therefore the check
+        cannot be performed at that time.
+        """
+        force_init_beta = check_force_gemv_init()
+
+        return [CGemv(inplace=False,
+                      force_init_beta=force_init_beta)(*node.inputs)]
     if (node.op == gemv_inplace and
             node.outputs[0].dtype in ['float32', 'float64']):
         return [CGemv(inplace=True)(*node.inputs)]
@@ -600,19 +800,17 @@ def use_c_gemv(node):
 
 @local_optimizer([CGemv(inplace=False)])
 def make_c_gemv_destructive(node):
-    if node.op == cgemv_no_inplace:
+    if isinstance(node.op, CGemv) and not node.op.inplace:
         return [cgemv_inplace(*node.inputs)]
 
 
-####### ####### #######
+# ##### ####### #######
 # Optimizers
-####### ####### #######
+# ##### ####### #######
 
 blas_optdb.register('use_c_blas',
                     in2out(use_c_ger, use_c_gemv),
                     20, 'fast_run', 'c_blas')
-#print 'BLAS_OPTDB'
-#print blas_optdb
 
 # this matches the InplaceBlasOpt defined in blas.py
 optdb.register('c_blas_destructive',

@@ -3,6 +3,7 @@ This module provides the Scan Op
 
 See scan.py for details on scan
 """
+from __future__ import print_function
 
 __docformat__ = 'restructedtext en'
 __authors__ = ("Razvan Pascanu "
@@ -19,7 +20,6 @@ import numpy
 
 import theano
 from theano import compile
-from theano.gof.python25 import any
 from theano.gof import PureOp, Apply
 from theano import gof
 from theano.tensor import TensorType
@@ -223,7 +223,7 @@ class ScanOp(PureOp):
             state_buffers.append((givens[var], self.lengths[pos], mem_buf))
             updates[givens[var]] = expr
 
-        #2.3 Non-numeric states
+        # 2.3 Non-numeric states
         n_non_numeric = len(self.outputs) - n_numeric_values
         fn_outs = self.outputs[n_numeric_values:]
         for var in base_inputs[n_numeric_values:]:
@@ -341,12 +341,6 @@ class ScanOp(PureOp):
         rval.lazy = False
         return rval
 
-    def grad(self, args, g_outs):
-        pass
-
-    def R_op(self, inputs, eval_points):
-        pass
-
 
 @theano.compile.profilemode.register_profiler_printer
 def profile_printer(fct_name, compile_time, fct_call_time, fct_call,
@@ -355,8 +349,8 @@ def profile_printer(fct_name, compile_time, fct_call_time, fct_call,
     # Scan overhead profile
     if any([isinstance(node.op, Scan) and v > 0 for (_, node), v in
             apply_time.items()]):
-        print
-        print 'Scan overhead:'
+        print()
+        print('Scan overhead:')
         print ('<Scan op time(s)> <sub scan fct time(s)> <sub scan op '
                'time(s)> <sub scan fct time(% scan op time)> <sub scan '
                'op time(% scan op time)> <node>')
@@ -371,13 +365,13 @@ def profile_printer(fct_name, compile_time, fct_call_time, fct_call,
                     total_super_scan_time += v
                     total_scan_fct_time += scan_fct_time
                     total_scan_op_time += scan_op_time
-                    print '    %5.1fs  %5.1fs  %5.1fs  %5.1f%%  %5.1f%%' % (
+                    print('    %5.1fs  %5.1fs  %5.1fs  %5.1f%%  %5.1f%%' % (
                         v, scan_fct_time, scan_op_time,
-                        scan_fct_time / v * 100, scan_op_time / v * 100), node
+                        scan_fct_time / v * 100, scan_op_time / v * 100), node)
                 else:
-                    print (' The node took 0s, so we can not compute the '
-                           'overhead'), node
-        print '    total %5.1fs  %5.1fs  %5.1fs  %5.1f%%  %5.1f%%' % (
+                    print((' The node took 0s, so we can not compute the '
+                           'overhead'), node)
+        print('    total %5.1fs  %5.1fs  %5.1fs  %5.1f%%  %5.1f%%' % (
             total_super_scan_time, total_scan_fct_time, total_scan_op_time,
             total_scan_fct_time / total_super_scan_time * 100,
-            total_scan_op_time / total_super_scan_time * 100)
+            total_scan_op_time / total_super_scan_time * 100))

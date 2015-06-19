@@ -10,7 +10,6 @@ import numpy
 import theano
 from theano.compat import exc_message
 from theano.compat.six import StringIO
-from theano.gof.python25 import any
 from theano.compile import DeepCopyOp
 from theano import config
 from theano import gof
@@ -18,6 +17,10 @@ import theano.scalar as scal
 import theano.tensor as tensor
 from theano.tests import unittest_tools as utt
 from theano.tensor.subtensor import (inc_subtensor, set_subtensor,
+                                     advanced_inc_subtensor1,
+                                     advanced_set_subtensor1,
+                                     advanced_inc_subtensor,
+                                     advanced_set_subtensor,
                                      Subtensor, IncSubtensor,
                                      AdvancedSubtensor1, AdvancedSubtensor,
                                      advanced_subtensor1, inplace_increment,
@@ -27,7 +30,7 @@ from theano.tensor.subtensor import (inc_subtensor, set_subtensor,
 from theano.tensor import (as_tensor_variable, _shared,
                            NotScalarConstantError,
                            fscalar, iscalar, dscalar, cscalar,
-                           vector, dvector, fvector, lvector,
+                           vector, dvector, fvector, lvector, lrow,
                            fmatrix, dmatrix, lmatrix, matrix,
                            ctensor3, dtensor4)
 from theano.tensor.tests.test_basic import rand, randint_ranged, inplace_func
@@ -45,6 +48,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
                  adv_incsub1=tensor.AdvancedIncSubtensor1,
                  mode=None,
                  dtype=theano.config.floatX,
+                 type=tensor.TensorType,
                  ignore_topo=DeepCopyOp):
         self.shared = shared
         self.sub = sub
@@ -55,6 +59,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
             mode = theano.compile.mode.get_default_mode()
         self.mode = mode
         self.dtype = dtype
+        self.type = type
         self.ignore_topo = ignore_topo
         self.fast_compile = theano.config.mode == 'FAST_COMPILE'
         self.ops = (sub, inc_sub, adv_sub1, adv_incsub1)
@@ -84,11 +89,13 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         Subtensor.debug = False
         utt.seed_rng()
 
-    def eval_output_and_check(self, t, list=False):
-        f = inplace_func([], t, mode=self.mode)
+    def eval_output_and_check(self, t, list=False, mode=None):
+        if mode is None:
+            mode = self.mode
+        f = inplace_func([], t, mode=mode)
         topo = f.maker.fgraph.toposort()
         topo_ = [node for node in topo if not isinstance(node.op,
-             self.ignore_topo)]
+                                                         self.ignore_topo)]
         assert len(topo_) == 1
         if not list:
             assert isinstance(topo_[0].op, self.sub)
@@ -98,11 +105,11 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         return tval
 
     def test0_err_invalid(self):
-        #it is impossible to retrieve a view of a 0-d tensor
+        # it is impossible to retrieve a view of a 0-d tensor
         n = self.shared(numpy.ones((), dtype=self.dtype))
         try:
             t = n[0]
-        except ValueError, e:
+        except ValueError as e:
             self.assertTrue(hasattr(e, 'subtensor_invalid'))
             return
         self.fail()
@@ -123,7 +130,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         try:
             try:
                 self.eval_output_and_check(t)
-            except IndexError, e:
+            except IndexError as e:
                 return
             self.fail()
         finally:
@@ -133,10 +140,10 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         n = self.shared(numpy.ones(3, dtype=self.dtype))
         try:
             t = n[slice(0, slice(1, 2, None), None)]
-        except Exception, e:
-            ### Relax constraint on the type of Exception,
-            ### since this might be handled by AvancedSubtensor
-            #if e[0] != Subtensor.e_indextype:
+        except Exception as e:
+            # Relax constraint on the type of Exception,
+            # since this might be handled by AvancedSubtensor
+            # if e[0] != Subtensor.e_indextype:
             #    raise
             return
         self.fail()
@@ -163,18 +170,14 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         n = self.shared(numpy.ones((), dtype=self.dtype))
         t = self.sub([])(n)
         self.assertTrue(isinstance(t.owner.op, Subtensor))
-        mode = self.mode
-        self.mode = mode.excluding("local_useless_subtensor")
-        try:
-            self.eval_output_and_check(t)
-        finally:
-            self.mode = mode
+        self.eval_output_and_check(
+            t, mode=self.mode.excluding("local_useless_subtensor"))
 
     def test1_err_invalid(self):
         n = self.shared(numpy.ones(1, dtype=self.dtype))
         try:
             t = n[0, 0]
-        except ValueError, e:
+        except ValueError as e:
             self.assertTrue(hasattr(e, 'subtensor_invalid'))
             return
         self.fail()
@@ -312,6 +315,12 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         n = self.shared(numpy.arange(12, dtype=self.dtype).reshape((4, 3)))
         self.assertRaises(Exception, lambda: n[:(2L ** 63)])
 
+    def test_list_slice(self):
+        x = theano.tensor.arange(100).reshape((5, 5, 4))
+        res = x[[slice(1, -1)] * x.ndim].eval()
+        x = numpy.arange(100).reshape((5, 5, 4))
+        numpy.allclose(res, x[[slice(1, -1)] * x.ndim])
+
     def test_newaxis(self):
         """
         newaxis support comes from logic in the __getitem__ of TensorType
@@ -365,18 +374,38 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         f = inplace_func([], gn, mode=self.mode)
         topo = f.maker.fgraph.toposort()
         topo_ = [node for node in topo if not isinstance(node.op,
-             self.ignore_topo)]
+                                                         self.ignore_topo)]
         if not self.fast_compile:
             assert len(topo_) == 6
         assert numpy.sum([isinstance(node.op, self.inc_sub)
-             for node in topo_]) == 1
+                          for node in topo_]) == 1
         assert numpy.sum([isinstance(node.op, self.sub)
-             for node in topo_]) == 1
+                          for node in topo_]) == 1
         gval = f()
 
         good = numpy.zeros_like(data)
         good[subi:, subi] = numpy.exp(data[subi:, subi])
         self.assertTrue(numpy.allclose(gval, good), (gval, good))
+
+    def test_grad_2d_inc_set_subtensor(self):
+        for n_shape, m_shape in [
+            [(2, 3), (2, 2)],
+            [(3, 2), (2, 2)],
+            [(3, 2), (1, 2)],
+            [(3, 2), (2,)],
+        ]:
+            for op in [inc_subtensor, set_subtensor]:
+                subi = 2
+                data = numpy.asarray(rand(*n_shape), dtype=self.dtype)
+                n = self.shared(data)
+                z = scal.constant(subi)
+                m = matrix('m', dtype=self.dtype)
+                mv = numpy.asarray(rand(*m_shape), dtype=self.dtype)
+
+                t = op(n[:z, :z], m)
+                gn, gm = theano.tensor.grad(theano.tensor.sum(t), [n, m])
+                utt.verify_grad(lambda m: op(n[:z, :z], m), [mv])
+                utt.verify_grad(lambda nn: op(nn[:z, :z], mv), [data])
 
     def test_grad_0d(self):
         data = numpy.asarray(rand(2, 3), dtype=self.dtype)
@@ -431,7 +460,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
             self.assertTrue(numpy.allclose(val, good), (val, good))
 
             # Test reuse of output memory
-            if isinstance(self.adv_sub1, tensor.AdvancedSubtensor1):
+            if type(self.adv_sub1) == tensor.AdvancedSubtensor1:
                 op = self.adv_sub1()
                 # When idx is a TensorConstant.
                 if hasattr(idx, "data"):
@@ -477,11 +506,40 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         f = self.function([idx], t, op=self.adv_sub1)
         topo = f.maker.fgraph.toposort()
         topo_ = [node for node in topo if not isinstance(node.op,
-             self.ignore_topo)]
+                                                         self.ignore_topo)]
         assert len(topo_) == 1
         self.assertTrue(isinstance(topo_[0].op, self.adv_sub1))
-        self.assertTrue(numpy.allclose(f([0]), ones[0] * 5))
+        f_0 = f([0])
+        self.assertTrue(f_0.shape == (1, 3))
+        self.assertTrue(numpy.allclose(f_0, ones[0] * 5))
+        f_00 = f([0, 0])
+        self.assertTrue(f_00.shape == (2, 3))
+        self.assertTrue(numpy.allclose(f_00, 5))
         self.assertRaises(IndexError, f, [0, 1])
+
+        # Test the gradient
+        c = t.sum()
+        gn = theano.grad(c, n)
+        g = self.function([idx], gn, op=self.adv_incsub1)
+        g_0 = g([0])
+        self.assertTrue(g_0.shape == (1, 3))
+        self.assertTrue(numpy.allclose(g_0, 1))
+        g_00 = g([0, 0])
+        self.assertTrue(g_00.shape == (1, 3))
+        self.assertTrue(numpy.allclose(g_00, 2))
+
+        utt.verify_grad(lambda m: m[[1, 3]],
+                        [numpy.random.rand(5, 5).astype(self.dtype)])
+
+        def fun(x, y):
+            return advanced_inc_subtensor1(x, y, [1, 3])
+        utt.verify_grad(fun, [numpy.random.rand(5, 5).astype(self.dtype),
+                              numpy.random.rand(2, 5).astype(self.dtype)])
+
+        def fun(x, y):
+            return advanced_set_subtensor1(x, y, [1, 3])
+        utt.verify_grad(fun, [numpy.random.rand(5, 5).astype(self.dtype),
+                              numpy.random.rand(2, 5).astype(self.dtype)])
 
     def test_adv_sub1_idx_broadcast(self):
         # The idx can be a broadcastable vector.
@@ -495,10 +553,21 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         f = self.function([idx], t, op=self.adv_sub1)
         topo = f.maker.fgraph.toposort()
         topo_ = [node for node in topo if not isinstance(node.op,
-             self.ignore_topo)]
+                                                         self.ignore_topo)]
         assert len(topo_) == 1
         self.assertTrue(isinstance(topo_[0].op, self.adv_sub1))
-        self.assertTrue(numpy.allclose(f([0]), ones[0] * 5))
+        f_0 = f([0])
+        self.assertTrue(f_0.shape == (1, 3))
+        self.assertTrue(numpy.allclose(f_0, 5))
+
+        # Test the gradient
+        c = t.sum()
+        gn = theano.grad(c, n)
+        g = self.function([idx], gn, op=self.adv_incsub1)
+        g_0 = g([0])
+        self.assertTrue(g_0.shape == (4, 3))
+        self.assertTrue(numpy.allclose(g_0[0], 1))
+        self.assertTrue(numpy.allclose(g_0[1:], 0))
 
     @attr('slow')
     def test_shape_i_const(self):
@@ -777,7 +846,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
         self.grad_list_(idxs, data)
 
     def test_shape_list(self):
-        #TODO for all type of subtensor shape
+        # TODO for all type of subtensor shape
         for data, idx in [(rand(4), [1, 0]),
                           (rand(4, 2), [2, 3]),
                           (rand(4, 2, 3), [0, 3]),
@@ -811,12 +880,28 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
             (numpy.asarray([[0, 1], [2, 3], [4, 5.]]),
              numpy.asarray([[9, 9.]]),))
 
-        #single element
+        # single element
         utt.verify_grad(
             inc_slice(2, 1),
             (numpy.asarray([[0, 1], [2, 3], [4, 5.]]), numpy.asarray(9.),))
 
-    def test_advanced_inc_and_set(self):
+    def test_inc_and_set_subtensor(self):
+        """
+        Test increment and set with broadcast
+        """
+
+        X = self.shared(numpy.ones((9, 9)).astype(self.dtype))
+        y = set_subtensor(X[1::, 1::],  0)
+        f = self.function([], [y],
+                          op=self.inc_sub,
+                          N=1)
+        out = f()
+
+        res = numpy.ones((9, 9))
+        res[1::, 1::] = 0
+        assert numpy.allclose(out, res)
+
+    def test_advanced1_inc_and_set(self):
         """
         Test advanced increment and set.
         """
@@ -835,6 +920,8 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
                     data_num_init = data_num_init.reshape(data_shape)
                     inc_shapes = [data_shape[i:]
                                   for i in xrange(0, len(data_shape) + 1)]
+                    # Test broadcasting of y.
+                    inc_shapes += [(1,) + inc_shapes[-1][1:]]
                     for inc_shape in inc_shapes:
                         inc_n_dims = len(inc_shape)
                         # We copy the numeric value to be 100% sure there is no
@@ -843,24 +930,30 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
                         # Symbolic variable to be incremented.
                         # We create a new one every time in order not to
                         # have duplicated variables in the function's inputs
-                        data_var = tensor.tensor(
-                                broadcastable=[False] * data_n_dims,
-                                dtype=self.dtype)
+                        data_var = self.type(
+                            broadcastable=[False] * data_n_dims,
+                            dtype=self.dtype)()
                         # Symbolic variable with rows to be incremented.
                         idx_var = theano.tensor.vector(dtype='int64')
                         n_to_inc = rng.randint(data_shape[0])
+                        if (n_to_inc == 1 and
+                                len(inc_shape) > 0 and
+                                inc_shape[0] == 1 and
+                                data_shape[0] > 1):
+                            n_to_inc = 2
                         # Corresponding numeric variable.
                         idx_num = rng.randint(0, data_shape[0], n_to_inc)
                         idx_num = idx_num.astype('int64')
                         # Symbolic variable with increment value.
-                        inc_var = tensor.tensor(
-                                broadcastable=[False] * inc_n_dims,
-                                dtype=self.dtype)
+                        inc_var = self.type(
+                            broadcastable=[False] * inc_n_dims,
+                            dtype=self.dtype)()
                         # Trick for the case where `inc_shape` is the same as
                         # `data_shape`: what we actually want is the first
                         # shape element to be equal to the number of rows to
                         # increment.
-                        if len(inc_shape) == len(data_shape):
+                        if len(inc_shape) == len(data_shape) and (
+                                len(inc_shapes) == 0 or inc_shape[0] != 1):
                             inc_shape = (n_to_inc,) + inc_shape[1:]
                         inc_size = numpy.product(inc_shape)
                         # Corresponding numeric variable.
@@ -879,11 +972,19 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
                         data_copy = data_num.copy()
                         for j, idx in enumerate(idx_num):
                             if len(inc_shape) == len(data_shape):
-                                # Special case where there is no broadcasting.
-                                if set_instead_of_inc:
-                                    data_copy[idx] = inc_num[j]
+                                if inc_shape[0] == 1:
+                                    # Allow broadcasting of y[0]
+                                    inc_num0 = inc_num[0]
+                                    if set_instead_of_inc:
+                                        data_copy[idx] = inc_num0
+                                    else:
+                                        data_copy[idx] += inc_num0
                                 else:
-                                    data_copy[idx] += inc_num[j]
+                                    # Special case where there is no broadcasting.
+                                    if set_instead_of_inc:
+                                        data_copy[idx] = inc_num[j]
+                                    else:
+                                        data_copy[idx] += inc_num[j]
                             else:
                                 if set_instead_of_inc:
                                     data_copy[idx] = inc_num
@@ -972,6 +1073,7 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         m1 = set_subtensor(m[:, i], 0)
         m2 = inc_subtensor(m[:, i], 1)
+
         f = theano.function([m, i], [m1, m2])
 
         m_val = rand(5, 7)
@@ -986,6 +1088,83 @@ class T_subtensor(unittest.TestCase, utt.TestOptimizationMixin):
 
         assert numpy.allclose(m1_val, m1_ref), (m1_val, m1_ref)
         assert numpy.allclose(m2_val, m2_ref), (m2_val, m2_ref)
+
+    def test_adv1_inc_sub_notlastdim_1_2dval_broadcast(self):
+        # Test that taking 1-dimensional advanced indexing
+        # over a dimension that's not the first (outer-most),
+        # and incrementing/setting with broadcast
+        m = matrix('m')
+
+        # Test for both vector and matrix as index
+        sym_i = (lvector('i'), lmatrix('i'))
+        shape_i = ((4,), (4, 2))
+        shape_val = ((3, 1), (3, 1, 1))
+
+        # Disable the warning emitted for that case
+        orig_warn = config.warn.inc_set_subtensor1
+        try:
+            config.warn.inc_set_subtensor1 = False
+
+            for i, shp_i, shp_v in zip(sym_i, shape_i, shape_val):
+                sub_m = m[:, i]
+                m1 = set_subtensor(sub_m, numpy.zeros(shp_v))
+                m2 = inc_subtensor(sub_m, numpy.ones(shp_v))
+                f = theano.function([m, i], [m1, m2])
+
+                m_val = rand(3, 5)
+                i_val = randint_ranged(min=0, max=4, shape=shp_i)
+                m1_ref = m_val.copy()
+                m2_ref = m_val.copy()
+
+                m1_val, m2_val = f(m_val, i_val)
+                for idx in i_val.ravel():
+                    m1_ref[:, idx] = 0
+                    m2_ref[:, idx] += 1
+
+                assert numpy.allclose(m1_val, m1_ref), (m1_val, m1_ref)
+                assert numpy.allclose(m2_val, m2_ref), (m2_val, m2_ref)
+        finally:
+            config.warn.inc_set_subtensor1 = orig_warn
+
+    def test_adv1_inc_sub_notlastdim_1_2dval_no_broadcast(self):
+        # Test that taking 1-dimensional advanced indexing
+        # over a dimension that's not the first (outer-most),
+        # and incrementing/setting without broadcast
+        m = matrix('m')
+
+        # Test for both vector and matrix as index
+        sym_i = (lvector('i'), lmatrix('i'))
+        shape_i = ((4,), (4, 2))
+        shape_val = ((3, 4), (3, 4, 2))
+
+        # Disable the warning emitted for that case
+        orig_warn = config.warn.inc_set_subtensor1
+
+        try:
+            config.warn.inc_set_subtensor1 = False
+            for i, shp_i, shp_v in zip(sym_i, shape_i, shape_val):
+                sub_m = m[:, i]
+                m1 = set_subtensor(sub_m, numpy.zeros(shp_v))
+                m2 = inc_subtensor(sub_m, numpy.ones(shp_v))
+                f = theano.function([m, i], [m1, m2])
+
+                m_val = rand(3, 5)
+                i_val = randint_ranged(min=0, max=4, shape=shp_i)
+                m1_ref = m_val.copy()
+                m2_ref = m_val.copy()
+
+                m1_val, m2_val = f(m_val, i_val)
+                # We have to explicitly loop over all individual indices,
+                # not as a list or array, numpy only increments the indexed
+                # elements once even if the indices are repeated.
+                for idx in i_val.ravel():
+                    m1_ref[:, idx] = 0
+                    m2_ref[:, idx] += 1
+
+                assert numpy.allclose(m1_val, m1_ref), (m1_val, m1_ref)
+                assert numpy.allclose(m2_val, m2_ref), (m2_val, m2_ref)
+        finally:
+            config.warn.inc_set_subtensor1 = orig_warn
 
 
 class TestIncSubtensor1(unittest.TestCase):
@@ -1012,7 +1191,7 @@ class TestIncSubtensor1(unittest.TestCase):
 
         assert a.type == self.v.type
 
-        #TODO: compile a function and verify that the subtensor is removed
+        # TODO: compile a function and verify that the subtensor is removed
         #      completely, because the whole expression is redundant.
 
         f = theano.function([self.v, self.adv1q], a, allow_input_downcast=True)
@@ -1075,6 +1254,7 @@ class TestAdvancedSubtensor(unittest.TestCase):
         self.ix1 = lvector()  # advanced 1d query
         self.ix12 = lvector()
         self.ix2 = lmatrix()
+        self.ixr = lrow()
 
     def eval_output_and_check(self, t):
         f = inplace_func([], t, mode=self.mode)
@@ -1098,6 +1278,11 @@ class TestAdvancedSubtensor(unittest.TestCase):
         assert a.dtype == self.v.dtype, (a.dtype, self.v.dtype)
         assert a.broadcastable == self.ix2.broadcastable, (
                 a.broadcastable, self.ix2.broadcastable)
+
+    def test_index_into_mat_w_row(self):
+        a = self.m[self.ixr]
+        assert a.dtype == self.m.dtype, (a.dtype, self.m.dtype)
+        assert a.broadcastable == (True, False, False)
 
     def test_index_w_int_and_vec(self):
         # like test_ok_list, but with a single index on the first one
@@ -1165,20 +1350,46 @@ class TestAdvancedSubtensor(unittest.TestCase):
         if inplace_increment is None:
             raise inplace_increment_missing
 
-        a = inc_subtensor(self.m[self.ix1, self.ix12], 2.1)
+        inc = dscalar()
+        a = inc_subtensor(self.m[self.ix1, self.ix12], inc)
+        g_inc = tensor.grad(a.sum(), inc)
 
         assert a.type == self.m.type, (a.type, self.m.type)
-        f = theano.function([self.m, self.ix1, self.ix12], a,
+        f = theano.function([self.m, self.ix1, self.ix12, inc], [a, g_inc],
                             allow_input_downcast=True)
-        aval = f([[.4, .9, .1],
-                  [5, 6, 7],
-                  [.5, .3, .15]],
-                 [1, 2, 1],
-                 [0, 1, 0])
+        aval, gval = f([[.4, .9, .1],
+                        [5, 6, 7],
+                        [.5, .3, .15]],
+                       [1, 2, 1],
+                       [0, 1, 0],
+                       2.1)
         assert numpy.allclose(aval,
                 [[.4, .9, .1],
                   [5 + 2.1 * 2, 6, 7],
                   [.5, .3 + 2.1, .15]]), aval
+        assert numpy.allclose(gval, 3.0), gval
+
+    def test_inc_adv_subtensor1_with_broadcasting(self):
+        if inplace_increment is None:
+            raise inplace_increment_missing
+
+        inc = dscalar()
+        a = inc_subtensor(self.m[self.ix1], inc)
+        g_inc = tensor.grad(a.sum(), inc)
+
+        assert a.type == self.m.type, (a.type, self.m.type)
+        f = theano.function([self.m, self.ix1, inc], [a, g_inc],
+                            allow_input_downcast=True)
+        aval, gval = f([[.4, .9, .1],
+                        [5, 6, 7],
+                        [.5, .3, .15]],
+                       [0, 1, 0],
+                       2.1)
+        assert numpy.allclose(aval,
+                [[.4 + 2.1 * 2, .9  + 2.1 * 2, .1 + 2.1 * 2],
+                  [5 + 2.1, 6 + 2.1, 7 + 2.1],
+                  [.5, .3, .15]]), aval
+        assert numpy.allclose(gval, 9.0), gval
 
     def test_inc_adv_subtensor_with_index_broadcasting(self):
         if inplace_increment is None:
@@ -1200,8 +1411,50 @@ class TestAdvancedSubtensor(unittest.TestCase):
                   [5, 6, 7],
                   [.5, .3 + 2.1, .15 + 2.1]]), aval
 
+    def test_advanced_indexing(self):
+        # tests advanced indexing in Theano for 2D and 3D tensors
+        rng = numpy.random.RandomState(utt.seed_rng())
+        a = rng.uniform(size=(3, 3))
+        b = theano.shared(a)
+        i = tensor.iscalar()
+        j = tensor.iscalar()
+        z = b[[i, j], :]
+        f1 = theano.function([i, j], z)
+        cmd = f1(0, 1) == a[[0, 1], :]
+        self.assertTrue(cmd.all())
+
+        aa = rng.uniform(size=(4, 2, 3))
+        bb = theano.shared(aa)
+        k = tensor.iscalar()
+        z = bb[[i, j, k], :, i:k]
+        f2 = theano.function([i, j, k], z)
+        cmd = f2(0, 1, 2) == aa[[0, 1, 2], :, 0:2]
+        self.assertTrue(cmd.all())
+
+    def test_grad(self):
+        ones = numpy.ones((1, 3), dtype=self.dtype)
+        n = self.shared(ones * 5, broadcastable=(True, False))
+        idx = tensor.lvector()
+        idx2 = tensor.lvector()
+        t = n[idx, idx2]
+        self.assertTrue(isinstance(t.owner.op, tensor.AdvancedSubtensor))
+
+        utt.verify_grad(lambda m: m[[1, 3], [2, 4]],
+                        [numpy.random.rand(5, 5).astype(self.dtype)])
+
+        def fun(x, y):
+            return advanced_inc_subtensor(x, y, [1, 3], [2, 4])
+        utt.verify_grad(fun, [numpy.random.rand(5, 5).astype(self.dtype),
+                              numpy.random.rand(2).astype(self.dtype)])
+
+        def fun(x, y):
+            return advanced_set_subtensor(x, y, [1, 3], [2, 4])
+        utt.verify_grad(fun, [numpy.random.rand(5, 5).astype(self.dtype),
+                              numpy.random.rand(2).astype(self.dtype)])
+
 
 class TestInferShape(utt.InferShapeTester):
+    @attr('slow')
     def test_infer_shape(self):
         # IncSubtensor
         admat = dmatrix()
@@ -1364,3 +1617,24 @@ class TestInferShape(utt.InferShapeTester):
         self._compile_and_check([admat, advec],
                     [set_subtensor(admat[aivec_val, bivec_val], advec)],
                     [admat_val, advec_val], AdvancedIncSubtensor)
+
+    def test_adv_sub(self):
+        admat = dmatrix()
+        aivec = lvector()
+        bivec = lvector()
+
+        admat_val = rand(5, 4)
+        aivec_val = [1, 3, 2]
+        bivec_val = [0, 3, 3]
+        self._compile_and_check([admat, aivec, bivec],
+                                [admat[aivec, bivec]],
+                                [admat_val, aivec_val, bivec_val], AdvancedSubtensor)
+        # Test case that aren't implemented, but make sure they do not crash.
+        self._compile_and_check([admat, aivec],
+                                [admat[aivec, 1:3]],
+                                [admat_val, aivec_val], AdvancedSubtensor,
+                                check_topo=False)
+        self._compile_and_check([admat, aivec],
+                                [admat[1:3, aivec]],
+                                [admat_val, aivec_val], AdvancedSubtensor,
+                                check_topo=False)

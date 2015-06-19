@@ -1,3 +1,4 @@
+from __future__ import print_function
 import copy
 
 import numpy
@@ -16,6 +17,7 @@ try:
 except ImportError:
     pass
 
+
 class _operators(tensor.basic._tensor_py_operators):
     """Define a few properties and conversion methods for CudaNdarray Variables.
 
@@ -31,17 +33,19 @@ class _operators(tensor.basic._tensor_py_operators):
     def _as_CudaNdarrayVariable(self):
         return self
 
-    dtype = property(lambda s:'float32')
-    broadcastable = property(lambda s:s.type.broadcastable)
-    ndim = property(lambda s:s.type.ndim)
+    dtype = property(lambda s: 'float32')
+    broadcastable = property(lambda s: s.type.broadcastable)
+    ndim = property(lambda s: s.type.ndim)
 
 
 class CudaNdarrayVariable(_operators, Variable):
     pass
 CudaNdarrayType.Variable = CudaNdarrayVariable
 
+
 class CudaNdarrayConstantSignature(tensor.TensorConstantSignature):
     pass
+
 
 class CudaNdarrayConstant(_operators, Constant):
     def signature(self):
@@ -49,8 +53,13 @@ class CudaNdarrayConstant(_operators, Constant):
     def __str__(self):
         if self.name is not None:
             return self.name
-        return "CudaNdarrayConstant{"+str(numpy.asarray(self.data))+"}"
+        try:
+            data = str(numpy.asarray(self.data))
+        except Exception as e:
+            data = "error while transferring the value: " + str(e)
+        return "CudaNdarrayConstant{"+data+"}"
 CudaNdarrayType.Constant = CudaNdarrayConstant
+
 
 class CudaNdarraySharedVariable(_operators, SharedVariable):
     """
@@ -85,7 +94,7 @@ class CudaNdarraySharedVariable(_operators, SharedVariable):
                 return self.container.value
             else:
                 return copy.deepcopy(self.container.value)
-        else: #return an ndarray
+        else:  # return an ndarray
             return numpy.asarray(self.container.value)
 
     def set_value(self, value, borrow=False):
@@ -121,11 +130,11 @@ class CudaNdarraySharedVariable(_operators, SharedVariable):
             The inplace on gpu memory work when borrow is either True or False.
         """
         if not borrow:
-            #TODO: check for cuda_ndarray type
+            # TODO: check for cuda_ndarray type
             if not isinstance(value, numpy.ndarray):
                 # in case this is a cuda_ndarray, we copy it
                 value = copy.deepcopy(value)
-        self.container.value = value # this will copy a numpy ndarray
+        self.container.value = value  # this will copy a numpy ndarray
 
     def __getitem__(self, *args):
         # Defined to explicitly use the implementation from `_operators`, since
@@ -134,6 +143,7 @@ class CudaNdarraySharedVariable(_operators, SharedVariable):
 
 
 CudaNdarrayType.SharedVariable = CudaNdarraySharedVariable
+
 
 def cuda_shared_constructor(value, name=None, strict=False,
         allow_downcast=None, borrow=False, broadcastable=None):
@@ -144,7 +154,7 @@ def cuda_shared_constructor(value, name=None, strict=False,
     # THIS IS NOT THE DEFAULT BEHAVIOUR THAT WE WANT.
     # SEE float32_shared_constructor
 
-    #TODO: what should strict mean in this context, since we always have to make a copy?
+    # TODO: what should strict mean in this context, since we always have to make a copy?
     if strict:
         _value = value
     else:
@@ -158,13 +168,14 @@ def cuda_shared_constructor(value, name=None, strict=False,
     if broadcastable is None:
         broadcastable = (False,) * len(value.shape)
     type = CudaNdarrayType(broadcastable=broadcastable)
-    print "trying to return?"
+    print("trying to return?")
     try:
         rval = CudaNdarraySharedVariable(type=type, value=_value, name=name, strict=strict)
-    except Exception, e:
-        print "ERROR", e
+    except Exception as e:
+        print("ERROR", e)
         raise
     return rval
+
 
 def float32_shared_constructor(value, name=None, strict=False,
         allow_downcast=None, borrow=False, broadcastable=None):
@@ -200,8 +211,8 @@ def float32_shared_constructor(value, name=None, strict=False,
 
     try:
         rval = CudaNdarraySharedVariable(type=type, value=deviceval, name=name, strict=strict)
-    except Exception, e:
-        print "ERROR", e
+    except Exception as e:
+        print("ERROR", e)
         raise
 
     rval.get_value_return_ndarray = get_value_return_ndarray

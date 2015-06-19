@@ -2,6 +2,7 @@
 
 #include <Python.h>
 #include <structmember.h>
+#include "theano_mod_helper.h"
 
 #include <numpy/arrayobject.h>
 #include <iostream>
@@ -25,6 +26,23 @@
 //preprocessor macro in cuda_ndarray.cuh
 //if you want this to work.
 #define PRECHECK_ERROR 0
+
+//If true, we release the GIL around blocking GPU calls, to allow other Python
+//threads to run in the meantime. For a single-threaded program, the overhead
+//is neglectible (about 20ms for 1 million GIL release/reclaim cycles). Can
+//still be overridden on compilation with -DRELEASE_GIL=0 in nvcc.flags.
+#ifndef RELEASE_GIL
+#define RELEASE_GIL 1
+#endif
+#if RELEASE_GIL
+#define CNDA_BEGIN_ALLOW_THREADS Py_BEGIN_ALLOW_THREADS
+#define CNDA_END_ALLOW_THREADS Py_END_ALLOW_THREADS
+#else
+#define CNDA_BEGIN_ALLOW_THREADS
+#define CNDA_END_ALLOW_THREADS
+#endif
+
+cublasHandle_t handle = NULL;
 
 /////////////////////////
 // Alloc and Free
@@ -200,7 +218,9 @@ int device_free(void *ptr)
 
     // We need sync as the Theano's GC could remove intermediate variable that
     // are still needed as the gpu kernel are running or in the queue.
+    CNDA_BEGIN_ALLOW_THREADS
     cudaThreadSynchronize();
+    CNDA_END_ALLOW_THREADS
 
     cudaError_t err =  cudaFree(ptr);
     if (cudaSuccess != err)
@@ -277,6 +297,25 @@ static PyObject *
 outstanding_mallocs(PyObject* self, PyObject * args)
 {
     return PyInt_FromLong(_outstanding_mallocs[0]);
+}
+
+
+static void *work_mem = NULL;
+static size_t work_size = 0;
+
+/*
+ * Returns a chunk of memory for temporary work inside of an op. You can only
+ * request a single chunk of memory at a time since it is reused.
+ */
+void *get_work_mem(size_t sz) {
+    if (sz <= work_size)
+        return work_mem;
+    device_free(work_mem);
+    work_mem = device_malloc(sz);
+    work_size = sz;
+    if (work_mem == NULL)
+        work_size = 0;
+    return work_mem;
 }
 
 /////////////////////////
@@ -492,7 +531,7 @@ PyObject * CudaNdarray_CreateArrayObj(CudaNdarray * self, PyObject *args)
         if (!rval){
             return NULL;
         }
-        assert (PyArray_ITEMSIZE(rval) == sizeof(real));
+        assert (PyArray_ITEMSIZE((PyArrayObject *)rval) == sizeof(real));
         return rval;
     }
     if ((self->nd < 0) || (self->devdata == 0))
@@ -521,7 +560,9 @@ PyObject * CudaNdarray_CreateArrayObj(CudaNdarray * self, PyObject *args)
     assert (npydims);
     for (int i = 0; i < self->nd; ++i)
         npydims[i] = (npy_intp)(CudaNdarray_HOST_DIMS(self)[i]);
-    PyObject * rval = PyArray_SimpleNew(self->nd, npydims, REAL_TYPENUM);
+    PyArrayObject * rval = (PyArrayObject *) PyArray_SimpleNew(self->nd,
+                                                               npydims,
+                                                               REAL_TYPENUM);
     free(npydims);
     if (!rval)
     {
@@ -531,12 +572,17 @@ PyObject * CudaNdarray_CreateArrayObj(CudaNdarray * self, PyObject *args)
 
     assert (PyArray_ITEMSIZE(rval) == sizeof(real));
 
-    cublasGetVector(PyArray_SIZE(rval), sizeof(real),
-                    contiguous_self->devdata, 1,
-                    PyArray_DATA(rval), 1);
-    CNDA_THREAD_SYNC;
+    npy_intp rval_size = PyArray_SIZE(rval);
+    void *rval_data = PyArray_DATA(rval);
+    cublasStatus_t err;
+    CNDA_BEGIN_ALLOW_THREADS
+    err = cublasGetVector(rval_size, sizeof(real),
+                          contiguous_self->devdata, 1,
+                          rval_data, 1);
+    //CNDA_THREAD_SYNC;  // unneeded because cublasGetVector is blocking anyway
+    CNDA_END_ALLOW_THREADS
 
-    if (CUBLAS_STATUS_SUCCESS != cublasGetError())
+    if (CUBLAS_STATUS_SUCCESS != err)
     {
         PyErr_SetString(PyExc_RuntimeError, "error copying data to host");
         Py_DECREF(rval);
@@ -544,7 +590,7 @@ PyObject * CudaNdarray_CreateArrayObj(CudaNdarray * self, PyObject *args)
     }
 
     Py_DECREF(contiguous_self);
-    return rval;
+    return (PyObject *)rval;
 }
 
 // TODO-- we have two functions here, ZEROS and Zeros.
@@ -554,12 +600,28 @@ PyObject * CudaNdarray_CreateArrayObj(CudaNdarray * self, PyObject *args)
 PyObject* CudaNdarray_ZEROS(int n, int * dims)
 {
 
-    int total_elements = 1;
-    for(int i=0;i<n;i++)
+    size_t total_elements = 1;
+
+    for(size_t i=0;i<n;i++){
+        // Detect overflow on unsigned integer
+        if (dims[i] != 0 && total_elements > (SIZE_MAX / dims[i])) {
+            PyErr_Format(PyExc_RuntimeError,
+                         "Can't store in size_t for the bytes requested %llu * %llu",
+                         (unsigned long long)total_elements,
+                         (unsigned long long)dims[i]);
+            return NULL;
+        }
         total_elements*=dims[i];
+    }
 
     // total_elements now contains the size of the array, in reals
-    int total_size = total_elements * sizeof(real);
+    if (total_elements > (SIZE_MAX / sizeof(real))){
+        PyErr_Format(PyExc_RuntimeError,
+                     "Can't store in size_t for the bytes requested %llu * 4",
+                     (unsigned long long)total_elements);
+        return NULL;
+    }
+    size_t total_size = total_elements * sizeof(real);
 
     CudaNdarray* rval = (CudaNdarray*)CudaNdarray_New();
     if (!rval)
@@ -579,7 +641,9 @@ PyObject* CudaNdarray_ZEROS(int n, int * dims)
     //fprintf(stdout, "Sizeof: %d\n", total_size);
     if (cudaSuccess != cudaMemset(rval->devdata, 0, total_size))
     {
-        PyErr_Format(PyExc_MemoryError, "CudaNdarray_ZEROS: Error memsetting %d bytes of device memory.", total_size);
+        PyErr_Format(PyExc_MemoryError,
+                     "CudaNdarray_ZEROS: Error memsetting %llu bytes of device memory.",
+                     (unsigned long long)total_size);
         Py_DECREF(rval);
         return NULL;
     }
@@ -798,7 +862,7 @@ PyObject * CudaNdarray_Reshape(CudaNdarray * self, PyObject * shape)
     // check shape tuple
     unsigned int rval_nd;
     unsigned int * rval_dims;
-    unsigned int rval_size = 1;
+    size_t rval_size = 1;
 
     if (PyTuple_Check(shape)){
         // copy shape to integer array
@@ -834,7 +898,7 @@ PyObject * CudaNdarray_Reshape(CudaNdarray * self, PyObject * shape)
     // calculate new size, assert same as old size
     if (rval_size != CudaNdarray_SIZE(self))
     {
-        PyErr_Format(PyExc_ValueError, "size must remain unchanged, changed from %i to %i", CudaNdarray_SIZE(self), rval_size);
+        PyErr_Format(PyExc_ValueError, "size must remain unchanged, changed from %lld to %lld", CudaNdarray_SIZE(self), rval_size);
         free(rval_dims);
         return NULL;
     }
@@ -907,12 +971,14 @@ __global__ void k_take_3(const int d0, const int d1, const int d2,
         npy_int64 idx = indices[i0];
         if (idx<0)
             idx += dB0; // To allow negative indexing.
-        if ((idx < 0) || (idx >= dB0))
+        if ((idx < 0) || (idx >= dB0)){
             // Any value other the 0 probably work. But to be more safe, I want
             // to change all bits to prevent problem with concurrent write that
             // could cross cache line. But this should not happen with the
             // current code and driver.
             *err = 0xFFFF;
+            continue;
+        }
         for (int i1 = threadIdx.x; i1 < d1; i1 += blockDim.x){
             for (int i2 = threadIdx.y; i2 < d2; i2 += blockDim.y){
                 int a_idx = i0*sA0 + i1*sA1 + i2*sA2;
@@ -960,44 +1026,55 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
         if (verbose) printf("cudandarray indices\n");
         indices = (CudaNdarray*) indices_obj;
         Py_INCREF(indices);
-    } else if (0 && PyArray_Check(indices_obj)) {
-        PyErr_SetString(PyExc_NotImplementedError, "CudaNdarray_TakeFrom: The indices must cudandarray with float32 value.");
-        return NULL;
-
+    } else if (PyArray_Check(indices_obj)) {
         if (verbose) printf("ndarray indices\n");
-        if (PyArray_TYPE(indices_obj) != NPY_INT32) {
-            PyErr_SetString(PyExc_TypeError, "CudaNdarray_TakeFrom: need a ndarray for indices with dtype int32");
+        if (PyArray_TYPE((PyArrayObject *)indices_obj) != NPY_INT64) {
+            PyErr_SetString(PyExc_TypeError,
+                            "CudaNdarray_TakeFrom: need a ndarray for indices"
+                            " with dtype int64");
             return NULL;
         }
         if (PyArray_NDIM(((PyArrayObject*)indices_obj)) != 1) {
-            PyErr_SetString(PyExc_TypeError, "CudaNdarray_TakeFrom: need a CudaNdarray of indices with only 1 dimensions");
+            PyErr_SetString(PyExc_TypeError,
+                            "CudaNdarray_TakeFrom: need a CudaNdarray of"
+                            " indices with only 1 dimensions");
             return NULL;
+        }
+        // We need indices_obj to be contiguous, in order to take a view
+        // with a different dtype.
+        if (!PyArray_IS_C_CONTIGUOUS((PyArrayObject*) indices_obj)) {
+            PyObject* indices_obj_contig = PyArray_NewCopy((PyArrayObject*) indices_obj, NPY_CORDER);
+            if (!indices_obj_contig)
+                return NULL;
+            indices_obj = indices_obj_contig;
+        } else {
+            // Keep the refcount consistent
+            Py_INCREF(indices_obj);
         }
         PyArray_Descr* float32_descr = PyArray_DescrFromType(NPY_FLOAT32);
         PyObject * indices_float32 = NULL;
         indices_float32 = PyArray_View((PyArrayObject*)indices_obj,
                                                   float32_descr, NULL);
-        Py_DECREF(float32_descr);
         if (verbose) printf("ndarray indices\n");
-        //indices_float32 = PyArray_Cast((PyArrayObject*)indices_obj,
-        //                              NPY_FLOAT32);
-        //Py_INCREF(indices_float32);
-        if (verbose) printf("ndarray indices\n");
-        if (!indices_float32)
+        if (!indices_float32) {
+            Py_DECREF(indices_obj);
             return NULL;
+        }
 
         indices = (CudaNdarray*) CudaNdarray_New();
-        if (verbose) printf("ndarray after new\n");
+        if (verbose) printf("\nndarray after new\n");
         if (! indices){
+            Py_DECREF(indices_obj);
             Py_DECREF(indices_float32);
             return NULL;
         }
         if (CudaNdarray_CopyFromArray(indices,
                                       (PyArrayObject *)indices_float32)){
+            Py_DECREF(indices_obj);
             Py_DECREF(indices_float32);
-
             return NULL;
         }
+        Py_DECREF(indices_obj);
         Py_DECREF(indices_float32);
     } else {
         PyErr_SetString(PyExc_TypeError,
@@ -1017,23 +1094,19 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
     if(!CudaNdarray_is_c_contiguous(indices) != 0) {
         PyErr_SetString(PyExc_NotImplementedError,
                         "CudaNdarray_TakeFrom: The indices must be contiguous in memory.");
-        Py_DECREF(indices_obj);
+        Py_DECREF(indices);
         return NULL;
     }
     int nb_indices = CudaNdarray_SIZE((CudaNdarray *)indices) / 2;// int64 are 8 bytes, float32 are 4 bytes
 
     //Check argument axis
     //TODO: implement the default and other axis
-    PyObject * axis_iobj = PyNumber_Long(axis_obj);
-    if (!axis_iobj) {
-        PyErr_SetString(PyExc_NotImplementedError,"CudaNdarray_TakeFrom: axis must be convertable to a long");
-        Py_DECREF(indices);
-        return NULL;
-    }
-    long axis = PyInt_AsLong(axis_iobj);
-    Py_DECREF(axis_iobj); axis_iobj=NULL;
+    long axis = PyInt_AsLong(axis_obj);
+
     if (axis != 0) {
-        PyErr_SetString(PyExc_NotImplementedError,"CudaNdarray_TakeFrom: only axis=0 is currently supported");
+        PyErr_Format(PyExc_NotImplementedError,
+                     "CudaNdarray_TakeFrom: only axis=0 is currently supported."
+                     " Got %ld.", axis);
         Py_DECREF(indices);
         return NULL;
     }
@@ -1125,6 +1198,13 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
     }
 
     dim3 n_blocks(std::min(CudaNdarray_HOST_DIMS(out)[0],65535),1,1);
+    if(CudaNdarray_HOST_DIMS(out)[0] == 0){
+        // We take 0 elements, so no need for the rest of the code.
+        // This speed up that case AND fix crash otherwise.
+        free(dims);
+        Py_DECREF(indices);
+        return (PyObject *)out;
+    }
 
     switch (self->nd) {
         case 1:
@@ -1134,7 +1214,7 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
                     printf("cudaGetLastError=%d, nd=%d"
                            " kernel config: (n_blocks.x=%d, n_blocks.y=%d,"
                            " n_threads.x=%i, n_threads.y=%i)\n",
-                           self->nd, cudaGetLastError(),
+                           cudaGetLastError(), self->nd,
                            n_blocks.x, n_blocks.y, n_threads.x, n_threads.y);
                 k3<<<n_blocks, n_threads>>>(
                         dims[0],
@@ -1172,7 +1252,7 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
                         CudaNdarray_DEV_DATA(out),
                         CudaNdarray_HOST_STRIDES(out)[0], //strides
                         CudaNdarray_HOST_STRIDES(out)[1],
-                        1, 
+                        1,
                         CudaNdarray_DEV_DATA(self),
                         CudaNdarray_HOST_DIMS(self)[0], //For indices check
                         CudaNdarray_HOST_STRIDES(self)[0], //strides
@@ -1190,7 +1270,7 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
                     printf("cudaGetLastError=%d, nd=%d"
                            " kernel config: (n_blocks.x=%d, n_blocks.y=%d,"
                            " n_threads.x=%i, n_threads.y=%i)\n",
-                           self->nd, cudaGetLastError(),
+                           cudaGetLastError(), self->nd,
                            n_blocks.x, n_blocks.y, n_threads.x, n_threads.y);
                 k3<<<n_blocks, n_threads>>>(
                         dims[0], //dimensions
@@ -1213,7 +1293,7 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
         PyErr_SetString(PyExc_NotImplementedError,
                         "CudaNdarray_TakeFrom: only input with 1, 2 or 3"
                         " dimensions are currently supported");
-        
+
     }
     free(dims);
     CNDA_THREAD_SYNC;
@@ -1230,14 +1310,12 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
     //-10 could be any value different then 0.
     int cpu_err_var=-10;
 
-    // We are not 100% sure that cudaMemcpy wait that the async gpu kernel are
-    // finished before doing the transfer. So we add this explicit sync as it
-    // is pretty fast. In a python loop, I ran 1 000 000 call in 1 second.
-    // It is better to be safe and not significatively slower than unsafe.
-    cudaThreadSynchronize();
-
+    CNDA_BEGIN_ALLOW_THREADS
+    // As we execute cudaMemcpy on the default stream, it waits for all
+    // kernels (on all streams) to be finished before starting to copy
     err = cudaMemcpy(&cpu_err_var, err_var, sizeof(int),
                      cudaMemcpyDeviceToHost);
+    CNDA_END_ALLOW_THREADS
     if (cudaSuccess != err) {
         PyErr_Format(
             PyExc_RuntimeError,
@@ -1248,12 +1326,11 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
         Py_DECREF(out);
         return NULL;
     }
-    
+
     if (cpu_err_var != 0) {
         PyErr_Format(
             PyExc_IndexError,
-            "Cuda error: %s: The error code on the gpu is %i.\n",
-            "CudaNdarray_TakeFrom",
+            "CudaNdarray_TakeFrom: One of the index value is out of bound. Error code: %i.\n",
             cpu_err_var);
         // Must reset it to 0 to don't reset it before each use.
         err = cudaMemset((void*)err_var, 0, sizeof(int));
@@ -1266,11 +1343,11 @@ CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args){
         Py_DECREF(indices);
         Py_DECREF(out);
         return NULL;
-  
+
     }
-    
+
     Py_DECREF(indices);
-        
+
     if (verbose) printf("TAKE SUCCEDED\n");
     return (PyObject *)out;
 }
@@ -1740,7 +1817,7 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 {
                     PyErr_Format(
                         PyExc_RuntimeError,
-                        "Cuda error: %s: %s.\n",
+                        "CudaNdarray_inplace_elemwise case0: Cuda error: %s: %s.\n",
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
@@ -1773,7 +1850,7 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 {
                     PyErr_Format(
                         PyExc_RuntimeError,
-                        "Cuda error: %s: %s.\n",
+                        "CudaNdarray_inplace_elemwise case1: Cuda error: %s: %s.\n",
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
@@ -1811,7 +1888,7 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 {
                     PyErr_Format(
                         PyExc_RuntimeError,
-                        "Cuda error: %s: %s.\n",
+                        "CudaNdarray_inplace_elemwise case2: Cuda error: %s: %s.\n",
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
@@ -1852,7 +1929,7 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 {
                     PyErr_Format(
                         PyExc_RuntimeError,
-                        "Cuda error: %s: %s.\n",
+                        "CudaNdarray_inplace_elemwise case3: Cuda error: %s: %s.\n",
                         "k3",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
@@ -1897,7 +1974,7 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 {
                     PyErr_Format(
                         PyExc_RuntimeError,
-                        "Cuda error: %s: %s.\n",
+                        "CudaNdarray_inplace_elemwise case4: Cuda error: %s: %s.\n",
                         "k4",
                         cudaGetErrorString(err));
                     Py_XDECREF(new_other);
@@ -1943,7 +2020,7 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                     {
                         PyErr_Format(
                             PyExc_RuntimeError,
-                            "Cuda error: %s: %s. n_block=(%ld,%ld) n_threads=%ld\n",
+                            "CudaNdarray_inplace_elemwise case5: Cuda error: %s: %s. n_block=(%ld,%ld) n_threads=%ld\n",
                             "k5 with loop over k4",
                             cudaGetErrorString(err),
                             (long) n_blocks.x, (long) n_blocks.y, (long) n_threads.x);
@@ -2003,7 +2080,7 @@ CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_other, operator_t 
                 {
                     PyErr_Format(
                         PyExc_RuntimeError,
-                        "Cuda error: %s: %s. n_blocks=(%ld, %ld, %ld) n_threads=(%ld)\n",
+                        "CudaNdarray_inplace_elemwise case6: Cuda error: %s: %s. n_blocks=(%ld, %ld, %ld) n_threads=(%ld)\n",
                         "k6",
                         cudaGetErrorString(err),
                         (long) n_blocks.x, (long) n_blocks.y, (long) n_blocks.z,
@@ -2221,7 +2298,9 @@ CudaNdarray_Subscript(PyObject * py_self, PyObject * key)
         }
         else
         {
-            PyErr_SetString(PyExc_IndexError, "index out of bounds");
+            PyErr_Format(PyExc_IndexError,
+                         "index out of bounds. Asked %d, but size of %d",
+                         d_idx, d_dim);
             return NULL;
         }
 
@@ -2393,7 +2472,9 @@ CudaNdarray_Subscript(PyObject * py_self, PyObject * key)
                     }
                     else
                     {
-                        PyErr_SetString(PyExc_IndexError, "index out of bounds");
+                        PyErr_Format(PyExc_IndexError,
+                                     "index out of bounds. Asked %d for dimensions %d, but size of %d",
+                                     d_idx, d, d_dim);
                         Py_DECREF(rval);
                         return NULL;
                     }
@@ -2702,7 +2783,7 @@ CudaNdarray_get_dev_data(CudaNdarray *self, void *closure)
 static int
 CudaNdarray_set_dev_data(CudaNdarray *self, PyObject *value, void *closure)
 {
-    long int newdevdata = PyInt_AsLong(value);
+    Py_ssize_t newdevdata = PyInt_AsSsize_t(value);
     //printf("set_dev_data %p %li \n",(float*)newdevdata ,newdevdata);
     if (PyErr_Occurred())
     {
@@ -2853,9 +2934,21 @@ GetDeviceMemInfo(PyObject* _unused, PyObject* dummy)
 PyObject *
 CudaNdarray_synchronize(PyObject* _unused, PyObject* dummy)
 {
+    CNDA_BEGIN_ALLOW_THREADS
     cudaThreadSynchronize();
+    CNDA_END_ALLOW_THREADS
     Py_INCREF(Py_None);
     return Py_None;
+}
+
+/*
+ * Exist and return true if we link with cublas v2.
+ */
+PyObject *
+CudaNdarray_cublasv2(PyObject* _unused, PyObject* dummy)
+{
+    Py_INCREF(Py_True);
+    return Py_True;
 }
 
 #if COMPUTE_GPU_MEM_USED
@@ -2995,29 +3088,35 @@ CudaNdarray_ptr_int_size(PyObject* _unused, PyObject* args)
 {
     int *gpu_data = (int*)device_malloc(sizeof(int)*2);
     if(gpu_data == NULL){
-        return PyErr_Format(PyExc_MemoryError,
-                            "CudaNdarray_ptr_int_size: Can't allocate memory on the gpu.");
+        return NULL;
     }
     get_gpu_ptr_size<<<1,1>>>(gpu_data);
-    if (cudaSuccess != cublasGetError()){
+
+    cudaError_t cudaErr = cudaGetLastError();
+    if (cudaSuccess != cudaErr){
 
         device_free(gpu_data);
         return PyErr_Format(PyExc_RuntimeError,
-                            "CudaNdarray_ptr_int_size: error when calling the gpu code.");
+                            "CudaNdarray_ptr_int_size: error when calling the gpu code. (%s)",
+                            cudaGetErrorString(cudaErr));
     }
 
     // Transfer the result to cpu
     int gpu_sizes[] = {-1,-1};
-    cublasGetVector(2, sizeof(int), gpu_data, 1, gpu_sizes, 1);
+    cublasStatus_t err;
+    err = cublasGetVector(2, sizeof(int), gpu_data, 1, gpu_sizes, 1);
     device_free(gpu_data);
 
-    if (CUBLAS_STATUS_SUCCESS != cublasGetError()){
+    if (CUBLAS_STATUS_SUCCESS != err){
         PyErr_SetString(PyExc_RuntimeError, "error copying data to from memory");
         return NULL;
     }
-    return Py_BuildValue("iiii", gpu_sizes[0], sizeof(float*), sizeof(int), gpu_sizes[1]);
+    return Py_BuildValue("iiii", (int) gpu_sizes[0], (int)sizeof(float*),
+                         (int)sizeof(int), (int) gpu_sizes[1]);
 }
 
+static int cublas_init();
+static void cublas_shutdown();
 // Initialize the gpu.
 // Takes one optional parameter, the device number.
 // If provided, it sets that device to be the active device.
@@ -3082,6 +3181,8 @@ CudaNdarray_gpu_init(PyObject* _unused, PyObject* args)
                                 card_nb,
                                 cudaGetErrorString(cudaGetLastError()));
         }
+        if (cublas_init() == -1)
+            return NULL;
     }
 
     Py_INCREF(Py_None);
@@ -3112,6 +3213,8 @@ CudaNdarray_active_device_name(PyObject* _unused, PyObject* _unused_args) {
 PyObject *
 CudaNdarray_gpu_shutdown(PyObject* _unused, PyObject* _unused_args) {
 	printf("Theano: cudaThreadExit\n");
+    // Don't handle errors here
+    cublas_shutdown();
     cudaThreadExit();
     g_gpu_context_active = 0; // context has now been closed down
     Py_INCREF(Py_None);
@@ -3343,7 +3446,7 @@ filter(PyObject* __unsed_self, PyObject *args) // args = (data, broadcastable, s
         }
         for (int i = 0; i < PyArray_NDIM(data); ++i)
         {
-            if ((data->dimensions[i] > 1) && PyInt_AsLong(PyTuple_GetItem(broadcastable, Py_ssize_t(i))))
+            if ((PyArray_DIMS(data)[i] > 1) && PyInt_AsLong(PyTuple_GetItem(broadcastable, Py_ssize_t(i))))
             {
                 PyErr_Format(PyExc_TypeError, "Non-unit size in broadcastable dimension %i", i);
                 Py_DECREF(data);
@@ -3395,12 +3498,10 @@ static PyMethodDef module_methods[] = {
     {"outstanding_mallocs", outstanding_mallocs, METH_VARARGS, "how many more mallocs have been called than free's"},
     {"from_gpu_pointer", CudaNdarray_from_gpu_pointer, METH_VARARGS, "Used to create a CudaNdarray from already allocated memory on the gpu.(example by pycuda)"},
     {"synchronize", CudaNdarray_synchronize, METH_NOARGS, "Used to synchronize the device"},
+    {"cublas_v2", CudaNdarray_cublasv2, METH_NOARGS,
+     "Used to know if this version of cuda_ndarray is linked with cublas v2."},
     {NULL, NULL, NULL, NULL}  /* Sentinel */
 };
-
-#ifndef PyMODINIT_FUNC  /* declarations for DLL import/export */
-#define PyMODINIT_FUNC void
-#endif
 
 #define CNDA_MOD_NAME "cuda_ndarray"
 #define CNDA_DOCSTRING "CUDA implementation of a numpy ndarray-like object."
@@ -3532,7 +3633,7 @@ CudaNdarray_New(int nd)
 //
 //////////////////////////////
 
-int
+static int
 cublas_init()
 {
 	printf("Theano: Initializing cuBLAS\n");
@@ -3542,9 +3643,19 @@ cublas_init()
         PyErr_SetString(PyExc_RuntimeError, "error initializing cublas");
         return -1;
     }
+    // Set the default stream as the one to execute on (default)
+    cublasSetStream(handle, NULL);
+    // Pointer to scalars are on the host (also default)
+    cublasSetPointerMode(handle, CUBLAS_POINTER_MODE_HOST);
+#if CUDA_VERSION >= 5000
+    // atomics can be used in kernels to speed up operations (not default)
+    // This may lead to a slight variance from run to run in some operations
+    cublasSetAtomicsMode(handle, CUBLAS_ATOMICS_ALLOWED);
+#endif
     return 0;
 }
-int
+
+static void
 cublas_shutdown()
 {
 	printf("Theano: Shutting down cuBLAS\n");
@@ -3560,7 +3671,8 @@ cublas_shutdown()
 int
 CudaNdarray_CopyFromArray(CudaNdarray * self, PyArrayObject*obj)
 {
-    int err = CudaNdarray_alloc_contiguous(self, PyArray_NDIM(obj), obj->dimensions);
+    int err = CudaNdarray_alloc_contiguous(self, PyArray_NDIM(obj),
+                                           PyArray_DIMS(obj));
     if (err) {
         return err;
     }
@@ -3572,18 +3684,28 @@ CudaNdarray_CopyFromArray(CudaNdarray * self, PyArrayObject*obj)
         return -1;
     }
     assert( 4 ==  PyArray_ITEMSIZE(obj));
-    PyObject * py_src = PyArray_ContiguousFromAny((PyObject*)obj, typenum, self->nd, self->nd);
+    PyArrayObject * py_src = (PyArrayObject *)PyArray_ContiguousFromAny(
+        (PyObject*)obj, typenum, self->nd, self->nd);
     if (!py_src) {
         return -1;
     }
-    cublasSetVector(PyArray_SIZE(py_src),
-            sizeof(real),
-            PyArray_DATA(py_src), 1,
-            self->devdata, 1);
-    CNDA_THREAD_SYNC;
-    if (CUBLAS_STATUS_SUCCESS != cublasGetError())
+    npy_intp py_src_size = PyArray_SIZE(py_src);
+    void *py_src_data = PyArray_DATA(py_src);
+    cublasStatus_t cerr;
+    CNDA_BEGIN_ALLOW_THREADS
+    cerr = cublasSetVector(py_src_size,
+                           sizeof(real),
+                           py_src_data, 1,
+                           self->devdata, 1);
+    //CNDA_THREAD_SYNC;  // unneeded because cublasSetVector is blocking anyway
+    CNDA_END_ALLOW_THREADS
+    if (CUBLAS_STATUS_SUCCESS != cerr)
     {
-        PyErr_SetString(PyExc_RuntimeError, "error copying data to device memory");
+        PyErr_Format(PyExc_RuntimeError,
+                     "CUBLAS error '%s' while copying %lli data element"
+                     " to device memory",
+                     cublasGetErrorString(cerr),
+                     (long long)py_src_size);
         Py_DECREF(py_src);
         return -1;
     }
@@ -3746,11 +3868,12 @@ int CudaNdarray_CopyFromCudaNdarray(CudaNdarray * self,
         if (verbose)
             fprintf(stderr, "Copying contiguous vector with cublasScopy\n");
 
-        cublasScopy(size, CudaNdarray_DEV_DATA(other), 1,
-                    CudaNdarray_DEV_DATA(self), 1);
+        cublasStatus_t err;
+        err = cublasScopy(handle, size, CudaNdarray_DEV_DATA(other), 1,
+                          CudaNdarray_DEV_DATA(self), 1);
         CNDA_THREAD_SYNC;
         Py_XDECREF(new_other);
-        if (CUBLAS_STATUS_SUCCESS != cublasGetError())
+        if (CUBLAS_STATUS_SUCCESS != err)
         {
             PyErr_SetString(PyExc_RuntimeError, "Error copying memory");
             return -1;
@@ -3916,22 +4039,6 @@ int CudaNdarray_gemm(float alpha, const CudaNdarray * A, const CudaNdarray * B, 
         return -1;
     }
 
-#if PRECHECK_ERROR
-    cublasStatus prevErr = cublasGetError();
-    if (CUBLAS_STATUS_SUCCESS != prevErr)
-    {
-        //I don't know why, but I need to remove the cuda error too.
-        //Otherwise, the clean up before raising the Python error cause error too!
-        //So we don't see this python error.
-        fprintf(stderr,
-                "CudaNdarray_sgemm: Prev cublas error %s",
-                cublasGetErrorString(prevErr));
-        PyErr_Format(PyExc_RuntimeError,
-                     "CudaNdarray_sgemm: Prev cublas error %s",
-                     cublasGetErrorString(prevErr));
-        return -1;
-    }
-#endif
     // We must allow dimensions to be zeros.
     if ((CudaNdarray_HOST_DIMS(A)[1] != CudaNdarray_HOST_DIMS(B)[0])
             || (CudaNdarray_HOST_DIMS(A)[0] != CudaNdarray_HOST_DIMS(C)[0])
@@ -4051,8 +4158,8 @@ int CudaNdarray_gemm(float alpha, const CudaNdarray * A, const CudaNdarray * B, 
     float* a = CudaNdarray_DEV_DATA(A);
     float* b = CudaNdarray_DEV_DATA(B);
     float* c = CudaNdarray_DEV_DATA(C);
-    char N = 'N';
-    char T = 'T';
+    cublasOperation_t N = CUBLAS_OP_N;
+    cublasOperation_t T = CUBLAS_OP_T;
     //std::cerr << (unit/256) MOD 16 << (unit / 16) MOD 16 << unit MOD 16<< '\\n';
     // There should be no negative stride at that point
 #define CHK_STRIDE_SGEMM(T0, T1, D0, D1, D2, a, x, sx, y, sy, b, z, sz) \
@@ -4060,7 +4167,7 @@ int CudaNdarray_gemm(float alpha, const CudaNdarray * A, const CudaNdarray * B, 
     if (sy == 0){sy = 1;}\
     if (sz == 0){sz = 1;}\
     if ((sx > 0) && (sy > 0) && (sz > 0)) { \
-        cublasSgemm(T0, T1, D0, D1, D2, a, x, sx, y, sy, b, z, sz); \
+        err = cublasSgemm(handle, T0, T1, D0, D1, D2, &a, x, sx, y, sy, &b, z, sz); \
     } else { \
         PyErr_SetString(PyExc_AssertionError, "negative stride to sGemm");\
         Py_XDECREF(A_new);\
@@ -4068,6 +4175,7 @@ int CudaNdarray_gemm(float alpha, const CudaNdarray * A, const CudaNdarray * B, 
         return -1; \
     }
 
+    cublasStatus_t err;
     switch(unit)
     {
         case 0x000: CHK_STRIDE_SGEMM(N, N, CudaNdarray_HOST_DIMS(C)[1], CudaNdarray_HOST_DIMS(C)[0], CudaNdarray_HOST_DIMS(A)[1], alpha, b, sb_0, a, sa_0, beta, c, sc_0); break;
@@ -4085,15 +4193,16 @@ int CudaNdarray_gemm(float alpha, const CudaNdarray * A, const CudaNdarray * B, 
     Py_XDECREF(A_new);
     Py_XDECREF(B_new);
 
-    cublasStatus err = cublasGetError();
     if (CUBLAS_STATUS_SUCCESS != err)
     {
         PyErr_Format(PyExc_RuntimeError,
                      "cublasSgemm failed (%i) %s\n"
-                     " unit=%h N=%d, c.dims=[%d %d], a.dim=[%d %d], alpha=%f, beta=%f, a=%f, b=%f, c=%f"
+                     " unit=%x N=%d, c.dims=[%d %d], a.dim=[%d %d], alpha=%f, beta=%f, a=%p, b=%p, c=%p"
                      " sa_0=%d, sa_1=%d, sb_0=%d, sb_1=%d, sc_0=%d, sc_1=%d",
                      err,  cublasGetErrorString(err),
-                     unit, N, CudaNdarray_HOST_DIMS(C)[0], CudaNdarray_HOST_DIMS(C)[1],
+                     unit, N,
+                     CudaNdarray_HOST_DIMS(C)[0],
+                     CudaNdarray_HOST_DIMS(C)[1],
                      CudaNdarray_HOST_DIMS(A)[0], CudaNdarray_HOST_DIMS(A)[1],
                      alpha, beta, a, b, c, sa_0, sa_1, sb_0, sb_1, sc_0, sc_1);
 
@@ -4183,29 +4292,31 @@ int CudaNdarray_sgemv(float alpha, const CudaNdarray * A, const CudaNdarray * B,
     if (sa_1 == 0)
         sa_1 = 1;
 
+    // This is important because we can end up not calling Sgemv at all
+    cublasStatus_t err = CUBLAS_STATUS_SUCCESS;
     if (CudaNdarray_SIZE(C)) {
         if ((CudaNdarray_HOST_DIMS(A)[0] <= 1)
             || ((CudaNdarray_HOST_STRIDES(A)[0] == 1)
                 && (CudaNdarray_HOST_STRIDES(A)[1] > 0)))
         {
-            cublasSgemv('N',
+            err = cublasSgemv(handle, CUBLAS_OP_N,
                     CudaNdarray_HOST_DIMS(A)[0], CudaNdarray_HOST_DIMS(A)[1],
-                    alpha,
+                    &alpha,
                     CudaNdarray_DEV_DATA(A), sa_1,
                     CudaNdarray_DEV_DATA(B), sb_0,
-                    beta,
+                    &beta,
                     CudaNdarray_DEV_DATA(C), sc_0);
         }
         else if ((CudaNdarray_HOST_DIMS(A)[1] <= 1)
                 || ((CudaNdarray_HOST_STRIDES(A)[1] == 1)
                     && (CudaNdarray_HOST_STRIDES(A)[0] > 0)))
         {
-            cublasSgemv('T',
+            err = cublasSgemv(handle, CUBLAS_OP_T,
                     CudaNdarray_HOST_DIMS(A)[1], CudaNdarray_HOST_DIMS(A)[0],
-                    alpha,
+                    &alpha,
                     CudaNdarray_DEV_DATA(A), sa_0,
                     CudaNdarray_DEV_DATA(B), sb_0,
-                    beta,
+                    &beta,
                     CudaNdarray_DEV_DATA(C), sc_0);
         }
         else
@@ -4231,7 +4342,6 @@ int CudaNdarray_sgemv(float alpha, const CudaNdarray * A, const CudaNdarray * B,
     Py_XDECREF(A_new);
     Py_XDECREF(B_new);
 
-    cublasStatus err = cublasGetError();
     if (CUBLAS_STATUS_SUCCESS != err)
     {
         PyErr_Format(PyExc_RuntimeError,
@@ -4299,13 +4409,15 @@ int CudaNdarray_sger(float alpha, const CudaNdarray * x, const CudaNdarray * y, 
     int sa_1 = (CudaNdarray_HOST_DIMS(A)[1] > 1) ? CudaNdarray_HOST_STRIDES(A)[1]
                                                  : CudaNdarray_HOST_DIMS(A)[0];
 
+    // This is important because we can end up not calling Sger at all
+    cublasStatus_t err = CUBLAS_STATUS_SUCCESS;
     if(CudaNdarray_SIZE(A)){
         // If A is in col-major
         if ((CudaNdarray_HOST_DIMS(A)[0] <= 1)
             || ((CudaNdarray_HOST_STRIDES(A)[0] == 1)
                 && (CudaNdarray_HOST_STRIDES(A)[1] > 0)))
         {
-            cublasSger(CudaNdarray_HOST_DIMS(x)[0], CudaNdarray_HOST_DIMS(y)[0], alpha,
+            err = cublasSger(handle, CudaNdarray_HOST_DIMS(x)[0], CudaNdarray_HOST_DIMS(y)[0], &alpha,
                        CudaNdarray_DEV_DATA(x), x_strides,
                        CudaNdarray_DEV_DATA(y), y_strides,
                        CudaNdarray_DEV_DATA(A), sa_1);
@@ -4315,7 +4427,7 @@ int CudaNdarray_sger(float alpha, const CudaNdarray * x, const CudaNdarray * y, 
                 || ((CudaNdarray_HOST_STRIDES(A)[1] == 1)
                     && (CudaNdarray_HOST_STRIDES(A)[0] > 0)))
         {
-            cublasSger(CudaNdarray_HOST_DIMS(y)[0], CudaNdarray_HOST_DIMS(x)[0], alpha,
+            err = cublasSger(handle, CudaNdarray_HOST_DIMS(y)[0], CudaNdarray_HOST_DIMS(x)[0], &alpha,
                        CudaNdarray_DEV_DATA(y), y_strides,
                        CudaNdarray_DEV_DATA(x), x_strides,
                        CudaNdarray_DEV_DATA(A), sa_0);
@@ -4334,7 +4446,6 @@ int CudaNdarray_sger(float alpha, const CudaNdarray * x, const CudaNdarray * y, 
     Py_XDECREF(x_new);
     Py_XDECREF(y_new);
 
-    cublasStatus err = cublasGetError();
     if (CUBLAS_STATUS_SUCCESS != err)
     {
         PyErr_Format(PyExc_RuntimeError,
@@ -4969,14 +5080,12 @@ cnda_copy_structure_to_device(const CudaNdarray * self)
             }
         }
     }
-    cublasSetVector(cnda_structure_size(self->nd),
-                    sizeof(int),
-                    self->host_structure,
-                    1,
-                    self->dev_structure,
-                    1);
-    CNDA_THREAD_SYNC;
-    if (CUBLAS_STATUS_SUCCESS != cublasGetError())
+    if (cublasSetVector(cnda_structure_size(self->nd),
+                        sizeof(int),
+                        self->host_structure,
+                        1,
+                        self->dev_structure,
+                        1) != CUBLAS_STATUS_SUCCESS)
     {
         PyErr_SetString(PyExc_RuntimeError, "error copying structure to device memory");
         return -1;
@@ -5024,11 +5133,11 @@ CudaNdarray_DEV_DATA(const CudaNdarray * self)
 /**
  * Return the number of elements in the ndarray (product of the dimensions)
  */
-int
+size_t
 CudaNdarray_SIZE(const CudaNdarray *self)
 {
     if (self->nd == -1) return 0;
-    int size = 1;
+    size_t size = 1;
     for (int i = 0; i < self->nd; ++i)
     {
         size *= CudaNdarray_HOST_DIMS(self)[i];
@@ -5116,7 +5225,7 @@ int fprint_CudaNdarray(FILE * fd, const CudaNdarray *self)
 
 
 int CudaNdarray_prep_output(CudaNdarray ** arr, int nd,
-        const int * dims)
+                            const int * dims, int fortran)
 {
     bool allocated = false;
     if (*arr == NULL)
@@ -5128,7 +5237,7 @@ int CudaNdarray_prep_output(CudaNdarray ** arr, int nd,
         allocated = true;
     }
 
-    if (CudaNdarray_alloc_contiguous(*arr, nd, dims))
+    if (CudaNdarray_alloc_contiguous(*arr, nd, dims, fortran))
     {
         if (allocated)
         {

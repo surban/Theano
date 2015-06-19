@@ -1,5 +1,6 @@
 """ProfileStats object for runtime and memory profiling.
 """
+from __future__ import print_function
 #
 # TODO: measure memory usage like ProfileMode did
 # TODO: put the optimization tips into a tips section??
@@ -19,18 +20,20 @@ import copy
 import os
 import sys
 import time
+from theano.compat import defaultdict
 
 import numpy
 
 import theano
-from theano.configparser import AddConfigVar, BoolParam, IntParam
+from theano.gof import graph
+from theano.configparser import AddConfigVar, BoolParam, IntParam, StrParam
 
 
 import_time = time.time()
 config = theano.config
 
 _atexit_print_list = []
-_atexit_print_file = sys.stderr
+_atexit_registered = False
 
 AddConfigVar('profiling.time_thunks',
              """Time individual thunks when profiling""",
@@ -47,10 +50,27 @@ AddConfigVar('profiling.n_ops',
              IntParam(20, lambda i: i > 0),
              in_c_key=False)
 
+AddConfigVar('profiling.output_line_width',
+             "Max line width for the profiling output",
+             IntParam(512, lambda i: i > 0),
+             in_c_key=False)
+
 AddConfigVar('profiling.min_memory_size',
              """For the memory profile, do not print Apply nodes if the size
              of their outputs (in bytes) is lower than this threshold""",
              IntParam(1024, lambda i: i >= 0),
+             in_c_key=False)
+
+AddConfigVar('profiling.min_peak_memory',
+             """The min peak memory usage of the order""",
+             BoolParam(False),
+             in_c_key=False)
+
+AddConfigVar('profiling.destination',
+             """
+             File destination of the profiling output
+             """,
+             StrParam('stderr'),
              in_c_key=False)
 
 
@@ -58,27 +78,37 @@ def _atexit_print_fn():
     """Print ProfileStat objects in _atexit_print_list to _atexit_print_file
     """
     to_sum = []
+
+    if config.profiling.destination == 'stderr':
+        destination_file = sys.stderr
+    elif config.profiling.destination == 'stdout':
+        destination_file = sys.stdout
+    else:
+        destination_file = open(config.profiling.destination, 'w')
+
     for ps in _atexit_print_list:
         if ps.fct_callcount or ps.compile_time > 0:
-            ps.summary(file=_atexit_print_file,
+            ps.summary(file=destination_file,
                        n_ops_to_print=config.profiling.n_ops,
                        n_apply_to_print=config.profiling.n_apply)
             if not isinstance(ps, ScanProfileStats):
                 to_sum.append(ps)
         else:
-            #TODO print the name if there is one!
-            print 'Skipping empty Profile'
+            # TODO print the name if there is one!
+            print('Skipping empty Profile')
     if len(to_sum) > 1:
-    # Make a global profile
+        # Make a global profile
         cum = copy.copy(to_sum[0])
-        cum.message = "Sum of all printed profiles at exit excluding Scan op profile."
+        msg = ("Sum of all(%d) printed profiles at exit excluding Scan op"
+               " profile." % len(to_sum))
+        cum.message = msg
         for ps in to_sum[1:]:
             for attr in ["compile_time", "fct_call_time", "fct_callcount",
                          "vm_call_time", "optimizer_time", "linker_time",
-                         "validate_time"]:
+                         "validate_time", "import_time"]:
                 setattr(cum, attr, getattr(cum, attr) + getattr(ps, attr))
 
-            #merge dictonary
+            # merge dictonary
             for attr in ["apply_time", "apply_callcount",
                          "apply_cimpl", "variable_shape", "variable_strides"]:
                 cum_attr = getattr(cum, attr)
@@ -94,15 +124,13 @@ def _atexit_print_fn():
             else:
                 cum.optimizer_profile = None
 
-        cum.summary(file=_atexit_print_file,
+        cum.summary(file=destination_file,
                     n_ops_to_print=config.profiling.n_ops,
                     n_apply_to_print=config.profiling.n_apply)
 
 
-atexit.register(_atexit_print_fn)
-
-
 class ProfileStats(object):
+
     """
     Object to store runtime and memory profiling information for all of
     Theano's operations: compilation, optimization, execution.
@@ -167,7 +195,15 @@ class ProfileStats(object):
     linker_time = 0.0
     # time spent linking graph (FunctionMaker.create)
 
-    line_width = 140
+    import_time = 0.0
+    # time spent in importing compiled python module.
+
+    line_width = config.profiling.output_line_width
+
+    nb_nodes = -1
+    # The number of nodes in the graph. We need the infomartion
+    # separatly in case we print the profile when the function wasn't
+    # executed or if there is lazy operation in the graph.
 
     optimizer_profile = None
     # None or tuple (the optimizer, the profile it returned)
@@ -182,8 +218,8 @@ class ProfileStats(object):
                    names of the class vars declared in this class.
         """
         if (hasattr(theano, 'sandbox') and
-            hasattr(theano.sandbox, 'cuda') and
-            theano.sandbox.cuda.cuda_enabled):
+                hasattr(theano.sandbox, 'cuda') and
+                theano.sandbox.cuda.cuda_enabled):
             if os.environ.get('CUDA_LAUNCH_BLOCKING', '0') != '1':
                 raise Exception(
                     "You are running the Theano profiler with CUDA enabled."
@@ -204,10 +240,13 @@ class ProfileStats(object):
         else:
             self.flag_time_thunks = flag_time_thunks
         self.__dict__.update(kwargs)
-        #print >> sys.stderr, "self.message", self.message
         if atexit_print:
             global _atexit_print_list
             _atexit_print_list.append(self)
+            global _atexit_registered
+            if not _atexit_registered:
+                atexit.register(_atexit_print_fn)
+                _atexit_registered = True
 
     def class_time(self):
         """dict op -> total time on thunks"""
@@ -263,6 +302,25 @@ class ProfileStats(object):
             rval[node.op] += t
         return rval
 
+    def fill_node_total_time(self, node, total_times):
+        """node -> fill total time icluding its parents (returns nothing)"""
+        # timing is stored by node, we compute total time on demand
+        total = self.apply_time[node]
+        for parent in node.get_parents():
+            if parent.owner in self.apply_time.keys():
+                if parent.owner not in total_times.keys():
+                    self.fill_node_total_time(parent.owner, total_times)
+                total += total_times[parent.owner]
+        total_times[node] = total
+
+    def compute_total_times(self):
+        """dict op -> total time icluding the time for parents"""
+        rval = {}
+        for node in self.apply_time.keys():
+            if node not in rval:
+                self.fill_node_total_time(node, rval)
+        return rval
+
     def op_callcount(self):
         """dict op -> total number of thunk calls"""
         # timing is stored by node, we compute timing by Op on demand
@@ -298,8 +356,8 @@ class ProfileStats(object):
         else:
             local_time = 0
         if local_time == 0:
-            print >> file, ('ProfileMode.summary_class: total time 0'
-                    ' (did you forget to enable counters?)')
+            print(('ProfileMode.summary_class: total time 0'
+                   ' (did you forget to enable counters?)'), file=file)
             return
         class_time = self.class_time()
         class_call = self.class_callcount()
@@ -308,20 +366,16 @@ class ProfileStats(object):
         if N is None:
             N = len(self.class_time)
         otimes = [(t * 100 / local_time,
-                    t,
-                    clas,
-                    class_impl.get(clas, '  '),
-                    class_call.get(clas, 0),
-                    class_apply.get(clas, 0))
-                for clas, t in class_time.items()]
-        otimes.sort()
-        otimes.reverse()
+                   t,
+                   clas,
+                   class_impl.get(clas, '  '),
+                   class_call.get(clas, 0),
+                   class_apply.get(clas, 0))
+                  for clas, t in class_time.items()]
+        otimes.sort(key=lambda t: (t[1], t[4], t[5]), reverse=True)
         tot = 0
-        print >> file, 'Class'
-        print >> file, '---'
-        #print >> file, '<% time> <cumulative %%> <apply time>,'
-        #print >>file, '<cumulative seconds> <time per call> <nb_call>'
-        #print >>file, '<Class name>'
+        print('Class', file=file)
+        print('---', file=file)
         hs = []
         # formatting string
         es = []
@@ -342,19 +396,19 @@ class ProfileStats(object):
         es += ['   %2s ']
 
         hs += ['<#call>']
-        es += ['  %5d  ']
+        es += ['%6d  ']
 
         hs += ['<#apply>']
-        es += ['  %4d  ']
+        es += [' %4d  ']
 
         upto_length = numpy.sum([len(x) for x in hs]) + len(hs)
-        maxlen = self.line_width - upto_length
+        maxlen = max(self.line_width - upto_length, 0)
         hs += ['<Class name>']
         es += ['%s']
         header_str = ' '.join(hs)
         format_str = ' '.join(es)
 
-        print >> file, header_str
+        print(header_str, file=file)
 
         for f, t, a, impl, nb_call, nb_apply in otimes[:N]:
             if nb_call == 0:
@@ -363,19 +417,22 @@ class ProfileStats(object):
             tot += t
             ftot = tot * 100 / local_time
             # Remove the useless start and end of the class name:
-            # "<class 'theano.sandbox.cuda.blas.GpuDot22'>" -> "theano.sandbox.cuda.blas.GpuDot22"
+            # "<class 'theano.sandbox.cuda.blas.GpuDot22'>" ->
+            #  "theano.sandbox.cuda.blas.GpuDot22"
             class_name = str(a)[8:-2][:maxlen]
-            print >> file, format_str % (f, ftot, t, t / nb_call,
-                                         impl, nb_call,
-                                         nb_apply, class_name)
+            print(format_str % (f, ftot, t, t / nb_call,
+                                impl, nb_call,
+                                nb_apply, class_name), file=file)
             # While this carries over less information, it is arranged such
             # that it way more readeable that the previous output of the
             # profiler
-        print >>file, '   ... (remaining %i Classes account for %6.2f%%(%.2fs) of the runtime)'\
-                % (max(0, len(otimes) - N),
-                  sum(f for f, t, a, ci, nb_call, nb_op in otimes[N:]),
-                  sum(t for f, t, a, ci, nb_call, nb_op in otimes[N:]))
-        print >> file, ''
+        print('   ... (remaining %i Classes account for %6.2f%%(%.2fs) of '
+              'the runtime)' %
+              (max(0, len(otimes) - N),
+               sum(f for f, t, a, ci, nb_call, nb_op in otimes[N:]),
+               sum(t for f, t, a, ci, nb_call, nb_op in otimes[N:])),
+              file=file)
+        print('', file=file)
 
     def summary_ops(self, file=sys.stderr, N=None):
         if self.apply_time:
@@ -383,28 +440,24 @@ class ProfileStats(object):
         else:
             local_time = 0
         if local_time == 0:
-            print >> file, ('ProfileMode.summary_ops: total time 0'
-                    ' (did you forget to enable counters?)')
+            print(('ProfileMode.summary_ops: total time 0'
+                   ' (did you forget to enable counters?)'), file=file)
             return
         op_time = self.op_time()
         op_call = self.op_callcount()
         op_apply = self.op_nodes()
         op_impl = self.op_impl()
         otimes = [(t * 100 / local_time,
-                    t,
-                    op,
-                    op_impl.get(op, '  '),
-                    op_call.get(op, 0),
-                    op_apply.get(op, 0))
-                for op, t in op_time.items()]
-        otimes.sort()
-        otimes.reverse()
+                   t,
+                   op,
+                   op_impl.get(op, '  '),
+                   op_call.get(op, 0),
+                   op_apply.get(op, 0))
+                  for op, t in op_time.items()]
+        otimes.sort(key=lambda t: (t[1], t[4], t[5]), reverse=True)
         tot = 0
-        print >> file, 'Ops'
-        print >> file, '---'
-        #print >> file, '<% time> <cumulative %%> <apply time>,'
-        #print >>file, '<cumulative seconds> <time per call> <nb_call>'
-        #print >>file, '<Op name>'
+        print('Ops', file=file)
+        print('---', file=file)
         hs = []
         # formatting string
         es = []
@@ -431,13 +484,13 @@ class ProfileStats(object):
         es += ['  %4d  ']
 
         upto_length = numpy.sum([len(x) for x in hs]) + len(hs)
-        maxlen = self.line_width - upto_length
+        maxlen = max(self.line_width - upto_length, 0)
         hs += ['<Op name>']
         es += ['%s']
         header_str = ' '.join(hs)
         format_str = ' '.join(es)
 
-        print >> file, header_str
+        print(header_str, file=file)
 
         for f, t, a, impl, nb_call, nb_apply in otimes[:N]:
             if nb_call == 0:
@@ -445,17 +498,19 @@ class ProfileStats(object):
                 continue
             tot += t
             ftot = tot * 100 / local_time
-            print >> file, format_str % (f, ftot, t, t / nb_call,
-                                         impl, nb_call,
-                                         nb_apply, str(a)[:maxlen])
+            print(format_str % (f, ftot, t, t / nb_call,
+                                impl, nb_call,
+                                nb_apply, str(a)[:maxlen]), file=file)
             # While this carries over less information, it is arranged such
             # that it way more readeable that the previous output of the
             # profiler
-        print >>file, '   ... (remaining %i Ops account for %6.2f%%(%.2fs) of the runtime)'\
-                % (max(0, len(otimes) - N),
-                  sum(f for f, t, a, ci, nb_call, nb_op in otimes[N:]),
-                  sum(t for f, t, a, ci, nb_call, nb_op in otimes[N:]))
-        print >> file, ''
+        print('   ... (remaining %i Ops account for %6.2f%%(%.2fs) of '
+              'the runtime)' %
+              (max(0, len(otimes) - N),
+               sum(f for f, t, a, ci, nb_call, nb_op in otimes[N:]),
+               sum(t for f, t, a, ci, nb_call, nb_op in otimes[N:])),
+              file=file)
+        print('', file=file)
 
     def summary_nodes(self, file=sys.stderr, N=None):
         if self.apply_time:
@@ -463,13 +518,12 @@ class ProfileStats(object):
         else:
             local_time = 0
         if local_time == 0:
-            print >> file, ('ProfileMode.summary_nodes: total time 0'
-                    ' (did you forget to enable counters?)')
+            print(('ProfileMode.summary_nodes: total time 0'
+                   ' (did you forget to enable counters?)'), file=file)
             return
 
-        print >> file, 'Apply'
-        print >> file, '------'
-        #print >> file, '<% time> <cumulative %%> <apply time> <cumulative seconds> <time per call> <nb_call> <Apply Op name>'
+        print('Apply', file=file)
+        print('------', file=file)
         # headers
         hs = []
         # formatting string
@@ -498,24 +552,32 @@ class ProfileStats(object):
             hs += ['<Mflops>', '<Gflops/s>']
 
         upto_length = numpy.sum([len(x) for x in hs]) + len(hs)
-        maxlen = self.line_width - upto_length
+        maxlen = max(self.line_width - upto_length, 0)
         hs += ['<Apply name>']
         es += ['%s']
 
         header_str = ' '.join(hs)
         format_str = ' '.join(es)
 
-        print >> file, header_str
+        print(header_str, file=file)
 
-        atimes = [(
+        topos = {}  # Only do the topo once per fct.
+        atimes = []
+        for a, t in self.apply_time.items():
+            if a.fgraph not in topos:
+                topo = a.fgraph.toposort()
+                topos[a.fgraph] = topo
+            else:
+                topo = topos[a.fgraph]
+            atimes.append((
                 t * 100 / local_time,
                 t,
                 a,
-                a.fgraph.toposort().index(a),
-                self.apply_callcount[a])
-            for a, t in self.apply_time.items()]
-        atimes.sort()
-        atimes.reverse()
+                topo.index(a),
+                self.apply_callcount[a]))
+        del topos
+
+        atimes.sort(reverse=True, key=lambda t: (t[1], t[3]))
         tot = 0
         for (f, t, a, nd_id, nb_call) in atimes[:N]:
             tot += t
@@ -530,63 +592,70 @@ class ProfileStats(object):
                                  for var in a.inputs],
                                 [self.variable_shape[var]
                                  for var in a.outputs])
-                flops = '%8.1f' % (fl/1024./1024)
-                flops_s = '%10.1f' % (fl/1024./1024/1024/t)
+                flops = '%8.1f' % (fl / 1024. / 1024)
+                flops_s = '%10.1f' % (fl / 1024. / 1024 / 1024 / t)
             else:
                 flops = "        "
                 flops_s = "          "
-            print >> file, format_str %(f, ftot, t, t / nb_call, nb_call,
-                                        nd_id,
-                                        flops, flops_s,
-                                        str(a)[:maxlen])
+            print(format_str % (f, ftot, t, t / nb_call, nb_call,
+                                nd_id,
+                                flops, flops_s,
+                                str(a)[:maxlen]), file=file)
             if not config.profile_memory:
                 continue
             for idx, var in enumerate(a.inputs):
                 sh = self.variable_shape.get(var, 'no shape')
                 st = self.variable_strides.get(var, 'no strides')
                 dtype = getattr(var, 'dtype', 'no dtype')
-                print >> file, "    input %d: dtype=%s, shape=%s, strides=%s " % (
-                    idx, dtype, sh, st)
+                print("    input %d: dtype=%s, shape=%s, strides=%s " % (
+                    idx, dtype, sh, st), file=file)
             for idx, var in enumerate(a.outputs):
                 sh = self.variable_shape.get(var, 'no shape')
                 st = self.variable_strides.get(var, 'no strides')
                 dtype = getattr(var, 'dtype', 'no dtype')
-                print >> file, "    output %d: dtype=%s, shape=%s, strides=%s " % (
-                    idx, dtype, sh, st)
+                print("    output %d: dtype=%s, shape=%s, strides=%s " % (
+                    idx, dtype, sh, st), file=file)
             # Same as before, this I've sacrificied some information making
             # the output more readable
-            #print >> file, '   %4.1f%%  %5.1f%%  %5.3fs  %5.3fs %.2es  %i  %s'%(
-            #        f, ftot, t, tot, t/nb_call,nb_call, str(a))
-        print >> file, '   ... (remaining %i Apply instances account for %.2f%%(%.2fs) of the runtime)'\
-                % (max(0, len(atimes) - N),
-                  sum(f for f, t, a, nd_id, nb_call in atimes[N:]),
-                  sum(t for f, t, a, nd_id, nb_call in atimes[N:]))
-        print >> file, ''
+        print('   ... (remaining %i Apply instances account for '
+              '%.2f%%(%.2fs) of the runtime)' %
+              (max(0, len(atimes) - N),
+               sum(f for f, t, a, nd_id, nb_call in atimes[N:]),
+               sum(t for f, t, a, nd_id, nb_call in atimes[N:])), file=file)
+        print('', file=file)
 
     def summary_function(self, file):
-        print >> file, 'Function profiling'
-        print >> file, '=================='
-        print >> file, '  Message: %s' % self.message
-        print >> file, '  Time in %i calls to Function.__call__: %es' % (
-                self.fct_callcount, self.fct_call_time)
+        print('Function profiling', file=file)
+        print('==================', file=file)
+        print('  Message: %s' % self.message, file=file)
+        print('  Time in %i calls to Function.__call__: %es' % (
+            self.fct_callcount, self.fct_call_time), file=file)
         if self.fct_call_time > 0:
-            print >> file, '  Time in Function.fn.__call__: %es (%.3f%%)' % (
-                    self.vm_call_time,
-                    100 * self.vm_call_time / self.fct_call_time)
+            print('  Time in Function.fn.__call__: %es (%.3f%%)' % (
+                self.vm_call_time,
+                100 * self.vm_call_time / self.fct_call_time), file=file)
             local_time = sum(self.apply_time.values())
             if local_time > 0:
-                print >> file, '  Time in thunks: %es (%.3f%%)' % (
-                        local_time, 100*local_time / self.fct_call_time)
-        print >> file, '  Total compile time: %es' % self.compile_time
-        print >> file, '    Theano Optimizer time: %es' % self.optimizer_time
-        print >> file, '       Theano validate time: %es' % self.validate_time
-        print >> file, ('    Theano Linker time (includes C,'
-                        ' CUDA code generation/compiling): %es' %
-                        self.linker_time)
-        print >> file, ''
+                print('  Time in thunks: %es (%.3f%%)' %
+                      (local_time, 100 * local_time / self.fct_call_time),
+                      file=file)
+        print('  Total compile time: %es' % self.compile_time, file=file)
+        print('    Number of Apply nodes: %d' % self.nb_nodes, file=file)
+        print('    Theano Optimizer time: %es' % self.optimizer_time,
+              file=file)
+        print('       Theano validate time: %es' % self.validate_time,
+              file=file)
+        print('    Theano Linker time (includes C, CUDA code '
+              'generation/compiling): %es' % self.linker_time, file=file)
+        print('       Import time %es' % self.import_time, file=file)
+        print('', file=file)
 
         # The validation time is a subset of optimizer_time
         assert self.validate_time < self.optimizer_time
+
+    def summary_globals(self, file):
+        print('Time in all call to theano.grad() %es' %
+              theano.gradient.grad_time, file=file)
 
     def summary_memory(self, file, N=None):
         fct_memory = {}  # fgraph->dict(node->[outputs size])
@@ -601,135 +670,518 @@ class ProfileStats(object):
             fct_shapes[node.fgraph].setdefault(node, [])
             sum_dense = 0
             for out in node.outputs:
-                sh = self.variable_shape[out]
-                if hasattr(out.type, 'get_size'):
-                    v = out.type.get_size(sh)
-                    sum_dense += v
+                if out in self.variable_shape.keys():
+                    sh = self.variable_shape[out]
+                    if hasattr(out.type, 'get_size'):
+                        v = out.type.get_size(sh)
+                        sum_dense += v
+                    else:
+                        v = 0  # 'Unknown'
                 else:
-                    v = "Unknown"
+                    v = 0  # 'Variable isnt created'
 
                 var_mem[out] = v
                 fct_memory[node.fgraph][node].append(v)
                 fct_shapes[node.fgraph][node].append(sh)
             node_mem[node] = sum_dense
+        del v
 
-        #Find the function that used the most of that statistic
+        # Find the function that used the most of that statistic
         max_sum_size = 0
-        max_node_memory_size = 0
-        max_running_max_memory_size = 0
+
+        # statistics with the old order
+        # TODO: Make list more flexible with mulitply GPUs later
+        max_node_memory_size = [0, 0, 0]
+        max_running_max_memory_size = [0, 0, 0]
         max_node_memory_saved_by_view = 0
         max_node_memory_saved_by_inplace = 0
-        for fgraph, nodes_mem in fct_memory.iteritems():
-            # Sum of the size of all variables in bytes
-            sum_size = sum([sum([v for v in val if not isinstance(v, str)])
-                            for key, val in nodes_mem.iteritems()])
-            # Sum of the size of all variables that actually allocate
-            # memory (excluding views, and inplace);
-            node_memory_size = 0
-            # The sum of memory saved by returning view instead of new
-            # allocation
-            node_memory_saved_by_view = 0
-            # The sum of memory saved by reusing the input instead of
-            # new allocation
-            node_memory_saved_by_inplace = 0
-            # The memory allocated after the current apply node
-            running_memory_size = 0
-            # The maximum of running_memory_size during the function
-            running_max_memory_size = 0
 
-            order = fgraph.toposort()
-            # A list of intermediate variable that are not need
-            # after the execution of the corresponding node.
-            # It mean that after executing the node,
-            # the corresponding variable can be gc.
-            post_thunk_old_storage = []
-            computed, last_user = theano.gof.link.gc_helper(order)
+        # statistics with the new order
+        new_max_node_memory_size = [0, 0, 0]
+        new_max_running_max_memory_size = [0, 0, 0]
+        new_max_node_memory_saved_by_view = 0
+        new_max_node_memory_saved_by_inplace = 0
+
+        # track min peak memory usage
+        min_max_peak = 0
+        min_peak_time = 0
+
+        def count_running_memory(order, fgraph, nodes_mem):
+            """
+            Calculate memory with specific node order
+            Return a list including the following values
+            1.  node_memory_size
+                Sum of the size of all variables that actually allocate
+                memory (excluding views, and inplace);
+            2. running_memory_size
+                The memory allocated after the current apply node
+            3. running_max_memory_size
+                The maximum of running_memory_size during the function
+            4.  node_memory_saved_by_view
+                The sum of memory saved by returning view instead of new
+                allocation
+            5.  node_memory_saved_by_inplace
+                The sum of memory saved by reusing the input instead of
+                new allocation
+            """
+            from theano.sandbox.cuda import CudaNdarrayType
+            # Initial Mem info values [CPU, GPU]
+            node_memory_size = [0, 0]
+            running_memory_size = [0, 0]
+            running_max_memory_size = [0, 0]
+            node_memory_saved_by_view = 0
+            node_memory_saved_by_inplace = 0
+            # This take only the inputs/outputs dependencies.
+            dependencies = fgraph.profile.dependencies
+
+            # Initial compute_map which is used to check if a node is valid
+            compute_map = defaultdict(lambda: [0])
+            for var in fgraph.inputs:
+                compute_map[var][0] = 1
+
+            # two data structure used to mimic Python gc
+            viewed_by = {}  # {var1: [vars that view var1]}
+            # The len of the list is the value of python ref
+            # count. But we use a list, not just the ref count value.
+            # This is more safe to help detect potential bug  in the algo
+            for var in fgraph.variables:
+                viewed_by[var] = []
+            view_of = {}  # {var1: original var viewed by var1}
+            # The orignal mean that we don't keep trac of all the intermediate
+            # relationship in the view.
+
             for node in order:
-                post_thunk_old_storage.append([
-                    input_idx
-                    for input_idx, input in enumerate(node.inputs)
-                    if (input in computed) and
-                    (input not in fgraph.outputs) and
-                    node == last_user[input]])
-            for node in order:
-                val = nodes_mem[node]
+                for var in node.outputs:
+                    compute_map[var][0] = 1
+                idx = 0
                 dmap = getattr(node.op, 'destroy_map', None)
                 vmap = getattr(node.op, 'view_map', None)
+                val = nodes_mem[node]
 
-                for idx, v in enumerate(val):
+                for v in val:
                     # TODO check the op returned a view
                     if dmap and idx in dmap:
                         node_memory_saved_by_inplace += v
                     # TODO check the op returned a view
                     elif vmap and idx in vmap:
                         node_memory_saved_by_view += v
-                    elif not isinstance(v, str):
-                        node_memory_size += v
-                        running_memory_size += v
-                        if running_memory_size > running_max_memory_size:
-                            running_max_memory_size = running_memory_size
-                        old_storage = post_thunk_old_storage[order.index(node)]
-                        for old_s in old_storage:
-                            old_v = var_mem[node.inputs[old_s]]
-                            if not isinstance(old_v, str):
-                                running_memory_size -= old_v
+                    idx += 1
+
+                # Update the Python emulating dicts and add the memory
+                # allocated by the node
+                idx2 = 0
+                for out in node.outputs:
+                    if isinstance(out.type, CudaNdarrayType):
+                        cg = 1
+                    else:
+                        cg = 0
+                    ins = None
+                    if dmap and idx2 in dmap:
+                        vidx = dmap[idx2]
+                        assert len(vidx) == 1, ("Here we only support the "
+                                                "possibility to destroy one "
+                                                "input")
+                        ins = node.inputs[vidx[0]]
+                    if vmap and idx2 in vmap:
+                        assert ins is None
+                        vidx = vmap[idx2]
+                        assert len(vidx) == 1, ("Here we only support the "
+                                                "possibility to view one "
+                                                "input")
+                        ins = node.inputs[vidx[0]]
+                    if ins is not None:
+                        # This is needed for destroy_map in case it
+                        # return a partial view that is destroyed.  So
+                        # the output could be different then the
+                        # input.
+                        assert isinstance(ins, theano.Variable)
+                        # we keep trac of view only again the origin
+                        origin = view_of.get(ins, ins)
+                        view_of[out] = origin
+                        viewed_by[origin].append(out)
+                    else:
+                        running_memory_size[cg] += var_mem[out]
+                        node_memory_size[cg] += var_mem[out]
+                    idx2 += 1
+
+                running_max_memory_size[0] = max(running_max_memory_size[0],
+                                                 running_memory_size[0])
+                running_max_memory_size[1] = max(running_max_memory_size[1],
+                                                 running_memory_size[1])
+
+                # Mimic the combination of Theano and Python gc
+                for ins in node.inputs:
+                    assert not (ins in view_of and viewed_by[ins])
+                    # we trac the original var, so this shouldn't happen
+                    if isinstance(ins.type, CudaNdarrayType):
+                        cg = 1
+                    else:
+                        cg = 0
+                    if (dependencies[ins] and
+                            ins not in fgraph.outputs and
+                            ins.owner and
+                            all([compute_map[v][0]
+                                 for v in dependencies[ins]])):
+                        if ins not in view_of and not viewed_by.get(ins, []):
+                            running_memory_size[cg] -= var_mem[ins]
+                        elif ins in view_of:
+                            origin = view_of[ins]
+                            viewed_by[origin].remove(ins)
+                            if (not viewed_by[origin] and
+                                    origin not in fgraph.inputs and
+                                    not isinstance(origin, theano.Constant)):
+                                running_memory_size[cg] -= var_mem[origin]
+                    else:
+                        # ins is viewed_by something else, so its
+                        # memory isn't freed
+                        pass
+
+            return [node_memory_size, running_memory_size,
+                    running_max_memory_size, node_memory_saved_by_inplace,
+                    node_memory_saved_by_view]
+
+        def count_minimum_peak(node_list, fgraph, nodes_mem):
+            global mem_count, mem_bound, max_mem_count
+            node_list = list(node_list)
+            mem_count = 0
+            max_mem_count = 0
+            mem_bound = numpy.inf
+            # This take only the inputs/outputs dependencies.
+            dependencies = fgraph.profile.dependencies
+            done_set = set([])
+            done_dict = {}
+
+            # Initial compute_map which is used to check if a node is valid
+            compute_map = defaultdict(lambda: [0])
+            for var in fgraph.inputs:
+                compute_map[var][0] = 1
+            for var in node_list:
+                for val in var.inputs:
+                    if isinstance(val, graph.Constant):
+                        compute_map[val][0] = 1
+
+            # Initial executable_nodes
+            executable_nodes = set()
+            for var in fgraph.inputs:
+                for c, _ in var.clients:
+                    if c != "output":
+                        deps = c.inputs + c.destroy_dependencies
+                        if all(compute_map[v][0] for v in deps):
+                            executable_nodes.add(c)
+
+            def min_memory_generator(executable_nodes, viewed_by, view_of):
+                """
+                Generate all valid node order from node_list
+                and compute its memory peak.
+
+                :param executable_nodes: Set of executable nodes
+                """
+                global mem_count, mem_bound, max_mem_count
+
+                for node in executable_nodes:
+                    new_exec_nodes = executable_nodes.copy()
+                    new_exec_nodes.remove(node)
+
+                    # Check if cut path now
+                    if max_mem_count > mem_bound:
+                        continue
+
+                    viewof_change = []
+                    # Use to track view_of changes
+
+                    viewedby_add = defaultdict(lambda: [])
+                    viewedby_remove = defaultdict(lambda: [])
+                    # Use to track viewed_by changes
+
+                    for var in node.outputs:
+                        compute_map[var][0] = 1
+
+                    mem_created = 0
+                    mem_freed = 0
+                    max_storage = max_mem_count
+
+                    dmap = getattr(node.op, 'destroy_map', None)
+                    vmap = getattr(node.op, 'view_map', None)
+
+                    idx = 0
+                    # Update the Python emulating dicts and add the
+                    # memory allocated by the node
+                    for out in node.outputs:
+                        ins = None
+                        if dmap and idx in dmap:
+                            vidx = dmap[idx]
+                            assert len(vidx) == 1, ("Here we only support "
+                                                    "the possibility to "
+                                                    "destroy one input")
+                            ins = node.inputs[vidx[0]]
+                        if vmap and idx in vmap:
+                            assert ins is None
+                            vidx = vmap[idx]
+                            assert len(vidx) == 1, ("Here we only support "
+                                                    "the possibility to "
+                                                    "view one input")
+                            ins = node.inputs[vidx[0]]
+                        if ins is not None:
+                            # This is needed for destroy_map in case it
+                            # return a partial view that is destroyed. So
+                            # the output could be different then the
+                            # input.
+                            assert isinstance(ins, theano.Variable)
+                            # We keep track of view only again the original
+                            origin = view_of.get(ins, ins)
+                            view_of[out] = origin
+                            viewof_change.append(out)
+                            viewed_by[origin].append(out)
+                            viewedby_add[origin].append(out)
+                        else:
+                            mem_created += var_mem[out]
+                        idx += 1
+
+                    mem_count += mem_created
+                    max_mem_count = max(max_mem_count, mem_count)
+
+                    # Mimic the combination of Theano and Python gc.
+                    for ins in node.inputs:
+                        assert not (ins in view_of and
+                                    viewed_by[ins])
+                        # We track of the original var, so this shouldn't
+                        # happen
+                        if (dependencies[ins] and
+                                ins not in fgraph.outputs and
+                                ins.owner and
+                                all([compute_map[v][0]
+                                     for v in dependencies[ins]])):
+                            if (ins not in view_of and
+                                    not viewed_by.get(ins, [])):
+                                mem_freed += var_mem[ins]
+                            elif ins in view_of:
+                                origin = view_of[ins]
+                                viewed_by[origin].remove(ins)
+                                viewedby_remove[origin].append(ins)
+                                if (not viewed_by[origin] and
+                                        origin not in fgraph.inputs and
+                                        not isinstance(origin,
+                                                       theano.Constant)):
+                                    mem_freed += var_mem[origin]
+                        else:
+                            # ins is viewed_by something else, so its
+                            # memory isn't freed
+                            pass
+
+                    mem_count -= mem_freed
+
+                    done_set.add(node)
+                    frozen_set = frozenset(done_set)
+                    if (done_dict.get(frozen_set, max_mem_count + 1) >
+                            max_mem_count):
+                        # check if frozen_set is in done_set
+                        # no, add it to done_set
+                        # yes, then compare the past mem and current mem
+                        # bigger, update the value and continue
+                        # smaller, stop this iteration, move to next node
+                        done_dict[frozen_set] = max_mem_count
+
+                        for var in node.outputs:
+                            for c, _ in var.clients:
+                                if c != "output":
+                                    deps = c.inputs + c.destroy_dependencies
+                                    if all(compute_map[v][0] for v in deps):
+                                        new_exec_nodes.add(c)
+
+                        if not new_exec_nodes:
+                            # Check and Update mem_bound
+                            if max_mem_count < mem_bound:
+                                mem_bound = max_mem_count
+                        else:
+                            min_memory_generator(
+                                new_exec_nodes, viewed_by, view_of)
+
+                    # Reset track variables
+                    done_set.remove(node)
+                    mem_count -= mem_created
+                    max_mem_count = max_storage
+                    mem_count += mem_freed
+                    for var in node.outputs:
+                        compute_map[var][0] = 0
+
+                    for k_remove, v_remove in viewedby_remove.iteritems():
+                        for i in v_remove:
+                            viewed_by[k_remove].append(i)
+
+                    for k_add, v_add in viewedby_add.iteritems():
+                        for i in v_add:
+                            viewed_by[k_add].remove(i)
+
+                    for k in viewof_change:
+                        del view_of[k]
+
+            # two data structure used to mimic Python gc
+            viewed_by = {}  # {var1: [vars that view var1]}
+            # The len of the list is the value of python ref
+            # count. But we use a list, not just the ref count value.
+            # This is more safe to help detect potential bug  in the algo
+            for var in fgraph.variables:
+                viewed_by[var] = []
+            view_of = {}  # {var1: original var viewed by var1}
+            # The orignal mean that we don't keep trac of all the intermediate
+            # relationship in the view.
+
+            min_memory_generator(executable_nodes, viewed_by, view_of)
+
+            return mem_bound
+
+        for fgraph, nodes_mem in fct_memory.iteritems():
+            # Sum of the size of all variables in bytes
+            sum_size = sum([sum([v for v in val if not isinstance(v, str)])
+                            for key, val in nodes_mem.iteritems()])
+
+            order = fgraph.toposort()
+            # A list of intermediate variable that are not need
+            # after the execution of the corresponding node.
+            # It mean that after executing the node,
+            # the corresponding variable can be gc.
+
+            old_running_memory = count_running_memory(order, fgraph, nodes_mem)
+
+            new_order = fgraph.profile.node_executed_order
+            # A list of new executed node order
+
+            new_running_memory = count_running_memory(new_order,
+                                                      fgraph, nodes_mem)
 
             # Store the max of some stats by any function in this profile.
             max_sum_size = max(max_sum_size, sum_size)
-            max_node_memory_size = max(max_node_memory_size, node_memory_size)
-            max_running_max_memory_size = max(max_running_max_memory_size,
-                                          running_max_memory_size)
-            max_node_memory_saved_by_view = max(max_node_memory_saved_by_view,
-                                                node_memory_saved_by_view)
-            max_node_memory_saved_by_inplace = max(
-                max_node_memory_saved_by_inplace, node_memory_saved_by_inplace)
+            max_node_memory_size[0] = max(max_node_memory_size[0],
+                                          sum(old_running_memory[0]))
+            max_running_max_memory_size[0] = \
+                max(max_running_max_memory_size[0], sum(old_running_memory[2]))
 
-            del fgraph, nodes_mem, post_thunk_old_storage, node
+            # Separate CPU and GPU
+            max_node_memory_size[1] = max(max_node_memory_size[1],
+                                          old_running_memory[0][0])
+            max_node_memory_size[2] = max(max_node_memory_size[2],
+                                          old_running_memory[0][1])
+            max_running_max_memory_size[1] = \
+                max(max_running_max_memory_size[1], old_running_memory[2][0])
+            max_running_max_memory_size[2] = \
+                max(max_running_max_memory_size[2], old_running_memory[2][1])
+
+            max_node_memory_saved_by_inplace = \
+                max(max_node_memory_saved_by_inplace, old_running_memory[3])
+            max_node_memory_saved_by_view = max(max_node_memory_saved_by_view,
+                                                old_running_memory[4])
+
+            # Store max of some stats with new order
+            new_max_node_memory_size[0] = max(new_max_node_memory_size[0],
+                                              sum(new_running_memory[0]))
+            new_max_running_max_memory_size[0] = \
+                max(new_max_running_max_memory_size[0],
+                    sum(new_running_memory[2]))
+
+            # Separate CPU and GPU
+            new_max_node_memory_size[1] = max(new_max_node_memory_size[1],
+                                              new_running_memory[0][0])
+            new_max_node_memory_size[2] = max(new_max_node_memory_size[2],
+                                              new_running_memory[0][1])
+            new_max_running_max_memory_size[1] = \
+                max(new_max_running_max_memory_size[1],
+                    new_running_memory[2][0])
+            new_max_running_max_memory_size[2] = \
+                max(new_max_running_max_memory_size[2],
+                    new_running_memory[2][1])
+
+            new_max_node_memory_saved_by_inplace = \
+                max(new_max_node_memory_saved_by_inplace,
+                    new_running_memory[3])
+            new_max_node_memory_saved_by_view = \
+                max(new_max_node_memory_saved_by_view, new_running_memory[4])
+
+            # Config: whether print min memory peak
+            if config.profiling.min_peak_memory:
+                node_list = fgraph.apply_nodes
+                ttt = time.time()
+                min_peak = count_minimum_peak(node_list, fgraph, nodes_mem)
+                min_peak_time += time.time() - ttt
+                min_max_peak = max(min_max_peak, min_peak)
+
+            del fgraph, nodes_mem
 
         if len(fct_memory) > 1:
-            print >> file,  ("Memory Profile "
-                             "(the max between all functions in that profile)")
+            print("Memory Profile (the max between all functions in "
+                  "that profile)", file=file)
         else:
-            print >> file,  "Memory Profile"
+            print("Memory Profile", file=file)
 
-        print >> file, "(Sparse variables are ignored)"
+        print("(Sparse variables are ignored)", file=file)
+        print("(For values in brackets, it's for linker = c|py", file=file)
 
-        print >> file,  "---"
-#        print >> file,  "    Max if no gc, inplace and view: %dKB" % int(
-#            round(max_sum_size / 1024))
-        print >> file,  "    Max if linker=cvm (default): unknown"
-        print >> file,  "    Max if no gc (allow_gc=False): %dKB" % int(round(
-                             max_node_memory_size / 1024.))
-        print >> file,  "    Max if linker=c|py: %dKB" % int(round(
-            max_running_max_memory_size / 1024.))
-#        print >> file,  "    Memory saved if views are used: %dKB" % int(
-#            round(max_node_memory_saved_by_view / 1024.))
-#        print >> file,  "    Memory saved if inplace ops are used: %dKB" % \
-#            int(round(max_node_memory_saved_by_inplace / 1024.))
-        print >> file,  "    Memory saved if gc is enabled (linker=c|py): %dKB" % int(
-            round(max_node_memory_size - max_running_max_memory_size) / 1024.)
+        print("---", file=file)
+        # print >> file,  "    Max if no gc, inplace and view: %dKB" % int(
+        # round(max_sum_size / 1024))
+        print("    Max if no gc (allow_gc=False): %dKB (%dKB)" % (int(round(
+            new_max_node_memory_size[0] / 1024.)), int(round(
+                max_node_memory_size[0] / 1024.))), file=file)
+        print("    CPU: %dKB (%dKB)" % ((int(round(
+            new_max_node_memory_size[1] / 1024.)), int(round(
+                max_node_memory_size[1] / 1024.)))), file=file)
+        print("    GPU: %dKB (%dKB)" % ((int(round(
+            new_max_node_memory_size[2] / 1024.)), int(round(
+                max_node_memory_size[2] / 1024.)))), file=file)
+
+        print("---", file=file)
+
+        print("    Max if linker=cvm(default): %dKB (%dKB)" % (int(round(
+            new_max_running_max_memory_size[0] / 1024.)), int(round(
+                max_running_max_memory_size[0] / 1024.))), file=file)
+        print("    CPU: %dKB (%dKB)" % ((int(round(
+            new_max_running_max_memory_size[1] / 1024.)), int(round(
+                max_running_max_memory_size[1] / 1024.)))), file=file)
+        print("    GPU: %dKB (%dKB)" % ((int(round(
+            new_max_running_max_memory_size[2] / 1024.)), int(round(
+                max_running_max_memory_size[2] / 1024.)))), file=file)
+
+        print("---", file=file)
+
+        if min_max_peak:
+            print("    Minimum peak from all valid apply node order is "
+                  "%dKB(took %.3fs to compute)" %
+                  (int(round(min_max_peak / 1024.)), min_peak_time), file=file)
+        print("    Memory saved if views are used: %dKB (%dKB)" %
+              (int(round(new_max_node_memory_saved_by_view / 1024.)),
+               int(round(max_node_memory_saved_by_view / 1024.))), file=file)
+        print("    Memory saved if inplace ops are used: %dKB (%dKB)" %
+              (int(round(new_max_node_memory_saved_by_inplace / 1024.)),
+               int(round(max_node_memory_saved_by_inplace / 1024.))),
+              file=file)
+        print("    Memory saved if gc is enabled: %dKB (%dKB)" %
+              (int(round(new_max_node_memory_size[0] -
+                         new_max_running_max_memory_size[0]) / 1024.),
+               int(round(max_node_memory_size[0] -
+                         max_running_max_memory_size[0]) / 1024.)), file=file)
+
+        print("---", file=file)
+
         if (hasattr(theano, 'sandbox') and
             hasattr(theano.sandbox, 'cuda') and
             hasattr(theano.sandbox.cuda, 'cuda_ndarray') and
             hasattr(theano.sandbox.cuda.cuda_ndarray.cuda_ndarray,
                     'theano_allocated')):
-            _, gpu_max = theano.sandbox.cuda.cuda_ndarray.cuda_ndarray.theano_allocated()
-            print >> file,  ("    Max Memory allocated on the GPU "
-                             "(for all functions): %dKB" %
-                             int(round(gpu_max / 1024.)))
+            cuda_ndarray = theano.sandbox.cuda.cuda_ndarray.cuda_ndarray
+            _, gpu_max = cuda_ndarray.theano_allocated()
+            print("    Max Memory allocated on the GPU (for all functions): "
+                  "%dKB" % int(round(gpu_max / 1024.)), file=file)
 
-        print >> file, ""
+        print("", file=file)
         if len(fct_memory) > 1:
-            print >> file,  (
-                "    This list is based on all functions in the profile")
-        print >> file,  ("    <Sum apply outputs (bytes)>"
-                         " <Apply outputs shape>"
-                         " <created/inplace/view>"
-                         " <Apply node>")
-        print >> file, ""
+            print("    This list is based on all functions in the profile",
+                  file=file)
+        print("    <Sum apply outputs (bytes)>"
+              " <Apply outputs shape>"
+              " <created/inplace/view>"
+              " <Apply node>", file=file)
+        print("", file=file)
         items = node_mem.items()
-        items.sort(key=lambda a: a[1])
-        items.reverse()
+        items.sort(key=lambda a: a[1], reverse=True)
         for idx, (node, node_outputs_size) in enumerate(items[:N]):
             code = ['c'] * len(node.outputs)
             for out, inp in getattr(node.op, 'destroy_map', {}).iteritems():
@@ -747,9 +1199,8 @@ class ProfileStats(object):
             else:
                 size = "%10s" % "Unknown"
 
-            print >> file,  '     %s  %s %s %s' % (size,
-                                                   shapes,
-                                                   ' '.join(code), node)
+            print('     %s  %s %s %s' % (size, shapes, ' '.join(code), node),
+                  file=file)
 
         sum_remaining = sum(size for _, size in items[N:])
         size_sum_dense = sum(node_mem.values())
@@ -757,48 +1208,47 @@ class ProfileStats(object):
             p = "0%"
         else:
             p = "(%.2f%%)" % (float(sum_remaining) / size_sum_dense * 100)
-        print >> file,  (
-            '   ... (remaining %i Apply account for %4dB/%dB (%s) of the'
-            ' Apply with dense outputs sizes)') % (max(0, len(node_mem) - N),
-                                                       sum_remaining,
-                                                       size_sum_dense, p
-                                                   )
-        print >> file, ''
+        print('   ... (remaining %i Apply account for %4dB/%dB (%s) of the'
+              ' Apply with dense outputs sizes)' % (max(0, len(node_mem) - N),
+                                                    sum_remaining,
+                                                    size_sum_dense, p),
+              file=file)
+        print('', file=file)
         if N == 0:
-            print >> file, ('    All Apply nodes have output sizes that take'
-                            ' less than %dB.' %
-                            config.profiling.min_memory_size)
-        print >> file,  (
-            "    <created/inplace/view> is taken from the Op's declaration.")
-        print >> file,  ("    Apply nodes marked 'inplace' or 'view' may"
-                         " actually allocate memory, this is not reported"
-                         " here. If you use DebugMode, warnings will be"
-                         " emitted in those cases.")
-        print >> file, ''
+            print('    All Apply nodes have output sizes that take less '
+                  'than %dB.' % config.profiling.min_memory_size, file=file)
+        print("    <created/inplace/view> is taken from the Op's declaration.",
+              file=file)
+        print("    Apply nodes marked 'inplace' or 'view' may"
+              " actually allocate memory, this is not reported"
+              " here. If you use DebugMode, warnings will be"
+              " emitted in those cases.", file=file)
+        print('', file=file)
 
     def summary(self, file=sys.stderr, n_ops_to_print=20,
                 n_apply_to_print=20):
         self.summary_function(file)
+        self.summary_globals(file)
         local_time = sum(self.apply_time.values())
         if local_time > 0:
             self.summary_class(file, n_ops_to_print)
             self.summary_ops(file, n_ops_to_print)
             self.summary_nodes(file, n_apply_to_print)
         elif self.fct_callcount > 0:
-            print >> file, ("  No execution time accumulated "
-                            "(hint: try config profiling.time_thunks=1)")
+            print("  No execution time accumulated "
+                  "(hint: try config profiling.time_thunks=1)", file=file)
         if self.variable_shape or self.variable_strides:
             self.summary_memory(file, n_apply_to_print)
         if self.optimizer_profile:
-            print >> file, "Optimizer Profile"
-            print >> file, "-----------------"
+            print("Optimizer Profile", file=file)
+            print("-----------------", file=file)
             self.optimizer_profile[0].print_profile(file,
                                                     self.optimizer_profile[1])
 
 
-if 0: # old code still to be ported from ProfileMode
+if False:  # old code still to be ported from ProfileMode
     def long_print(self, file=sys.stderr, fct_name=None, message=None,
-            n_apply_to_print=15, n_ops_to_print=20, print_apply=False):
+                   n_apply_to_print=15, n_ops_to_print=20, print_apply=False):
         """
         Print a readable summary of the stats.
 
@@ -808,19 +1258,19 @@ if 0: # old code still to be ported from ProfileMode
         """
         local_time = sum(self.apply_time.values())
 
-        print ''
-        print 'ProfileMode.long_print()'
-        print 'name = %s' % fct_name
-        print 'msg = %s' % message
-        print '---------------------------'
-        print ''
+        print('')
+        print('ProfileMode.long_print()')
+        print('name = %s' % fct_name)
+        print('msg = %s' % message)
+        print('---------------------------')
+        print('')
 
-        print 'Total time spent running thunks: %.3fs' % local_time
+        print('Total time spent running thunks: %.3fs' % local_time)
 
         sop_time = {}
         sop_call = {}
         sop_op = {}
-        #map each op class to Bool. True iff all applies were done in c.
+        # map each op class to Bool. True iff all applies were done in c.
         sop_c = {}
         for a, t in op_time.items():
             typ = type(a)
@@ -831,11 +1281,10 @@ if 0: # old code still to be ported from ProfileMode
             sop_c.setdefault(typ, True)
             sop_c[typ] = sop_c[typ] and op_cimpl.get(a, False)
             sop_call[typ] = sop_call.get(typ, 0) + op_call[a]
-        print '\nSingle Op-wise summary: <% of local_time spent on this kind of Op> <cumulative %%> <self seconds> <cumulative seconds> <time per call> <nb_call> <nb_op> <nb_op> <Op name>'
+        print('\nSingle Op-wise summary: <% of local_time spent on this kind of Op> <cumulative %%> <self seconds> <cumulative seconds> <time per call> <nb_call> <nb_op> <nb_op> <Op name>')
         sotimes = [(t * 100 / local_time, t, a, sop_c[a],
                     sop_call[a], sop_op[a]) for a, t in sop_time.items()]
-        sotimes.sort()
-        sotimes.reverse()
+        sotimes.sort(key=lambda t: (t[1], t[4], t[5]), reverse=True)
         tot = 0
         for f, t, a, ci, nb_call, nb_op in sotimes[:n_ops_to_print]:
             if nb_call == 0:
@@ -847,29 +1296,29 @@ if 0: # old code still to be ported from ProfileMode
                 msg = '*'
             else:
                 msg = ' '
-            print '   %4.1f%%  %5.1f%%  %5.3fs  %5.3fs  %.2es %s %5d %2d %s' % (f, ftot, t, tot, t/nb_call, msg, nb_call, nb_op, a)
-        print '   ... (remaining %i Ops account for %.2f%%(%.2fs) of the runtime)'\
-                % (max(0, len(sotimes) - n_ops_to_print),
-                  sum(f for f, t, a, ci, nb_call, nb_op in
-                      sotimes[n_ops_to_print:]),
-                  sum(t for f, t, a, ci, nb_call, nb_op in
-                      sotimes[n_ops_to_print:]))
+            print('   %4.1f%%  %5.1f%%  %5.3fs  %5.3fs  %.2es %s %5d %2d %s' % (f, ftot, t, tot, t / nb_call, msg, nb_call, nb_op, a))
+        print('   ... (remaining %i Ops account for %.2f%%(%.2fs) of the runtime)'\
+            % (max(0, len(sotimes) - n_ops_to_print),
+               sum(f for f, t, a, ci, nb_call, nb_op in
+                   sotimes[n_ops_to_print:]),
+               sum(t for f, t, a, ci, nb_call, nb_op in
+                   sotimes[n_ops_to_print:])))
 
         total_time = time.time() - import_time
         total_fct_time = sum(fct_call_time.values())
         total_fct_call = sum(fct_call.values())
         other_time = total_time - total_fct_time - compile_time
-        print
-        print 'Theano fct summary: <% total fct time> <total time> <time per call> <nb call> <fct name>'
+        print()
+        print('Theano fct summary: <% total fct time> <total time> <time per call> <nb call> <fct name>')
         for key in fct_call.keys():
             if fct_call[key] > 0:
-                print '   %4.1f%% %.3fs %.2es %d %s'%(
+                print('   %4.1f%% %.3fs %.2es %d %s' % (
                     fct_call_time[key] / total_fct_time * 100,
                     fct_call_time[key],
                     fct_call_time[key] / fct_call[key],
-                    fct_call[key], key.name)
+                    fct_call[key], key.name))
             else:
-                print '   NOT CALLED',key.name
+                print('   NOT CALLED', key.name)
 
         if total_fct_time > 0:
             time_pr_in_fct = local_time / total_fct_time * 100
@@ -878,26 +1327,26 @@ if 0: # old code still to be ported from ProfileMode
             time_pr_in_fct = 0
             time_per_call = 0
 
-        print
-        print 'Time since import %.3fs' % (total_time)
-        print 'Compile time: %.3fs %.1f%%' % (compile_time,
-                                              compile_time / total_time * 100)
-        print 'Theano fct call %.3fs %.1f%%' % (total_fct_time,
+        print()
+        print('Time since import %.3fs' % (total_time))
+        print('Compile time: %.3fs %.1f%%' % (compile_time,
+                                              compile_time / total_time * 100))
+        print('Theano fct call %.3fs %.1f%%' % (total_fct_time,
                                                 total_fct_time / total_time *
-                                                100)
-        print ('   Theano Op time (included in fct call, Time spent '
+                                                100))
+        print(('   Theano Op time (included in fct call, Time spent '
                'running thunks) %.3fs %.1f%%(of total) %.1f%%(of fct call)' %
-               (local_time, local_time / total_time * 100, time_pr_in_fct))
-        print 'Other time since import %.3fs %.1f%%'%(other_time,other_time/total_time*100)
-        print '%i Theano fct call, %.3fs per call'%(total_fct_call, time_per_call)
+               (local_time, local_time / total_time * 100, time_pr_in_fct)))
+        print('Other time since import %.3fs %.1f%%' % (other_time, other_time / total_time * 100))
+        print('%i Theano fct call, %.3fs per call' % (total_fct_call, time_per_call))
 
-        print
-        print "List of apply that don't have float64 as input but have float64 in outputs. Usefull to know if we forgot some cast when using floatX=float32 or gpu code."
-        print '<Apply> <Apply position> <fct name> <inputs type> <outputs type>'
+        print()
+        print("List of apply that don't have float64 as input but have float64 in outputs. Usefull to know if we forgot some cast when using floatX=float32 or gpu code.")
+        print('<Apply> <Apply position> <fct name> <inputs type> <outputs type>')
         for fct in fct_call.keys():
             for idx, node in enumerate(fct.maker.fgraph.toposort()):
                 if any(hasattr(i, 'dtype') and i.dtype == 'float64' for i in node.outputs) and not any(hasattr(i, 'dtype') and i.dtype == 'float64' for i in node.inputs):
-                    print str(node), idx, fct.name, str([getattr(i,'dtype',None) for i in node.inputs]),str([getattr(i,'dtype',None) for i in node.outputs])
+                    print(str(node), idx, fct.name, str([getattr(i, 'dtype', None) for i in node.inputs]), str([getattr(i, 'dtype', None) for i in node.outputs]))
 
         if any([x[2].__name__.startswith("Gpu") for x in sotimes]):
             cpu = []
@@ -913,38 +1362,43 @@ if 0: # old code still to be ported from ProfileMode
             sum_cpu = sum(so[1] for so in cpu)
             sum_gpu = sum(so[1] for so in gpu)
             sum_trans = sum(so[1] for so in trans)
-            print
+            print()
 
-            print "Spent %.3fs(%.3f%%) in cpu Op, %.3fs(%.3f%%) in gpu Op and %.3fs(%.3f%%) transfert Op"%(
-                sum_cpu, sum_cpu/local_time*100, sum_gpu, sum_gpu/local_time*100, sum_trans, sum_trans/local_time*100)
+            print("Spent %.3fs(%.3f%%) in cpu Op, %.3fs(%.3f%%) in gpu Op and %.3fs(%.3f%%) transfert Op" % (
+                sum_cpu, sum_cpu / local_time * 100, sum_gpu, sum_gpu / local_time * 100, sum_trans, sum_trans / local_time * 100))
 
-            print "Theano function input that are float64"
-            print "<fct name> <input name> <input type> <str input>"
+            print("Theano function input that are float64")
+            print("<fct name> <input name> <input type> <str input>")
             for fct in fct_call.keys():
                 for i in fct.input_storage:
                     if hasattr(i.type, 'dtype') and i.type.dtype == 'float64':
-                        print fct.name, i.name, i.type, i
+                        print(fct.name, i.name, i.type, i)
 
-        print
-        print "Here are tips to potentially make your code run faster (if you think of new ones, suggest them on the mailing list). Test them first as they are not guaranteed to always provide a speedup."
+        print()
+        print("Here are tips to potentially make your code run faster (if you think of new ones, suggest them on the mailing list). Test them first as they are not guaranteed to always provide a speedup.")
         from theano import tensor as T
         from theano.tensor.raw_random import RandomFunction
         import theano
         import theano.scalar as scal
-        scalar_op_amdlibm_no_speed_up = [scal.LT, scal.GT, scal.LE, scal.GE, scal.EQ, scal.NEQ, scal.InRange, scal.Switch, scal.OR, scal.XOR, scal.AND, scal.Invert, scal.Maximum, scal.Minimum, scal.Add, scal.Mul, scal.Sub, scal.TrueDiv, scal.IntDiv, scal.Clip, scal.First, scal.Second, scal.Identity, scal.Cast, scal.Sgn, scal.Neg, scal.Inv, scal.Sqr ]
-        scalar_op_amdlibm_speed_up = [scal.Mod, scal.Pow, scal.Ceil, scal.Floor, scal.RoundHalfToEven, scal.RoundHalfAwayFromZero, scal.Log, scal.Log2, scal.Log10, scal.Log1p, scal.Exp, scal.Sqrt, scal.Abs, scal.Cos,  scal.Sin,  scal.Tan,  scal.Tanh,  scal.Cosh,  scal.Sinh, T.nnet.sigm.ScalarSigmoid, T.nnet.sigm.ScalarSoftplus ]#Abs, Mod in float{32,64} only
+        scalar_op_amdlibm_no_speed_up = [scal.LT, scal.GT, scal.LE, scal.GE, scal.EQ, scal.NEQ, scal.InRange, scal.Switch, scal.OR, scal.XOR, scal.AND, scal.Invert, scal.Maximum,
+                                         scal.Minimum, scal.Add, scal.Mul, scal.Sub, scal.TrueDiv, scal.IntDiv, scal.Clip, scal.First, scal.Second, scal.Identity, scal.Cast, scal.Sgn, scal.Neg, scal.Inv, scal.Sqr]
+        scalar_op_amdlibm_speed_up = [scal.Mod, scal.Pow, scal.Ceil, scal.Floor, scal.RoundHalfToEven, scal.RoundHalfAwayFromZero, scal.Log, scal.Log2, scal.Log10, scal.Log1p, scal.Exp,
+                                      scal.Sqrt, scal.Abs, scal.Cos,  scal.Sin,  scal.Tan,  scal.Tanh,  scal.Cosh,  scal.Sinh, T.nnet.sigm.ScalarSigmoid, T.nnet.sigm.ScalarSoftplus]  # Abs, Mod in float{32,64} only
 
         def get_scalar_ops(s):
             if isinstance(s, theano.scalar.Composite):
                 l = []
                 for node in s.fgraph.toposort():
-                    l+=get_scalar_ops(node.op)
+                    l += get_scalar_ops(node.op)
                 return l
-            else: return [s]
+            else:
+                return [s]
+
         def list_scalar_op(op):
             if isinstance(op.scalar_op, theano.scalar.Composite):
                 return get_scalar_ops(op.scalar_op)
-            else: return [op.scalar_op]
+            else:
+                return [op.scalar_op]
 
         def amdlibm_speed_up(op):
             if not isinstance(op, T.Elemwise):
@@ -955,8 +1409,9 @@ if 0: # old code still to be ported from ProfileMode
                     if s_op.__class__ in scalar_op_amdlibm_speed_up:
                         return True
                     elif s_op.__class__ not in scalar_op_amdlibm_no_speed_up:
-                        print "We don't know if amdlibm will accelerate this scalar op.", s_op
+                        print("We don't know if amdlibm will accelerate this scalar op.", s_op)
                 return False
+
         def exp_float32_op(op):
             if not isinstance(op, T.Elemwise):
                 return False
@@ -964,30 +1419,30 @@ if 0: # old code still to be ported from ProfileMode
                 l = list_scalar_op(op)
                 return any([s_op.__class__ in [scal.Exp] for s_op in l])
 
-        #tip 1
-        if config.floatX=='float64':
-            print "  - Try the Theano flag floatX=float32"
+        # tip 1
+        if config.floatX == 'float64':
+            print("  - Try the Theano flag floatX=float32")
 
-        #tip 2
-        if not config.lib.amdlibm and any([amdlibm_speed_up(a.op) for i,a in apply_time]):
-            print "  - Try installing amdlibm and set the Theano flag lib.amdlibm=True. This speed up only some Elemwise operation."
+        # tip 2
+        if not config.lib.amdlibm and any([amdlibm_speed_up(a.op) for i, a in apply_time]):
+            print("  - Try installing amdlibm and set the Theano flag lib.amdlibm=True. This speed up only some Elemwise operation.")
 
-        #tip 3
-        if not config.lib.amdlibm and any([exp_float32_op(a.op) and a.inputs[0].dtype=='float32' for i,a in apply_time]):
-            print "  - With the default gcc libm, exp in float32 is slower than in float64! Try Theano flags floatX=float64 or install amdlibm and set the theano flags lib.amdlibm=True"
+        # tip 3
+        if not config.lib.amdlibm and any([exp_float32_op(a.op) and a.inputs[0].dtype == 'float32' for i, a in apply_time]):
+            print("  - With the default gcc libm, exp in float32 is slower than in float64! Try Theano flags floatX=float64 or install amdlibm and set the theano flags lib.amdlibm=True")
 
-        #tip 4
+        # tip 4
         for a, t in apply_time.iteritems():
             node = a
             if (isinstance(node.op, T.Dot) and
-                all([len(i.type.broadcastable) == 2 for i in node.inputs])):
-                print ("  - You have a dot operation that was not optimized "
+                    all([len(i.type.broadcastable) == 2 for i in node.inputs])):
+                print(("  - You have a dot operation that was not optimized "
                        "to dot22 that is faster. Make sure the inputs are "
                        "float32 or float64 and are the same for both inputs. "
                        "Currently they are: %s" %
-                       [i.type for i in node.inputs])
+                       [i.type for i in node.inputs]))
 
-        #tip 5
+        # tip 5
         for a, t in apply_time.iteritems():
             node = a
             if isinstance(node.op, RandomFunction):
@@ -1039,15 +1494,15 @@ if 0: # old code still to be ported from ProfileMode
         outputs_size = self.outputs_size
 
         self.print_summary_("print_summary",
-                None,
-                None,
-                None,
-                apply_time,
-                op_cimpl,
-                message,
-                outputs_size,
-                n_apply_to_print,
-                n_ops_to_print)
+                            None,
+                            None,
+                            None,
+                            apply_time,
+                            op_cimpl,
+                            message,
+                            outputs_size,
+                            n_apply_to_print,
+                            n_ops_to_print)
 
     def print_diff_summary(self, other, n_apply_to_print=15,
                            n_ops_to_print=20):
@@ -1075,7 +1530,7 @@ if 0: # old code still to be ported from ProfileMode
                 tb = b_time.pop(a, 0)
                 r[a] += ta - tb
 
-            #they are missing in a
+            # they are missing in a
             for a, t in b_time.items():
                 r.setdefault(a, 0)
                 r[a] += t
@@ -1090,10 +1545,10 @@ if 0: # old code still to be ported from ProfileMode
         outputs_size = diff_dict(self.outputs_size, other.outputs_size)
 
         self.print_summary_(
-                "print_diff_summary", compile_time, fct_call_time, fct_call,
-                apply_time, op_cimpl, message, outputs_size,
-                n_apply_to_print=n_apply_to_print,
-                n_ops_to_print=n_ops_to_print, print_apply=False)
+            "print_diff_summary", compile_time, fct_call_time, fct_call,
+            apply_time, op_cimpl, message, outputs_size,
+            n_apply_to_print=n_apply_to_print,
+            n_ops_to_print=n_ops_to_print, print_apply=False)
 
 
 class ScanProfileStats(ProfileStats):
@@ -1115,27 +1570,27 @@ class ScanProfileStats(ProfileStats):
         # Function profiling is just extremely confusing
         if self.callcount == 0:
             return
-        print >> file, ''
+        print('', file=file)
 
         if self.name is not None:
-            print >> file, 'Scan Op profiling (', self.name, ')'
+            print('Scan Op profiling (', self.name, ')', file=file)
         else:
-            print >> file, 'Scan Op profiling'
-        print >> file, '=================='
-        print >> file, '  Message: %s' % self.message
+            print('Scan Op profiling', file=file)
+        print('==================', file=file)
+        print('  Message: %s' % self.message, file=file)
 
-        print >> file, ('  Time in %i calls of the op (for a total of %i '
-                        'steps) %es' %
-                        (self.callcount, self.nbsteps, self.call_time))
-        print >> file, ''
+        print(('  Time in %i calls of the op (for a total of %i '
+               'steps) %es' %
+               (self.callcount, self.nbsteps, self.call_time)), file=file)
+        print('', file=file)
         val = 0
         if self.call_time > 0:
             val = self.vm_call_time * 100 / self.call_time
-        print >> file, '  Total time spent in calling the VM %es (%.3f%%)' % (
-            self.vm_call_time, val)
+        print('  Total time spent in calling the VM %es (%.3f%%)' % (
+            self.vm_call_time, val), file=file)
         val = 100
         if self.call_time > 0:
             val = 100. - self.vm_call_time * 100 / self.call_time
-        print >> file, '  Total overhead (computing slices..) %es (%.3f%%)' % (
-            self.call_time - self.vm_call_time, val)
-        print >> file, ''
+        print('  Total overhead (computing slices..) %es (%.3f%%)' % (
+            self.call_time - self.vm_call_time, val), file=file)
+        print('', file=file)

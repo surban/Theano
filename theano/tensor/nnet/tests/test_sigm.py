@@ -1,9 +1,9 @@
+from __future__ import print_function
 import unittest
 from itertools import imap
 
 import numpy
 
-from theano.compat.python2x import any
 import theano.tensor.inplace
 from theano.tensor import basic as tensor
 from theano import tensor as T
@@ -16,7 +16,7 @@ from theano.tensor.nnet.sigm import (
     register_local_1msigmoid, simplify_mul,
 )
 from theano.tensor.tests.test_basic import (makeBroadcastTester, rand,
-                                            check_floatX,
+                                            check_floatX, upcast_int8_nfunc,
                                             _good_broadcast_unary_normal_no_complex)
 
 
@@ -30,40 +30,41 @@ class T_sigmoid(unittest.TestCase):
 
 SigmoidTester = makeBroadcastTester(
     op=sigmoid,
-    expected=lambda inputs: check_floatX(
-        inputs, 1/(1+numpy.exp(-inputs))),
+    expected=upcast_int8_nfunc(lambda inputs: check_floatX(
+        inputs, 1 / (1 + numpy.exp(-inputs)))),
     good=_good_broadcast_unary_normal_no_complex,
-    #grad=_grad_broadcast_unary_normal,
+    # grad=_grad_broadcast_unary_normal,
     name='SigmoidTester',
 )
 
 UltraFastSigmoidTester = makeBroadcastTester(
     op=ultra_fast_sigmoid,
-    expected=lambda inputs: check_floatX(
-        inputs, 1/(1+numpy.exp(-inputs))),
+    expected=upcast_int8_nfunc(lambda inputs: check_floatX(
+        inputs, 1 / (1 + numpy.exp(-inputs)))),
     good=_good_broadcast_unary_normal_no_complex,
-    #grad=_grad_broadcast_unary_normal,
+    # grad=_grad_broadcast_unary_normal,
     name='UltraFastSigmoidTester',
 # This is an approx of the sigmoid. That is why we raise eps
     eps=5e-2)
 
 HardSigmoidTester = makeBroadcastTester(
     op=hard_sigmoid,
-    expected=lambda inputs: check_floatX(
-        inputs, 1/(1+numpy.exp(-inputs))),
+    expected=upcast_int8_nfunc(lambda inputs: check_floatX(
+        inputs, 1 / (1 + numpy.exp(-inputs)))),
     good=_good_broadcast_unary_normal_no_complex,
-    #grad=_grad_broadcast_unary_normal,
-    name='UltraFastSigmoidTester',
+    # grad=_grad_broadcast_unary_normal,
+    name='HardSigmoidTester',
 # This is an approx of the sigmoid. That is why we raise eps
     eps=1e-1)
 
 
 SoftplusTester = makeBroadcastTester(
     op=softplus,
-    expected=lambda inputs: check_floatX(
-        inputs, numpy.log1p(numpy.exp(inputs))),
-    good=_good_broadcast_unary_normal_no_complex,
-    #grad=_grad_broadcast_unary_normal,
+    expected=upcast_int8_nfunc(lambda inputs: check_floatX(
+        inputs, numpy.log1p(numpy.exp(inputs)))),
+    good=dict(_good_broadcast_unary_normal_no_complex,
+              int8=[numpy.arange(-127, 89, dtype='int8')]),
+    # grad=_grad_broadcast_unary_normal,
     name='SoftplusTester',
 )
 
@@ -218,7 +219,7 @@ class T_sigmoid_opts(unittest.TestCase):
         exp(-x) * sigm(x) -> sigm(-x)
         """
         def match(func, ops):
-            #print [node.op.scalar_op for node in func.maker.fgraph.toposort()]
+            # print [node.op.scalar_op for node in func.maker.fgraph.toposort()]
             assert [node.op for node in func.maker.fgraph.toposort()] == ops
         m = self.get_mode(excluding=['local_elemwise_fusion', 'inplace'])
         x, y = tensor.vectors('x', 'y')
@@ -258,11 +259,11 @@ class T_sigmoid_opts(unittest.TestCase):
                     compute_mul(trees[0]),
                     compute_mul(trees[1]))
             if not good:
-                print trees[0]
-                print trees[1]
-                print '***'
+                print(trees[0])
+                print(trees[1])
+                print('***')
                 theano.printing.debugprint(compute_mul(trees[0]))
-                print '***'
+                print('***')
                 theano.printing.debugprint(compute_mul(trees[1]))
             assert good
         ok(sigmoid(x) * exp(-x), sigmoid(-x))

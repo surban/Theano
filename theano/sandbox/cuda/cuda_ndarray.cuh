@@ -1,6 +1,10 @@
 #ifndef _CUDA_NDARRAY_H
 #define _CUDA_NDARRAY_H
 
+#include <algorithm>
+
+#include "theano_mod_helper.h"
+
 // Defines for Python 2/3 compatibility.
 #if PY_MAJOR_VERSION >= 3
 // Py3k treats all ints as longs. This one is not caught by npy_3kcompat.h.
@@ -17,6 +21,7 @@
 #define PyString_AsString PyUnicode_AsUTF8
 #define PyString_FromStringAndSize PyUnicode_FromStringAndSize
 #define PyString_Size PyUnicode_GET_SIZE
+#define PyInt_FromSize_t PyLong_FromSize_t
 
 // Python 3 expects a PyObject* as the first argument to PySlice_GetIndicesEx().
 #define SLICE_CAST(x) (x)
@@ -34,19 +39,24 @@
 
 #include <numpy/arrayobject.h>
 #include <stdio.h>
+#include <stdint.h>
+#ifndef SIZE_MAX
+    #define SIZE_MAX ((size_t)-1)
+#endif
 
-#include <cublas.h>
+
+#include <cublas_v2.h>
 
 #ifdef _WIN32
-#ifdef _CUDA_NDARRAY_C
-#define DllExport   __declspec( dllexport )
-#else
-#define DllExport   __declspec( dllimport )
-#endif
-#define ALWAYS_INLINE
+# ifdef _CUDA_NDARRAY_C
+#  define DllExport   __declspec( dllexport )
+# else
+#  define DllExport   __declspec( dllimport )
+# endif
+# define ALWAYS_INLINE
 #else //else _WIN32
-#define DllExport
-#define ALWAYS_INLINE __attribute__((always_inline))
+# define DllExport  MOD_PUBLIC
+# define ALWAYS_INLINE __attribute__((always_inline))
 #endif
 
 typedef float real;
@@ -76,15 +86,22 @@ typedef float real;
 #define VERBOSE_DEVICE_MALLOC 1
 #define NO_VERBOSE_DEVICE_MALLOC 0
 
+/* Use this handle to make cublas calls */
+extern DllExport cublasHandle_t handle;
+
 /**
- * Allocation and freeing of device memory should go through these functions so that the lib can track memory usage.
+ * Allocation and freeing of device memory should go through these functions so
+ * that the lib can track memory usage.
  *
  * device_malloc will set the Python error message before returning None.
  * device_free will return nonzero on failure (after setting the python error message)
+ *
+ * Set the Python error
  */
 DllExport void * device_malloc(size_t size);
 DllExport void * device_malloc(size_t size, int verbose);
 DllExport int device_free(void * ptr);
+DllExport void *get_work_mem(size_t sz);
 
 template <typename T>
 static T ceil_intdiv(T a, T b)
@@ -138,6 +155,8 @@ enum operator_t
 /*
  * Return a CudaNdarray whose 'nd' dimensions are all 0.
  * if nd==-1, it is not initialized.
+ *
+ * Set the Python error
  */
 DllExport PyObject *
 CudaNdarray_New(int nd=-1);
@@ -159,6 +178,12 @@ CudaNdarray_CheckExact(const PyObject * ob);
  */
 DllExport bool
 CudaNdarray_is_c_contiguous(const CudaNdarray * self);
+
+/**
+ * Return true for a F-contiguous CudaNdarray, else false
+ */
+DllExport bool
+CudaNdarray_is_f_contiguous(const CudaNdarray * self);
 
 /****
  * Returns the number of elements necessary in host_structure and dev_structure for a given number of dimensions.
@@ -262,7 +287,7 @@ DllExport float *CudaNdarray_DEV_DATA(const CudaNdarray * self);
 /**
  * Return the number of elements in the ndarray (product of the dimensions)
  */
-DllExport int CudaNdarray_SIZE(const CudaNdarray *self);
+DllExport size_t CudaNdarray_SIZE(const CudaNdarray *self);
 
 static PyObject *CudaNdarray_SIZE_Object(const CudaNdarray *self, void *closure);
 
@@ -270,6 +295,8 @@ static PyObject *CudaNdarray_SIZE_Object(const CudaNdarray *self, void *closure)
  * Allocate a new CudaNdarray with room for given number of dimensions
  *
  * No Storage space is allocated (and all dimensions are 0)
+ *
+ * Set the Python error
  */
 DllExport PyObject * CudaNdarray_new_nd(const int nd);
 
@@ -278,6 +305,8 @@ DllExport PyObject * CudaNdarray_new_nd(const int nd);
  *
  * Note: This does not allocate storage for data, or free
  *       pre-existing storage.
+ *
+ * Set the Python error
  */
 DllExport inline int ALWAYS_INLINE
 CudaNdarray_set_nd(CudaNdarray * self, const int nd)
@@ -326,14 +355,17 @@ CudaNdarray_set_nd(CudaNdarray * self, const int nd)
  * Allocate storage space for a tensor of rank 'nd' and given dimensions.
  * (No-op if self already has a contiguous tensor of the right dimensions)
  *
+ * If fortran is non-zeros, a fortran order is made, otherwise it is a c order.
+ *
  * Note: CudaNdarray_alloc_contiguous is templated to work for both int dimensions and npy_intp dimensions
  */
 template<typename inttype>
-static int CudaNdarray_alloc_contiguous(CudaNdarray *self, const int nd, const inttype * dim)
+static int CudaNdarray_alloc_contiguous(CudaNdarray *self, const int nd,
+                                        const inttype * dim, int fortran=0)
 {
     // allocate an empty ndarray with c_contiguous access
     // return 0 on success
-    int size = 1; //set up the strides for contiguous tensor
+    size_t size = 1; //set up the strides for contiguous tensor
     assert (nd >= 0);
 
     // Here we modify the host structure to have the desired shape and
@@ -342,11 +374,46 @@ static int CudaNdarray_alloc_contiguous(CudaNdarray *self, const int nd, const i
     {
         return -1;
     }
-    for (int i = nd-1; i >= 0; --i)
+    if (fortran)
     {
-        CudaNdarray_set_stride(self, i, (dim[i] == 1) ? 0 : size);
-        CudaNdarray_set_dim(self, i, dim[i]);
-        size = size * dim[i];
+        for (int i = 0; i < nd; i++)
+        {
+            CudaNdarray_set_stride(self, i, (dim[i] == 1) ? 0 : size);
+            CudaNdarray_set_dim(self, i, dim[i]);
+            //Detect overflow on unsigned integer
+            if (dim[i] != 0 && size > (SIZE_MAX / dim[i])) {
+                PyErr_Format(PyExc_AssertionError,
+                             "Can't store in size_t for the bytes requested %llu * %llu",
+                             (unsigned long long)size, (unsigned long long)dim[i]);
+                return -1;
+            }
+            size = size * dim[i];
+        }
+    }
+    else
+    {
+        for (int i = nd-1; i >= 0; --i)
+        {
+            CudaNdarray_set_stride(self, i, (dim[i] == 1) ? 0 : size);
+            CudaNdarray_set_dim(self, i, dim[i]);
+
+            //Detect overflow on unsigned integer
+            if (dim[i] != 0 && size > (SIZE_MAX / dim[i])) {
+                PyErr_Format(PyExc_AssertionError,
+                             "Can't store in size_t for the bytes requested %llu * 4",
+                             (unsigned long long)size);
+                return -1;
+            }
+            size = size * dim[i];
+        }
+    }
+
+    // Detect overflow on unsigned integer
+    if (size > (SIZE_MAX / sizeof(real))) {
+        PyErr_Format(PyExc_RuntimeError,
+                     "Can't store in size_t for the bytes requested %llu",
+                     (unsigned long long)size);
+        return -1;
     }
 
     // If the allocated buffer is already of the right size, we don't need to
@@ -372,14 +439,6 @@ static int CudaNdarray_alloc_contiguous(CudaNdarray *self, const int nd, const i
         return -1;
     }
 
-    if (size < 0)
-    {
-        PyErr_Format(PyExc_AssertionError,
-                     "size (%i) < 0",
-                     size);
-        return -1;
-    }
-
     self->devdata = (float*)device_malloc(size*sizeof(real));
     if (size && !self->devdata)
     {
@@ -400,6 +459,7 @@ static int CudaNdarray_alloc_contiguous(CudaNdarray *self, const int nd, const i
 
 /*
  * Return a CudaNdarray whose 'nd' dimensions are set to dims, and allocated.
+ * Set the python error.
  */
 template<typename inttype> 
 static PyObject *CudaNdarray_NewDims(int nd, const inttype * dims)
@@ -412,6 +472,9 @@ static PyObject *CudaNdarray_NewDims(int nd, const inttype * dims)
             Py_DECREF(rval);
             return NULL;
         }
+    }else{
+        PyErr_SetString(PyExc_MemoryError,
+                        "Failed to allocate the CudaNdarray structure.");
     }
     return (PyObject*)rval;
 }
@@ -463,6 +526,8 @@ DllExport int CudaNdarray_CopyFromArray(CudaNdarray * self, PyArrayObject*obj);
  *               e.g. suppose self and other are 2D matrices and other
  *               has only one row. Then we need to copy this row several
  *               times when copying to self.
+ *
+ * Set the Python error
  */
 DllExport int CudaNdarray_CopyFromCudaNdarray(CudaNdarray * self,
         const CudaNdarray * other, bool unbroadcast = false);
@@ -497,6 +562,27 @@ CudaNdarray_is_c_contiguous(const CudaNdarray * self)
     return c_contiguous;
 }
 
+/**
+ * True iff the strides look like [1, dim[0], dim[0]*dim[1], ...]
+ */
+DllExport inline bool ALWAYS_INLINE
+CudaNdarray_is_f_contiguous(const CudaNdarray * self)
+{
+    bool f_contiguous = true;
+    int size = 1;
+    for (int i = 0; (i < self->nd) && f_contiguous; i++)
+    {
+        if (CudaNdarray_HOST_DIMS(self)[i] == 1)
+            continue;
+        if (CudaNdarray_HOST_STRIDES(self)[i] != size)
+        {
+            f_contiguous = false;
+        }
+        size = size * CudaNdarray_HOST_DIMS(self)[i];
+    }
+    return f_contiguous;
+}
+
 DllExport PyObject * CudaNdarray_IS_C_Contiguous(CudaNdarray * self);
 
 DllExport int CudaNdarray_gemm(float alpha, const CudaNdarray * A, const CudaNdarray * B, float beta, CudaNdarray * C);
@@ -512,6 +598,7 @@ DllExport int CudaNdarray_dimshuffle(CudaNdarray * self, unsigned int len, const
 DllExport PyObject*
 CudaNdarray_TakeFrom(CudaNdarray * self, PyObject *args);
 
+// Set the Python error
 int fprint_CudaNdarray(FILE * fd, const CudaNdarray *self);
 
 
@@ -525,26 +612,39 @@ DllExport int CudaNdarray_inplace_elemwise(PyObject* py_self, PyObject * py_othe
 // *arr may initially be NULL, a pointer to an ndarray of the wrong size,
 // or a pointer to an ndarray of the right size. In the last case it will
 // not change.
+// If fortran is non-zero, a fortran order is expected/created
+//
+// Set the Python error
 DllExport int CudaNdarray_prep_output(CudaNdarray ** arr, int nd,
-        const int * dims);
+                                      const int * dims, int fortran = 0);
 
-DllExport inline const char* ALWAYS_INLINE cublasGetErrorString(cublasStatus err){
-    if(CUBLAS_STATUS_SUCCESS == err)
+DllExport inline const char* ALWAYS_INLINE cublasGetErrorString(cublasStatus_t err){
+    switch(err) {
+    case CUBLAS_STATUS_SUCCESS:
         return "success";
-    else if(CUBLAS_STATUS_NOT_INITIALIZED == err)
+    case CUBLAS_STATUS_NOT_INITIALIZED:
         return "the library was not initialized";
-    else if(CUBLAS_STATUS_ALLOC_FAILED == err)
+    case CUBLAS_STATUS_ALLOC_FAILED:
         return "the resource allocation failed";
-    else if(CUBLAS_STATUS_INVALID_VALUE == err)
+    case CUBLAS_STATUS_INVALID_VALUE:
         return "the parameters n<0 or incx,incy=0";
-    else if(CUBLAS_STATUS_MAPPING_ERROR == err)
+#ifdef CUBLAS_STATUS_ARCH_MISMATCH
+    case CUBLAS_STATUS_ARCH_MISMATCH:
+        return "required device feature not present";
+#endif
+    case CUBLAS_STATUS_MAPPING_ERROR:
         return "an access to GPU memory space failed";
-    else if(CUBLAS_STATUS_EXECUTION_FAILED == err)
+    case CUBLAS_STATUS_EXECUTION_FAILED:
         return "the function failed to launch on the GPU";
-    else if(CUBLAS_STATUS_INTERNAL_ERROR == err)
+    case CUBLAS_STATUS_INTERNAL_ERROR:
         return "an internal operation failed";
-    else
+#ifdef CUBLAS_STATUS_NOT_SUPPORTED
+    case CUBLAS_STATUS_NOT_SUPPORTED:
+        return "unsupported function";
+#endif
+    default:
         return "unknow code";
+    }
 }
 
 #endif

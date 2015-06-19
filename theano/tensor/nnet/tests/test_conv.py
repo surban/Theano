@@ -1,3 +1,4 @@
+from __future__ import print_function
 import time
 
 from nose.plugins.skip import SkipTest
@@ -12,12 +13,14 @@ from theano.tensor.basic import _allclose, NotScalarConstantError
 
 
 class TestConv2D(utt.InferShapeTester):
+    mode = None
+    dtype = theano.config.floatX
 
     def setUp(self):
-        super (TestConv2D, self).setUp()
-        self.input = T.dtensor4('input')
+        super(TestConv2D, self).setUp()
+        self.input = T.tensor4('input', dtype=self.dtype)
         self.input.name = 'default_V'
-        self.filters = T.dtensor4('filters')
+        self.filters = T.tensor4('filters', dtype=self.dtype)
         self.filters.name = 'default_filters'
         if not conv.imported_scipy_signal and theano.config.cxx == "":
             raise SkipTest("conv2d tests need SciPy or a c++ compiler")
@@ -67,11 +70,11 @@ class TestConv2D(utt.InferShapeTester):
 
         output = sym_conv2d(input, filters)
         output.name = 'conv2d(%s,%s)' % (input.name, filters.name)
-        theano_conv = theano.function([input, filters], output)
+        theano_conv = theano.function([input, filters], output, mode=self.mode)
 
         # initialize input and compute result
-        image_data = numpy.random.random(N_image_shape)
-        filter_data = numpy.random.random(N_filter_shape)
+        image_data = numpy.random.random(N_image_shape).astype(self.dtype)
+        filter_data = numpy.random.random(N_filter_shape).astype(self.dtype)
         try:
             theano_output = theano_conv(image_data, filter_data)
         except ValueError:
@@ -115,7 +118,7 @@ class TestConv2D(utt.InferShapeTester):
                             icol = col * subsample[1]  # image col
                             ref_output[bb, nn, row, col] += (image2d[
                                 irow:irow + N_filter_shape[2],
-                                icol:icol + N_filter_shape[3]] * filter2d[::-1,::-1]
+                                icol:icol + N_filter_shape[3]] * filter2d[::-1, ::-1]
                             ).sum()
 
         self.assertTrue(_allclose(theano_output, ref_output))
@@ -357,6 +360,12 @@ class TestConv2D(utt.InferShapeTester):
         self.validate((None, 2, None, None), (None, 2, 5, 5),
                       N_image_shape=(3, 2, 8, 8),
                       N_filter_shape=(4, 2, 5, 5))
+        self.validate((3, 2, 8, 8), (4, 2, None, 5),
+                      N_image_shape=(3, 2, 8, 8),
+                      N_filter_shape=(4, 2, 5, 5))
+        self.validate((3, 2, 8, 8), (4, 2, 5, None),
+                      N_image_shape=(3, 2, 8, 8),
+                      N_filter_shape=(4, 2, 5, 5))
 
     def test_wrong_info(self):
         """
@@ -406,21 +415,21 @@ class TestConv2D(utt.InferShapeTester):
 
     def speed(self):
         n_calls = 20000
-        print "n_calls", n_calls
+        print("n_calls", n_calls)
         for border_mode in ['valid', 'full']:
-            print
-            print border_mode
+            print()
+            print(border_mode)
             for openmp in [False, True]:
-                print "OpenMP", openmp
+                print("OpenMP", openmp)
                 image_shapes = [(1, 5, 6, 6),
                                 (10, 5, 6, 6),
                                 #(10, 10, 16, 16),
                                 #(10, 10, 32, 32)
                 ]
-                print "image_shape", image_shapes
+                print("image_shape", image_shapes)
                 for image_shape in image_shapes:
                     filter_shapes = [(1, 5, 4, 4), (2, 5, 4, 4), (5, 5, 4, 4)]
-                    print "filter_shapes", filter_shapes
+                    print("filter_shapes", filter_shapes)
                     for filter_shape in filter_shapes:
 
                         input = theano.shared(numpy.random.random(image_shape))
@@ -438,8 +447,31 @@ class TestConv2D(utt.InferShapeTester):
                         t1 = time.time()
                         theano_conv.fn(n_calls=n_calls)
                         t2 = time.time()
-                        print t2 - t1,
-                    print
+                        print(t2 - t1, end=' ')
+                    print()
+
+    def test_fail(self):
+        k = theano.shared(numpy.ones((1, 1, 3, 3), dtype='float32'))
+
+        im = T.ftensor4()
+        out = theano.function([im],
+                              T.nnet.conv2d(im, k, image_shape=(1, 1, 10, 10)))
+        self.assertRaises(ValueError, out, numpy.ones((1, 1, 20, 10),
+                                                      dtype='float32'))
+        out = theano.function([im],
+                              T.nnet.conv2d(im, k, filter_shape=(1, 1, 3, 2)))
+        self.assertRaises(ValueError, out, numpy.ones((1, 1, 10, 10),
+                                                      dtype='float32'))
+        out = theano.function([im],
+                              T.nnet.conv2d(im, k, filter_shape=(2, None,
+                                                                 None, None)))
+        self.assertRaises(ValueError, out, numpy.ones((1, 1, 10, 10),
+                                                      dtype='float32'))
+        out = theano.function([im],
+                              T.nnet.conv2d(im, k, image_shape=(1, None,
+                                                                None, None)))
+        self.assertRaises(ValueError, out, numpy.ones((2, 1, 10, 10),
+                                                      dtype='float32'))
 
     def test_infer_shape(self):
     # Note: infer_shape is incomplete and thus input and filter shapes

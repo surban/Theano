@@ -3,6 +3,7 @@ This module provides utility functions for the Scan Op
 
 See scan.py for details on scan
 """
+from __future__ import print_function
 __docformat__ = 'restructedtext en'
 __authors__ = ("Razvan Pascanu "
                "Frederic Bastien "
@@ -15,6 +16,7 @@ __contact__ = "Razvan Pascanu <r.pascanu@gmail>"
 
 import copy
 import logging
+import warnings
 from itertools import izip
 
 import numpy
@@ -23,7 +25,6 @@ import theano
 from theano.compile.pfunc import rebuild_collect_shared
 from theano import gof
 from theano import tensor, scalar
-from theano.gof.python25 import all
 from theano.tensor.basic import get_scalar_constant_value
 
 
@@ -146,7 +147,7 @@ def get_updates_and_outputs(ls):
             raise ValueError(error_msg)
 
 
-def clone(output, replace=None, strict=True, copy_inputs=True):
+def clone(output, replace=None, strict=True, share_inputs=True):
     """
     Function that allows replacing subgraphs of a computational
     graph. It returns a copy of the initial subgraph with the corresponding
@@ -159,14 +160,19 @@ def clone(output, replace=None, strict=True, copy_inputs=True):
     :type replace: dict
     :param replace: dictionary describing which subgraphs should be
                     replaced by what
-    """
 
+    :type share_inputs: bool
+    :param share_inputs: If True, use the same inputs (and shared variables)
+        as the original graph. If False, clone them. Note that cloned
+        shared variables still use the same underlying storage, so they
+        will always have the same value.
+    """
     inps, outs, other_stuff = rebuild_collect_shared(output,
                                                      [],
                                                      replace,
                                                      [],
                                                      strict,
-                                                     copy_inputs)
+                                                     share_inputs)
     return outs
 
 
@@ -238,7 +244,7 @@ def canonical_arguments(sequences,
                     if maxtap > 0:
                         ed = - (maxtap + offset_min - st)
                     else:
-                        ed = - (offset_min -st)
+                        ed = - (offset_min - st)
                     if ed != 0:
                         nw_input = nw_input[st:ed]
                     else:
@@ -412,7 +418,7 @@ class ScanPermutation(gof.Op):
             pos = index % membuffer.shape[0]
             if outputs[0] is membuffer:
                 membuffer = membuffer.copy()
-            print pos
+            print(pos)
             out[0][:membuffer.shape[0] - pos] = membuffer[pos:]
             out[0][membuffer.shape[0] - pos:] = membuffer[:pos]
 

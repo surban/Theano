@@ -6,8 +6,8 @@ import scipy
 import theano
 from theano import gof, scalar, tensor
 from theano.tensor import blas
+from theano.tensor.opt import register_specialize, register_canonicalize
 from theano.sparse import (CSC, CSR, csm_properties,
-                           register_specialize,
                            csm_grad, usmm, csm_indices, csm_indptr,
                            csm_data)
 from theano.sparse import basic as sparse
@@ -15,6 +15,8 @@ from theano.sparse import basic as sparse
 _is_sparse_variable = sparse._is_sparse_variable
 
 # This is tested in tests/test_opt.py:test_local_csm_properties_csm
+
+
 @gof.local_optimizer([csm_properties])
 def local_csm_properties_csm(node):
     """if we find csm_properties(CSM(*args)), then we can replace that with the
@@ -29,7 +31,7 @@ def local_csm_properties_csm(node):
             return ret_var
 
     return False
-sparse.register_specialize(local_csm_properties_csm)
+register_specialize(local_csm_properties_csm)
 
 
 # This is tested in tests/test_basic.py:test_remove0
@@ -64,7 +66,7 @@ class AddSD_ccode(gof.op.Op):
     """
     def __init__(self, format, inplace=False, *args, **kwargs):
         gof.Op.__init__(self, *args, **kwargs)
-        #Should we do inplace addition or not ?
+        # Should we do inplace addition or not ?
         self.inplace = inplace
         self.format = format
         if self.inplace:
@@ -103,7 +105,9 @@ class AddSD_ccode(gof.op.Op):
                          [data, indices, indptr, y],
                          [out])
 
-    def c_code(self, node, name, (_data, _indices, _indptr, y), (z, ), sub):
+    def c_code(self, node, name, inputs, outputs, sub):
+        (_data, _indices, _indptr, y) = inputs
+        (z,) = outputs
         inplace = int(self.inplace)
         format = {'csc': 0, 'csr': 1}[self.format]
         out_typenum = node.outputs[0].type.dtype_specs()[2]
@@ -177,6 +181,16 @@ theano.compile.optdb.register('local_inplace_addsd_ccode',
                               60, 'fast_run', 'inplace')
 
 
+@register_canonicalize("fast_compile")
+@register_specialize
+@gof.local_optimizer([sparse.DenseFromSparse])
+def local_dense_from_sparse_sparse_from_dense(node):
+    if isinstance(node.op, sparse.DenseFromSparse):
+        inp = node.inputs[0]
+        if inp.owner and isinstance(inp.owner.op, sparse.SparseFromDense):
+            return inp.owner.inputs
+
+
 @gof.local_optimizer([sparse.AddSD])
 def local_addsd_ccode(node):
     """
@@ -188,7 +202,7 @@ def local_addsd_ccode(node):
     return False
 theano.compile.optdb.register('local_addsd_ccode',
                               gof.TopoOptimizer(local_addsd_ccode),
-                              #Must be after local_inplace_addsd_ccode at 60
+                              # Must be after local_inplace_addsd_ccode at 60
                               61, 'fast_run')
 
 
@@ -224,7 +238,9 @@ class StructuredDotCSC(gof.Op):
                 [tensor.tensor(dtype_out, (False, b.type.broadcastable[1]))])
         return r
 
-    def perform(self, node, (a_val, a_ind, a_ptr, a_nrows, b), (out,)):
+    def perform(self, node, inputs, outputs):
+        (a_val, a_ind, a_ptr, a_nrows, b) = inputs
+        (out,) = outputs
         a = scipy.sparse.csc_matrix((a_val, a_ind, a_ptr),
                 (a_nrows, b.shape[0]),
                 copy=False)
@@ -232,7 +248,7 @@ class StructuredDotCSC(gof.Op):
         out[0] = theano._asarray(a * b, dtype=node.outputs[0].type.dtype)
         assert _is_dense(out[0])  # scipy 0.7 automatically converts to dense
 
-    def c_code(self, node, name, (a_val, a_ind, a_ptr, a_nrows, b), (z,), sub):
+    def c_code(self, node, name, inputs, outputs, sub):
         # C-implementation of the dot product of the sparse matrix A and matrix
         # B.
         # @param a_val: non-zero values of the sparse matrix
@@ -245,7 +261,8 @@ class StructuredDotCSC(gof.Op):
         # @param z: return value
         # @param sub: TODO, not too sure, something to do with weave probably
 
-
+        (a_val, a_ind, a_ptr, a_nrows, b) = inputs
+        (z,) = outputs
         if node.inputs[0].type.dtype in ('complex64', 'complex128'):
             raise NotImplementedError('Complex types are not supported for a_val')
         if node.inputs[4].type.dtype in ('complex64', 'complex128'):
@@ -415,7 +432,9 @@ class StructuredDotCSR(gof.Op):
                                                 b.type.broadcastable[1]))])
         return r
 
-    def perform(self, node, (a_val, a_ind, a_ptr, b), (out,)):
+    def perform(self, node, inputs, outputs):
+        (a_val, a_ind, a_ptr, b) = inputs
+        (out,) = outputs
         a = scipy.sparse.csr_matrix((a_val, a_ind, a_ptr),
                 (len(a_ptr) - 1, b.shape[0]),
                 copy=True)  # use view_map before setting this to False
@@ -424,7 +443,7 @@ class StructuredDotCSR(gof.Op):
         # scipy 0.7 automatically converts to dense, but not .6 sometimes
         assert _is_dense(out[0])
 
-    def c_code(self, node, name, (a_val, a_ind, a_ptr, b), (z,), sub):
+    def c_code(self, node, name, inputs, outputs, sub):
         """
         C-implementation of the dot product of the sparse matrix A and matrix
         B.
@@ -438,7 +457,8 @@ class StructuredDotCSR(gof.Op):
         @param z: return value
         @param sub: TODO, not too sure, something to do with weave probably
         """
-        # retrieve dtype number
+        (a_val, a_ind, a_ptr, b) = inputs
+        (z,) = outputs
         typenum_z = tensor.TensorType(self.dtype_out, []).dtype_specs()[2]
         if node.inputs[0].type.dtype in ('complex64', 'complex128'):
             raise NotImplementedError('Complex types are not supported for a_val')
@@ -563,7 +583,7 @@ def local_structured_dot(node):
 # slower, and
 # b) the resulting graphs make it very difficult for an op to do size checking
 # on the matrices involved.  dimension mismatches are hard to detect sensibly.
-#register_specialize(local_structured_dot)
+# register_specialize(local_structured_dot)
 
 
 class UsmmCscDense(gof.Op):
@@ -861,7 +881,7 @@ def local_usmm_csx(node):
                 return [usmm_csc_dense(alpha, x_val, x_ind, x_ptr,
                                        x_nsparse, y, z)]
     return False
-sparse.register_specialize(local_usmm_csx, 'cxx_only')
+register_specialize(local_usmm_csx, 'cxx_only')
 
 
 class CSMGradC(gof.Op):
@@ -879,9 +899,11 @@ class CSMGradC(gof.Op):
         return gof.Apply(self, [a_val, a_ind, a_ptr, a_dim,
              b_val, b_ind, b_ptr, b_dim], [b_val.type()])
 
-    def c_code(self, node, name, (a_val, a_ind, a_ptr, a_dim,
-                        b_val, b_ind, b_ptr, b_dim), (z,), sub):
+    def c_code(self, node, name, inputs, outputs, sub):
         # retrieve dtype number
+        (a_val, a_ind, a_ptr, a_dim,
+         b_val, b_ind, b_ptr, b_dim) = inputs
+        (z,) = outputs
         typenum_z = node.outputs[0].type.dtype_specs()[2]
         if node.inputs[0].type.dtype in ('complex64', 'complex128'):
             raise NotImplementedError('Complex types are not supported for a_val')
@@ -997,7 +1019,7 @@ def local_csm_grad_c(node):
     if node.op == csm_grad(None):
         return [csm_grad_c(*node.inputs)]
     return False
-#DISABLED AS IT IS BROKEN FOR UNSORTED INDICES!
+# DISABLED AS IT IS BROKEN FOR UNSORTED INDICES!
 #register_specialize(local_csm_grad_c, 'cxx_only')
 
 
@@ -1033,12 +1055,13 @@ class MulSDCSC(gof.Op):
     def c_code_cache_version(self):
         return (2,)
 
-    #def perform(self, node, (a_data, a_indices, a_indptr, b), (out,)):
+    # def perform(self, node, (a_data, a_indices, a_indptr, b), (out,)):
     #    return NotImplementedError()
 
-    def c_code(self, node, name, (_data, _indices, _indptr, _b,),
-               (_zout, ), sub):
+    def c_code(self, node, name, inputs, outputs, sub):
 
+        (_data, _indices, _indptr, _b,) = inputs
+        (_zout,) = outputs
         if node.inputs[0].type.dtype in ('complex64', 'complex128'):
             raise NotImplementedError('Complex types are not supported for a')
         if node.inputs[3].type.dtype in ('complex64', 'complex128'):
@@ -1149,12 +1172,13 @@ class MulSDCSR(gof.Op):
     def c_code_cache_version(self):
         return (2,)
 
-    #def perform(self, node, (a_data, a_indices, a_indptr, b), (out,)):
+    # def perform(self, node, (a_data, a_indices, a_indptr, b), (out,)):
     #    return NotImplemented()
 
-    def c_code(self, node, name, (_data, _indices, _indptr, _b,),
-               (_zout, ), sub):
+    def c_code(self, node, name, inputs, outputs, sub):
 
+        (_data, _indices, _indptr, _b,) = inputs
+        (_zout,) = outputs
         if node.inputs[0].type.dtype in ('complex64', 'complex128'):
             raise NotImplementedError('Complex types are not supported for a')
         if node.inputs[3].type.dtype in ('complex64', 'complex128'):
@@ -1259,7 +1283,7 @@ def local_mul_s_d(node):
         else:
             raise NotImplemented()
         if x.dtype != y.dtype:
-            #mul_s_d_csx don't support that case
+            # mul_s_d_csx don't support that case
             return
 
         c_data = mul_s_d_csx(sparse.csm_data(svar),
@@ -1272,7 +1296,7 @@ def local_mul_s_d(node):
                     sparse.csm_shape(svar))]
 
     return False
-sparse.register_specialize(local_mul_s_d, 'cxx_only')
+register_specialize(local_mul_s_d, 'cxx_only')
 
 
 class MulSVCSR(gof.Op):
@@ -1414,7 +1438,7 @@ def local_mul_s_v(node):
         return [CSx(c_data, s_ind, s_ptr, s_shape)]
 
     return False
-sparse.register_specialize(local_mul_s_v, 'cxx_only')
+register_specialize(local_mul_s_v, 'cxx_only')
 
 
 class StructuredAddSVCSR(gof.Op):
@@ -1573,7 +1597,7 @@ def local_structured_add_s_v(node):
         return [CSx(c_data, s_ind, s_ptr, s_shape)]
 
     return False
-sparse.register_specialize(local_structured_add_s_v, 'cxx_only')
+register_specialize(local_structured_add_s_v, 'cxx_only')
 
 
 class SamplingDotCSR(gof.Op):
@@ -1822,6 +1846,6 @@ def local_sampling_dot_csr(node):
             return [sparse.CSR(z_data, z_ind, z_ptr, p_shape)]
     return False
 
-sparse.register_specialize(local_sampling_dot_csr,
-                           'cxx_only',
-                           name='local_sampling_dot_csr')
+register_specialize(local_sampling_dot_csr,
+                    'cxx_only',
+                    name='local_sampling_dot_csr')

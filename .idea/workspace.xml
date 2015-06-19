@@ -2,19 +2,533 @@
 <project version="4">
   <component name="ChangeListManager">
     <list default="true" id="85c0ac90-df1e-44e2-af4a-d941ab27ae78" name="Default" comment="">
-      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/Project_Default.xml" />
-      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/.idea/Theano.iml" />
-      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/.idea/encodings.xml" />
-      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/.idea/misc.xml" />
-      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/.idea/modules.xml" />
-      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/.idea/inspectionProfiles/profiles_settings.xml" />
-      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/.idea/scopes/scope_settings.xml" />
-      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/.idea/vcs.xml" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/images/Elman_srnn.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/cifarSC2011/pics/logreg_pydotprint_predict.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/crei2013/pics/logreg_pydotprint_predict.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/tutorial/pics/logreg_pydotprint_predict.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/cifarSC2011/pics/logreg_pydotprint_prediction.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/crei2013/pics/logreg_pydotprint_prediction.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/tutorial/pics/logreg_pydotprint_prediction.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/cifarSC2011/pics/logreg_pydotprint_train.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/crei2013/pics/logreg_pydotprint_train.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/tutorial/pics/logreg_pydotprint_train.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/images/lstm.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/images/lstm_memorycell.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/omlw2014/omlw_presentation.pdf" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/omlw2014/pr_conv_gemm_profile.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/omlw2014/road-runner-1.jpg" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/tutorial/pics/symbolic_graph_opt.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/tutorial/pics/symbolic_graph_unopt.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/gof/tests/test_fg_old_crash.pkl" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/nextml2015/theano_grad.png" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/nextml2015/Makefile" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/omlw2014/Makefile" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/typed_list/__init__.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/typed_list/tests/__init__.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/typed_list/basic.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/blocksparse.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tests/breakpoint.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/citation.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/comp.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/corr3d_gemm.cu" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/corr_gemm.cu" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/cudnn_helper.h" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/cula.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/dnn.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/library/sandbox/cuda/dnn.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/dnn_base.c" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/dnn_conv_base.c" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/dnn_fwd.c" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/dnn_gi.c" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/dnn_gw.c" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/tutorial/extending_theano_c.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/extra_ops.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/faq.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/tutorial/faq_tutorial.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/fftconv.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/fp16_help.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/gemm16.c" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/gpuarray_helper.h" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/scan_module/tests/inconsistent_scan.pkl" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/install_windows.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/omlw2014/logreg.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/tutorial/nan_tutorial.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/compile/nanguardmode.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/library/compile/nanguardmode.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/neighbours.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/library/tensor/nnet/neighbours.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/nerv.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tensor/nlinalg.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/library/tensor/nlinalg.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/scan_module/numpy_api_changes.diff" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/library/compile/ops.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/typed_list/opt.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/opt_util.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/opt_util.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/library/misc/pkl_utils.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/nextml2015/presentation.tex" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/omlw2014/presentation.tex" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/pycuda_helper.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/omlw2014/sharing.tex" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tensor/slinalg.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/library/tensor/slinalg.txt" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/typed_list/tests/test_basic.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_blocksparse.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tests/test_breakpoint.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/gof/tests/test_compiledir.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_cula.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tests/test_dictionary_output.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_dnn.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_extra_ops.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_fftconv.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tests/test_flake8.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/compile/tests/test_function.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/compile/tests/test_function_name.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_gemmcorr3d.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/gof/tests/test_graph_opt_caching.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/compile/tests/test_mode.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/compile/tests/test_nanguardmode.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_neighbours.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_nerv.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/compile/tests/test_ops.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/typed_list/tests/test_opt.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tests/test_pickle_unpickle_theano_fn.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/misc/tests/test_pkl_utils.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/compile/tests/test_profiling.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tests/test_record.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_scan.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/scan_module/tests/test_scan_utils.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_slinalg.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/sparse/tests/test_type.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/typed_list/tests/test_type.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_type_other.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/gof/theano_mod_helper.h" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/theano/typed_list/type.py" />
+      <change type="NEW" beforePath="" afterPath="$PROJECT_DIR$/doc/library/typed_list.txt" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\examples\index.txt" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\examples\module\accumulator.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\examples\module\custom_init.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\examples\module\mechanism1.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\examples\module\mechanism2.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\examples\module\nested.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\examples\module\test_module_doc.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\library\compile\module.txt" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\proposals\advidx.txt" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\proposals\opencl.txt" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\sandbox\module.txt" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\sandbox\module2.txt" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\sandbox\module_vs_op.txt" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\doc\tutorial\faq.txt" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\compile\module.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\compile\tests\test_inplace_opt_for_value.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\compile\tests\test_module.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\gof\python25.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\misc\hooks\argparse.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\misc\nose_pr.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\sandbox\cuda\tests\CudaNdarray_py3.pkl" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\sandbox\downsample.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\sandbox\linalg\kron.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\sandbox\linalg\tests\test_kron.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\tensor\deprecated\rmodule.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\tensor\deprecated\test_rmodule.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\tensor\randomstreams.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\tensor\tests\test_naacl09.py" afterPath="" />
+      <change type="DELETED" beforePath="Z:\Documents\Other\Theano\theano\tensor\tests\test_randomstreams.py" afterPath="" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/f_optimized.png" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/f_optimized.png" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/f_unoptimized.png" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/f_unoptimized.png" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/logreg_pydotprint_predic.png" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/logreg_pydotprint_predic.png" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/logreg_pydotprint_prediction.png" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/logreg_pydotprint_prediction.png" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/logreg_pydotprint_train.png" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pics/logreg_pydotprint_train.png" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/shape_opt_cycle.pkl" afterPath="$PROJECT_DIR$/theano/tensor/tests/shape_opt_cycle.pkl" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/.gitignore" afterPath="$PROJECT_DIR$/.gitignore" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/.travis.yml" afterPath="$PROJECT_DIR$/.travis.yml" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/Conv3D.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/Conv3D.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/ConvGrad3D.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/ConvGrad3D.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/ConvTransp3D.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/ConvTransp3D.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/GpuConv3D.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/GpuConv3D.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/GpuConvGrad3D.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/GpuConvGrad3D.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/GpuConvTransp3D.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/GpuConvTransp3D.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/LICENSE.txt" afterPath="$PROJECT_DIR$/doc/LICENSE.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/MANIFEST.in" afterPath="$PROJECT_DIR$/MANIFEST.in" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/NEWS.txt" afterPath="$PROJECT_DIR$/NEWS.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/NEWS_DEV.txt" afterPath="$PROJECT_DIR$/NEWS_DEV.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/__init__.py" afterPath="$PROJECT_DIR$/theano/__init__.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compat/__init__.py" afterPath="$PROJECT_DIR$/theano/compat/__init__.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/__init__.py" afterPath="$PROJECT_DIR$/theano/compile/__init__.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/__init__.py" afterPath="$PROJECT_DIR$/theano/gof/__init__.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/__init__.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/__init__.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/__init__.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/__init__.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/linalg/__init__.py" afterPath="$PROJECT_DIR$/theano/sandbox/linalg/__init__.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/__init__.py" afterPath="$PROJECT_DIR$/theano/tensor/__init__.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/_test_mpi_roundtrip.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/_test_mpi_roundtrip.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/benchmark/autoencoder/aa.py" afterPath="$PROJECT_DIR$/benchmark/autoencoder/aa.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/benchmark/autoencoder/aa_numpy.py" afterPath="$PROJECT_DIR$/benchmark/autoencoder/aa_numpy.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/adding_solution_1.py" afterPath="$PROJECT_DIR$/doc/tutorial/adding_solution_1.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/cifarSC2011/advanced_theano.txt" afterPath="$PROJECT_DIR$/doc/cifarSC2011/advanced_theano.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/crei2013/advanced_theano.txt" afterPath="$PROJECT_DIR$/doc/crei2013/advanced_theano.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/aliasing.txt" afterPath="$PROJECT_DIR$/doc/tutorial/aliasing.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scalar/basic.py" afterPath="$PROJECT_DIR$/theano/scalar/basic.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/basic.py" afterPath="$PROJECT_DIR$/theano/sparse/basic.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/basic.py" afterPath="$PROJECT_DIR$/theano/tensor/basic.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/tensor/basic.txt" afterPath="$PROJECT_DIR$/doc/library/tensor/basic.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/basic_ops.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/basic_ops.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/basic_ops.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/basic_ops.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scalar/basic_scipy.py" afterPath="$PROJECT_DIR$/theano/scalar/basic_scipy.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scalar/basic_sympy.py" afterPath="$PROJECT_DIR$/theano/scalar/basic_sympy.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/blas.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/blas.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/blas.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/blas.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/blas.py" afterPath="$PROJECT_DIR$/theano/tensor/blas.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/blas_c.py" afterPath="$PROJECT_DIR$/theano/tensor/blas_c.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/blas_headers.py" afterPath="$PROJECT_DIR$/theano/tensor/blas_headers.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/blas_scipy.py" afterPath="$PROJECT_DIR$/theano/tensor/blas_scipy.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/buildbot_filter.py" afterPath="$PROJECT_DIR$/theano/misc/buildbot_filter.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/builders.py" afterPath="$PROJECT_DIR$/theano/compile/builders.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/callcache.py" afterPath="$PROJECT_DIR$/theano/gof/callcache.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/cc.py" afterPath="$PROJECT_DIR$/theano/gof/cc.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/check_blas.py" afterPath="$PROJECT_DIR$/theano/misc/check_blas.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/check_duplicate_key.py" afterPath="$PROJECT_DIR$/theano/misc/check_duplicate_key.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/hooks/check_whitespace.py" afterPath="$PROJECT_DIR$/theano/misc/hooks/check_whitespace.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/cmodule.py" afterPath="$PROJECT_DIR$/theano/gof/cmodule.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/developer/compat.txt" afterPath="$PROJECT_DIR$/doc/developer/compat.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/compiledir.py" afterPath="$PROJECT_DIR$/theano/gof/compiledir.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/compilelock.py" afterPath="$PROJECT_DIR$/theano/gof/compilelock.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/conf.py" afterPath="$PROJECT_DIR$/doc/conf.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/config.txt" afterPath="$PROJECT_DIR$/doc/library/config.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/configdefaults.py" afterPath="$PROJECT_DIR$/theano/configdefaults.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/configparser.py" afterPath="$PROJECT_DIR$/theano/configparser.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/conv.py" afterPath="$PROJECT_DIR$/theano/sandbox/conv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/conv.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/conv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/conv.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/conv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/signal/conv.py" afterPath="$PROJECT_DIR$/theano/tensor/signal/conv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/tensor/nnet/conv.txt" afterPath="$PROJECT_DIR$/doc/library/tensor/nnet/conv.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/benchmark/convolution/conv2d.py" afterPath="$PROJECT_DIR$/benchmark/convolution/conv2d.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/conv3d2d.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/conv3d2d.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/cop.txt" afterPath="$PROJECT_DIR$/doc/extending/cop.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/cpucount.py" afterPath="$PROJECT_DIR$/theano/misc/cpucount.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/ctype.txt" afterPath="$PROJECT_DIR$/doc/extending/ctype.txt" />
       <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cu" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cu" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cuh" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cuh" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/cudamat_utils.py" afterPath="$PROJECT_DIR$/theano/misc/cudamat_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/cutils.py" afterPath="$PROJECT_DIR$/theano/gof/cutils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/debug.py" afterPath="$PROJECT_DIR$/theano/sandbox/debug.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/debug_faq.txt" afterPath="$PROJECT_DIR$/doc/tutorial/debug_faq.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/debugmode.py" afterPath="$PROJECT_DIR$/theano/compile/debugmode.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/compile/debugmode.txt" afterPath="$PROJECT_DIR$/doc/library/compile/debugmode.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/destroyhandler.py" afterPath="$PROJECT_DIR$/theano/gof/destroyhandler.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/dev_start_guide.txt" afterPath="$PROJECT_DIR$/doc/dev_start_guide.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/disturb_mem.py" afterPath="$PROJECT_DIR$/theano/tests/disturb_mem.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/do_nightly_build" afterPath="$PROJECT_DIR$/theano/misc/do_nightly_build" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/scripts/docgen.py" afterPath="$PROJECT_DIR$/doc/scripts/docgen.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/double_op.py" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/double_op.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/doubleop.py" afterPath="$PROJECT_DIR$/theano/misc/doubleop.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/signal/downsample.py" afterPath="$PROJECT_DIR$/theano/tensor/signal/downsample.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/tensor/signal/downsample.txt" afterPath="$PROJECT_DIR$/doc/library/tensor/signal/downsample.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/elemwise.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/elemwise.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/elemwise.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/elemwise.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/elemwise.py" afterPath="$PROJECT_DIR$/theano/tensor/elemwise.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/elemwise_cgen.py" afterPath="$PROJECT_DIR$/theano/tensor/elemwise_cgen.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/elemwise_openmp_speedup.py" afterPath="$PROJECT_DIR$/theano/misc/elemwise_openmp_speedup.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/elemwise_time_test.py" afterPath="$PROJECT_DIR$/theano/misc/elemwise_time_test.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/sandbox/equilibrium.py" afterPath="$PROJECT_DIR$/theano/gof/sandbox/equilibrium.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/examples.txt" afterPath="$PROJECT_DIR$/doc/tutorial/examples.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/extending_theano.txt" afterPath="$PROJECT_DIR$/doc/tutorial/extending_theano.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/extending_theano_solution_1.py" afterPath="$PROJECT_DIR$/doc/tutorial/extending_theano_solution_1.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/extra_ops.py" afterPath="$PROJECT_DIR$/theano/tensor/extra_ops.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/fg.py" afterPath="$PROJECT_DIR$/theano/gof/fg.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/sandbox/fg.txt" afterPath="$PROJECT_DIR$/doc/sandbox/fg.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/fibby.txt" afterPath="$PROJECT_DIR$/doc/extending/fibby.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/fourier.py" afterPath="$PROJECT_DIR$/theano/sandbox/fourier.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/function.py" afterPath="$PROJECT_DIR$/theano/compile/function.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/compile/function.txt" afterPath="$PROJECT_DIR$/doc/library/compile/function.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/function_module.py" afterPath="$PROJECT_DIR$/theano/compile/function_module.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/benchmark/numexpr/gen_graph.py" afterPath="$PROJECT_DIR$/benchmark/numexpr/gen_graph.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/generate_dtype_tensor_table.py" afterPath="$PROJECT_DIR$/doc/generate_dtype_tensor_table.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/gh_api.py" afterPath="$PROJECT_DIR$/theano/misc/gh_api.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/glossary.txt" afterPath="$PROJECT_DIR$/doc/glossary.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/gnumpy_utils.py" afterPath="$PROJECT_DIR$/theano/misc/gnumpy_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/gpu_data_convert.txt" afterPath="$PROJECT_DIR$/doc/tutorial/gpu_data_convert.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gradient.py" afterPath="$PROJECT_DIR$/theano/gradient.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/gradient.txt" afterPath="$PROJECT_DIR$/doc/library/gradient.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/graph.py" afterPath="$PROJECT_DIR$/theano/gof/graph.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/graphstructures.txt" afterPath="$PROJECT_DIR$/doc/extending/graphstructures.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/internal/how_to_release.txt" afterPath="$PROJECT_DIR$/doc/internal/how_to_release.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/ifelse.py" afterPath="$PROJECT_DIR$/theano/ifelse.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/crei2013/ifelse_switch.py" afterPath="$PROJECT_DIR$/doc/crei2013/ifelse_switch.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/index.txt" afterPath="$PROJECT_DIR$/doc/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/index.txt" afterPath="$PROJECT_DIR$/doc/library/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/compile/index.txt" afterPath="$PROJECT_DIR$/doc/library/compile/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/sandbox/cuda/index.txt" afterPath="$PROJECT_DIR$/doc/library/sandbox/cuda/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/sparse/index.txt" afterPath="$PROJECT_DIR$/doc/library/sparse/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/tensor/index.txt" afterPath="$PROJECT_DIR$/doc/library/tensor/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/tensor/nnet/index.txt" afterPath="$PROJECT_DIR$/doc/library/tensor/nnet/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/proposals/index.txt" afterPath="$PROJECT_DIR$/doc/proposals/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/index.txt" afterPath="$PROJECT_DIR$/doc/tutorial/index.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/sandbox/index2.txt" afterPath="$PROJECT_DIR$/doc/sandbox/index2.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/inplace.py" afterPath="$PROJECT_DIR$/theano/tensor/inplace.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/inplace.txt" afterPath="$PROJECT_DIR$/doc/extending/inplace.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/install.txt" afterPath="$PROJECT_DIR$/doc/install.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/install_ubuntu.txt" afterPath="$PROJECT_DIR$/doc/install_ubuntu.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/introduction.txt" afterPath="$PROJECT_DIR$/doc/introduction.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/io.py" afterPath="$PROJECT_DIR$/theano/compile/io.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/compile/io.txt" afterPath="$PROJECT_DIR$/doc/library/compile/io.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/kernel_codegen.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/kernel_codegen.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/kernel_codegen.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/kernel_codegen.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/latence_gpu_transfert.py" afterPath="$PROJECT_DIR$/theano/misc/latence_gpu_transfert.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/lazylinker_c.c" afterPath="$PROJECT_DIR$/theano/gof/lazylinker_c.c" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/lazylinker_c.py" afterPath="$PROJECT_DIR$/theano/gof/lazylinker_c.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/sandbox/linalg.txt" afterPath="$PROJECT_DIR$/doc/library/sandbox/linalg.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/link.py" afterPath="$PROJECT_DIR$/theano/gof/link.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/loading_and_saving.txt" afterPath="$PROJECT_DIR$/doc/tutorial/loading_and_saving.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/crei2013/logreg.py" afterPath="$PROJECT_DIR$/doc/crei2013/logreg.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/logreg_example.py" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/logreg_example.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/loop.txt" afterPath="$PROJECT_DIR$/doc/tutorial/loop.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/loop_solution_1.py" afterPath="$PROJECT_DIR$/doc/tutorial/loop_solution_1.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/main.py" afterPath="$PROJECT_DIR$/theano/tests/main.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/may_share_memory.py" afterPath="$PROJECT_DIR$/theano/misc/may_share_memory.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/minimal.py" afterPath="$PROJECT_DIR$/theano/sandbox/minimal.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/mlp_test.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/mlp_test.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/mode.py" afterPath="$PROJECT_DIR$/theano/compile/mode.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/modes.txt" afterPath="$PROJECT_DIR$/doc/tutorial/modes.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/modes_solution_1.py" afterPath="$PROJECT_DIR$/doc/tutorial/modes_solution_1.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/monitormode.py" afterPath="$PROJECT_DIR$/theano/compile/monitormode.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/multi_cores.txt" afterPath="$PROJECT_DIR$/doc/tutorial/multi_cores.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/multinomial.py" afterPath="$PROJECT_DIR$/theano/sandbox/multinomial.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/neighbourhoods.py" afterPath="$PROJECT_DIR$/theano/sandbox/neighbourhoods.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/neighbours.py" afterPath="$PROJECT_DIR$/theano/sandbox/neighbours.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/neighbours.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/neighbours.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/nnet.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/nnet.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/nnet.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/nnet.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/nnet.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/nnet.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/tensor/nnet/nnet.txt" afterPath="$PROJECT_DIR$/doc/library/tensor/nnet/nnet.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/null_type.py" afterPath="$PROJECT_DIR$/theano/gof/null_type.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/numpy.txt" afterPath="$PROJECT_DIR$/doc/tutorial/numpy.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/nvcc_compiler.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/nvcc_compiler.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/op.py" afterPath="$PROJECT_DIR$/theano/gof/op.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/op.txt" afterPath="$PROJECT_DIR$/doc/extending/op.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/benchmark/convolution/opencv.py" afterPath="$PROJECT_DIR$/benchmark/convolution/opencv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/ops.py" afterPath="$PROJECT_DIR$/theano/compile/ops.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/linalg/ops.py" afterPath="$PROJECT_DIR$/theano/sandbox/linalg/ops.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/opt.py" afterPath="$PROJECT_DIR$/theano/gof/opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/opt.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/opt.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/opt.py" afterPath="$PROJECT_DIR$/theano/sparse/opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/opt.py" afterPath="$PROJECT_DIR$/theano/tensor/opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/opt_uncanonicalize.py" afterPath="$PROJECT_DIR$/theano/tensor/opt_uncanonicalize.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/optdb.py" afterPath="$PROJECT_DIR$/theano/gof/optdb.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/optimization.txt" afterPath="$PROJECT_DIR$/doc/extending/optimization.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/optimizations.txt" afterPath="$PROJECT_DIR$/doc/optimizations.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/ordered_set.py" afterPath="$PROJECT_DIR$/theano/misc/ordered_set.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/other_ops.txt" afterPath="$PROJECT_DIR$/doc/extending/other_ops.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/pfunc.py" afterPath="$PROJECT_DIR$/theano/compile/pfunc.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/pipeline.txt" afterPath="$PROJECT_DIR$/doc/extending/pipeline.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/pkl_utils.py" afterPath="$PROJECT_DIR$/theano/misc/pkl_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/printing.py" afterPath="$PROJECT_DIR$/theano/printing.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/printing_drawing.txt" afterPath="$PROJECT_DIR$/doc/tutorial/printing_drawing.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/profilemode.py" afterPath="$PROJECT_DIR$/theano/compile/profilemode.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/compile/profilemode.txt" afterPath="$PROJECT_DIR$/doc/library/compile/profilemode.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/profiling.py" afterPath="$PROJECT_DIR$/theano/compile/profiling.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/profiling.txt" afterPath="$PROJECT_DIR$/doc/tutorial/profiling.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/cifarSC2011/pyCUDA.txt" afterPath="$PROJECT_DIR$/doc/cifarSC2011/pyCUDA.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pycuda_double_op.py" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pycuda_double_op.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/pycuda_example.py" afterPath="$PROJECT_DIR$/theano/misc/pycuda_example.py" />
       <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/pycuda_init.py" afterPath="$PROJECT_DIR$/theano/misc/pycuda_init.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pycuda_simple.py" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/pycuda_simple.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/pycuda_utils.py" afterPath="$PROJECT_DIR$/theano/misc/pycuda_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/python-memory-management.txt" afterPath="$PROJECT_DIR$/doc/tutorial/python-memory-management.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/python.txt" afterPath="$PROJECT_DIR$/doc/tutorial/python.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compat/python2x.py" afterPath="$PROJECT_DIR$/theano/compat/python2x.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/raise_op.py" afterPath="$PROJECT_DIR$/theano/raise_op.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/raw_random.py" afterPath="$PROJECT_DIR$/theano/tensor/raw_random.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/tensor/raw_random.txt" afterPath="$PROJECT_DIR$/doc/library/tensor/raw_random.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/record.py" afterPath="$PROJECT_DIR$/theano/tests/record.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/benchmark/regression/regression.py" afterPath="$PROJECT_DIR$/benchmark/regression/regression.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/hooks/reindent.py" afterPath="$PROJECT_DIR$/theano/misc/hooks/reindent.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/rng_curand.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/rng_curand.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/rng_mrg.py" afterPath="$PROJECT_DIR$/theano/sandbox/rng_mrg.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/run_tests_in_batch.py" afterPath="$PROJECT_DIR$/theano/tests/run_tests_in_batch.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/sandbox/sandbox.txt" afterPath="$PROJECT_DIR$/doc/sandbox/sandbox.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/scan.py" afterPath="$PROJECT_DIR$/theano/sandbox/scan.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/scan_module/scan.py" afterPath="$PROJECT_DIR$/theano/sandbox/scan_module/scan.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/scan.py" afterPath="$PROJECT_DIR$/theano/scan_module/scan.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/scan.txt" afterPath="$PROJECT_DIR$/doc/library/scan.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/scan_module/scan_op.py" afterPath="$PROJECT_DIR$/theano/sandbox/scan_module/scan_op.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/scan_op.py" afterPath="$PROJECT_DIR$/theano/scan_module/scan_op.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/scan_opt.py" afterPath="$PROJECT_DIR$/theano/scan_module/scan_opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/scan_perform.c" afterPath="$PROJECT_DIR$/theano/scan_module/scan_perform.c" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/scan_perform.pyx" afterPath="$PROJECT_DIR$/theano/scan_module/scan_perform.pyx" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/scan_perform_ext.py" afterPath="$PROJECT_DIR$/theano/scan_module/scan_perform_ext.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/crei2013/scan_poly.py" afterPath="$PROJECT_DIR$/doc/crei2013/scan_poly.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/scan_poly.py" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/scan_poly.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/crei2013/scan_pow.py" afterPath="$PROJECT_DIR$/doc/crei2013/scan_pow.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/scan_pow.py" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/scan_pow.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/scan_module/scan_utils.py" afterPath="$PROJECT_DIR$/theano/sandbox/scan_module/scan_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/scan_utils.py" afterPath="$PROJECT_DIR$/theano/scan_module/scan_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/sched.py" afterPath="$PROJECT_DIR$/theano/gof/sched.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/benchmark/convolution/scipy_conv.py" afterPath="$PROJECT_DIR$/benchmark/convolution/scipy_conv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/setup.py" afterPath="$PROJECT_DIR$/setup.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/shape_info.txt" afterPath="$PROJECT_DIR$/doc/tutorial/shape_info.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/compile/shared.txt" afterPath="$PROJECT_DIR$/doc/library/compile/shared.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/shared_randomstreams.py" afterPath="$PROJECT_DIR$/theano/tensor/shared_randomstreams.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/tensor/shared_randomstreams.txt" afterPath="$PROJECT_DIR$/doc/library/tensor/shared_randomstreams.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/sharedvalue.py" afterPath="$PROJECT_DIR$/theano/compile/sharedvalue.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scalar/sharedvar.py" afterPath="$PROJECT_DIR$/theano/scalar/sharedvar.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/sharedvar.py" afterPath="$PROJECT_DIR$/theano/sparse/sharedvar.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/sharedvar.py" afterPath="$PROJECT_DIR$/theano/tensor/sharedvar.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/sigm.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/sigm.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/hpcs2011_tutorial/simple_example.py" afterPath="$PROJECT_DIR$/doc/hpcs2011_tutorial/simple_example.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compat/six.py" afterPath="$PROJECT_DIR$/theano/compat/six.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/softsign.py" afterPath="$PROJECT_DIR$/theano/sandbox/softsign.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/solve.py" afterPath="$PROJECT_DIR$/theano/sandbox/solve.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/sort.py" afterPath="$PROJECT_DIR$/theano/tensor/sort.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/sandbox/sp.py" afterPath="$PROJECT_DIR$/theano/sparse/sandbox/sp.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/sandbox/sp2.py" afterPath="$PROJECT_DIR$/theano/sparse/sandbox/sp2.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/tests/speed_test_conv.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/tests/speed_test_conv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/strutil.py" afterPath="$PROJECT_DIR$/theano/misc/strutil.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/subtensor.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/subtensor.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/subtensor.py" afterPath="$PROJECT_DIR$/theano/tensor/subtensor.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/symbolic_graphs.txt" afterPath="$PROJECT_DIR$/doc/tutorial/symbolic_graphs.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/symbolic_module.py" afterPath="$PROJECT_DIR$/theano/sandbox/symbolic_module.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_2nd_order_grads.py" afterPath="$PROJECT_DIR$/theano/tests/test_2nd_order_grads.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scalar/tests/test_basic.py" afterPath="$PROJECT_DIR$/theano/scalar/tests/test_basic.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/tests/test_basic.py" afterPath="$PROJECT_DIR$/theano/sparse/tests/test_basic.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_basic.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_basic.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_basic_ops.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_basic_ops.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_basic_ops.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_basic_ops.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scalar/tests/test_basic_sympy.py" afterPath="$PROJECT_DIR$/theano/scalar/tests/test_basic_sympy.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_bench_loopfusion.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_bench_loopfusion.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_blas.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_blas.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_blas.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_blas.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_blas.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_blas.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_blas_c.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_blas_c.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_blas_scipy.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_blas_scipy.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/tests/test_builders.py" afterPath="$PROJECT_DIR$/theano/compile/tests/test_builders.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_casting.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_casting.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_cc.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_cc.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_complex.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_complex.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_compute_test_value.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_compute_test_value.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_config.py" afterPath="$PROJECT_DIR$/theano/tests/test_config.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_conv.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_conv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/signal/tests/test_conv.py" afterPath="$PROJECT_DIR$/theano/tensor/signal/tests/test_conv.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_conv3d.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_conv3d.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_conv3d2d.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_conv3d2d.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_conv_cuda_ndarray.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_conv_cuda_ndarray.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_conv_cuda_ndarray.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_conv_cuda_ndarray.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_cuda_ndarray.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_cuda_ndarray.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/tests/test_cudamat_utils.py" afterPath="$PROJECT_DIR$/theano/misc/tests/test_cudamat_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/tests/test_debugmode.py" afterPath="$PROJECT_DIR$/theano/compile/tests/test_debugmode.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_destroyhandler.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_destroyhandler.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_determinism.py" afterPath="$PROJECT_DIR$/theano/tests/test_determinism.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/signal/tests/test_downsample.py" afterPath="$PROJECT_DIR$/theano/tensor/signal/tests/test_downsample.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_driver.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_driver.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_elemwise.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_elemwise.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_elemwise.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_elemwise.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_extra_ops.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_extra_ops.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_fg.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_fg.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/tests/test_function_module.py" afterPath="$PROJECT_DIR$/theano/compile/tests/test_function_module.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_gc.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_gc.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_gradient.py" afterPath="$PROJECT_DIR$/theano/tests/test_gradient.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_graph.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_graph.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_ifelse.py" afterPath="$PROJECT_DIR$/theano/tests/test_ifelse.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_inc_subtensor.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_inc_subtensor.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_keepdims.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_keepdims.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_lazy.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_lazy.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/linalg/tests/test_linalg.py" afterPath="$PROJECT_DIR$/theano/sandbox/linalg/tests/test_linalg.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_link.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_link.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/tests/test_may_share_memory.py" afterPath="$PROJECT_DIR$/theano/misc/tests/test_may_share_memory.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_memory.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_memory.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_merge.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_merge.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/tests/test_misc.py" afterPath="$PROJECT_DIR$/theano/compile/tests/test_misc.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_misc.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_misc.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_mlp.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_mlp.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/tests/test_modes.py" afterPath="$PROJECT_DIR$/theano/compile/tests/test_modes.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/tests/test_monitormode.py" afterPath="$PROJECT_DIR$/theano/compile/tests/test_monitormode.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_mpi.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_mpi.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/test_multinomial.py" afterPath="$PROJECT_DIR$/theano/sandbox/test_multinomial.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_neighbours.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_neighbours.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_nnet.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_nnet.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_nnet.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_nnet.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_nnet.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_nnet.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_op.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_op.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_opt.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_opt.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_opt.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/tests/test_opt.py" afterPath="$PROJECT_DIR$/theano/sparse/tests/test_opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_opt.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_opt_uncanonicalize.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_opt_uncanonicalize.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_optdb.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_optdb.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/tests/test_pfunc.py" afterPath="$PROJECT_DIR$/theano/compile/tests/test_pfunc.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_printing.py" afterPath="$PROJECT_DIR$/theano/tests/test_printing.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/tests/test_pycuda_example.py" afterPath="$PROJECT_DIR$/theano/misc/tests/test_pycuda_example.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/tests/test_pycuda_theano_simple.py" afterPath="$PROJECT_DIR$/theano/misc/tests/test_pycuda_theano_simple.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/tests/test_pycuda_utils.py" afterPath="$PROJECT_DIR$/theano/misc/tests/test_pycuda_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_raw_random.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_raw_random.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_rng_curand.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_rng_curand.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/test_rng_mrg.py" afterPath="$PROJECT_DIR$/theano/sandbox/test_rng_mrg.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_rop.py" afterPath="$PROJECT_DIR$/theano/tests/test_rop.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/test_scan.py" afterPath="$PROJECT_DIR$/theano/sandbox/test_scan.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/scan_module/tests/test_scan.py" afterPath="$PROJECT_DIR$/theano/sandbox/scan_module/tests/test_scan.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/tests/test_scan.py" afterPath="$PROJECT_DIR$/theano/scan_module/tests/test_scan.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/scan_module/tests/test_scan_opt.py" afterPath="$PROJECT_DIR$/theano/scan_module/tests/test_scan_opt.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_sched.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_sched.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/compile/tests/test_shared.py" afterPath="$PROJECT_DIR$/theano/compile/tests/test_shared.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_shared_randomstreams.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_shared_randomstreams.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_sharedvar.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_sharedvar.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_sigm.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_sigm.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_sort.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_sort.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/sandbox/test_sp.py" afterPath="$PROJECT_DIR$/theano/sparse/sandbox/test_sp.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_subtensor.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_subtensor.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_subtensor.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_subtensor.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_tensor_op.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_tensor_op.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/test_theano_object.py" afterPath="$PROJECT_DIR$/theano/sandbox/test_theano_object.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_tutorial.py" afterPath="$PROJECT_DIR$/theano/tests/test_tutorial.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_type.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/test_type.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_type.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/tests/test_type.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_types.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_types.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/test_updates.py" afterPath="$PROJECT_DIR$/theano/tests/test_updates.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_utils.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/scan_module/tests/test_utils.py" afterPath="$PROJECT_DIR$/theano/sandbox/scan_module/tests/test_utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/tests/test_vm.py" afterPath="$PROJECT_DIR$/theano/gof/tests/test_vm.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/tests/test_xlogx.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_xlogx.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/bin/theano-cache" afterPath="$PROJECT_DIR$/bin/theano-cache" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/bin/theano-nose" afterPath="$PROJECT_DIR$/bin/theano-nose" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/bin/theano-test" afterPath="$PROJECT_DIR$/bin/theano-test" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/theano_object.py" afterPath="$PROJECT_DIR$/theano/sandbox/theano_object.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/theano_vs_c.txt" afterPath="$PROJECT_DIR$/doc/extending/theano_vs_c.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/toolbox.py" afterPath="$PROJECT_DIR$/theano/gof/toolbox.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/library/gof/toolbox.txt" afterPath="$PROJECT_DIR$/doc/library/gof/toolbox.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/type.py" afterPath="$PROJECT_DIR$/theano/gof/type.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/type.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/type.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/gpuarray/type.py" afterPath="$PROJECT_DIR$/theano/sandbox/gpuarray/type.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sparse/type.py" afterPath="$PROJECT_DIR$/theano/sparse/type.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/type.py" afterPath="$PROJECT_DIR$/theano/tensor/type.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/type.txt" afterPath="$PROJECT_DIR$/doc/extending/type.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/type_other.py" afterPath="$PROJECT_DIR$/theano/tensor/type_other.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/unify.py" afterPath="$PROJECT_DIR$/theano/gof/unify.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/extending/unittest.txt" afterPath="$PROJECT_DIR$/doc/extending/unittest.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tests/unittest_tools.py" afterPath="$PROJECT_DIR$/theano/tests/unittest_tools.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/updates.py" afterPath="$PROJECT_DIR$/theano/updates.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/using_gpu.txt" afterPath="$PROJECT_DIR$/doc/tutorial/using_gpu.txt" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/doc/tutorial/using_gpu_solution_1.py" afterPath="$PROJECT_DIR$/doc/tutorial/using_gpu_solution_1.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/utils.py" afterPath="$PROJECT_DIR$/theano/gof/utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/utils.py" afterPath="$PROJECT_DIR$/theano/tensor/utils.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/var.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/var.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/var.py" afterPath="$PROJECT_DIR$/theano/tensor/var.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/version.py" afterPath="$PROJECT_DIR$/theano/version.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/gof/vm.py" afterPath="$PROJECT_DIR$/theano/gof/vm.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/sandbox/cuda/tests/walltime.py" afterPath="$PROJECT_DIR$/theano/sandbox/cuda/tests/walltime.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/misc/windows.py" afterPath="$PROJECT_DIR$/theano/misc/windows.py" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/.idea/workspace.xml" afterPath="$PROJECT_DIR$/.idea/workspace.xml" />
+      <change type="MODIFICATION" beforePath="$PROJECT_DIR$/theano/tensor/xlogx.py" afterPath="$PROJECT_DIR$/theano/tensor/xlogx.py" />
+      <change type="MOVED" beforePath="Z:\Documents\Other\Theano\NEWS.txt" afterPath="$PROJECT_DIR$/HISTORY.txt" />
+      <change type="MOVED" beforePath="Z:\Documents\Other\Theano\doc\crei2013\logreg_profile.txt" afterPath="$PROJECT_DIR$/doc/crei2013/logreg_profile.prof" />
+      <change type="MOVED" beforePath="Z:\Documents\Other\Theano\doc\tutorial\profiling_example_out.txt" afterPath="$PROJECT_DIR$/doc/tutorial/profiling_example_out.prof" />
+      <change type="MOVED" beforePath="Z:\Documents\Other\Theano\theano\sandbox\linalg\tests\test_linalg.py" afterPath="$PROJECT_DIR$/theano/tensor/tests/test_nlinalg.py" />
+      <change type="MOVED" beforePath="Z:\Documents\Other\Theano\theano\sandbox\neighbours.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/neighbours.py" />
+      <change type="MOVED" beforePath="Z:\Documents\Other\Theano\theano\sandbox\test_neighbours.py" afterPath="$PROJECT_DIR$/theano/tensor/nnet/tests/test_neighbours.py" />
     </list>
     <ignored path="Theano.iws" />
     <ignored path=".idea/workspace.xml" />
+    <option name="EXCLUDED_CONVERTED_TO_IGNORED" value="true" />
     <option name="TRACKING_ENABLED" value="true" />
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -25,37 +539,67 @@
   <component name="CreatePatchCommitExecutor">
     <option name="PATCH_PATH" value="" />
   </component>
-  <component name="DaemonCodeAnalyzer">
-    <disable_hints />
-  </component>
   <component name="ExecutionTargetManager" SELECTED_TARGET="default_target" />
   <component name="FavoritesManager">
     <favorites_list name="Theano" />
   </component>
   <component name="FileEditorManager">
     <leaf>
-      <file leaf-file-name="__init__.py" pinned="false" current="false" current-in-tab="false">
+      <file leaf-file-name="__init__.py" pinned="false" current-in-tab="false">
         <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/__init__.py">
           <provider selected="true" editor-type-id="text-editor">
-            <state line="206" column="13" selection-start="7660" selection-end="7660" vertical-scroll-proportion="0.0" vertical-offset="2414" max-vertical-offset="8177">
+            <state vertical-scroll-proportion="0.0">
+              <caret line="235" column="0" selection-start-line="235" selection-start-column="0" selection-end-line="235" selection-end-column="0" />
               <folding />
             </state>
           </provider>
         </entry>
       </file>
-      <file leaf-file-name="cuda_ndarray.cu" pinned="false" current="false" current-in-tab="false">
+      <file leaf-file-name="nvcc_compiler.py" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/nvcc_compiler.py">
+          <provider selected="true" editor-type-id="text-editor">
+            <state vertical-scroll-proportion="0.0">
+              <caret line="435" column="16" selection-start-line="435" selection-start-column="16" selection-end-line="435" selection-end-column="16" />
+              <folding />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="scan_perform.c" pinned="false" current-in-tab="true">
+        <entry file="file://$PROJECT_DIR$/theano/scan_module/scan_perform.c">
+          <provider selected="true" editor-type-id="text-editor">
+            <state vertical-scroll-proportion="0.48929664">
+              <caret line="575" column="18" selection-start-line="575" selection-start-column="18" selection-end-line="575" selection-end-column="18" />
+              <folding />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="cuda_ndarray.cu" pinned="false" current-in-tab="false">
         <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cu">
           <provider selected="true" editor-type-id="text-editor">
-            <state line="3537" column="0" selection-start="122753" selection-end="122753" vertical-scroll-proportion="0.0" vertical-offset="59691" max-vertical-offset="87737">
+            <state vertical-scroll-proportion="-14.586206">
+              <caret line="3668" column="0" selection-start-line="3668" selection-start-column="0" selection-end-line="3668" selection-end-column="0" />
               <folding />
             </state>
           </provider>
         </entry>
       </file>
-      <file leaf-file-name="pycuda_init.py" pinned="false" current="true" current-in-tab="true">
+      <file leaf-file-name="gnumpy_utils.py" pinned="false" current-in-tab="false">
+        <entry file="file://$PROJECT_DIR$/theano/misc/gnumpy_utils.py">
+          <provider selected="true" editor-type-id="text-editor">
+            <state vertical-scroll-proportion="0.0">
+              <caret line="70" column="0" selection-start-line="70" selection-start-column="0" selection-end-line="70" selection-end-column="0" />
+              <folding />
+            </state>
+          </provider>
+        </entry>
+      </file>
+      <file leaf-file-name="pycuda_init.py" pinned="false" current-in-tab="false">
         <entry file="file://$PROJECT_DIR$/theano/misc/pycuda_init.py">
           <provider selected="true" editor-type-id="text-editor">
-            <state line="52" column="96" selection-start="1998" selection-end="1998" vertical-scroll-proportion="0.6251956" vertical-offset="0" max-vertical-offset="1278">
+            <state vertical-scroll-proportion="0.0">
+              <caret line="56" column="39" selection-start-line="56" selection-start-column="39" selection-end-line="56" selection-end-column="39" />
               <folding />
             </state>
           </provider>
@@ -72,16 +616,24 @@
     <option name="RECENT_GIT_ROOT_PATH" value="$PROJECT_DIR$" />
   </component>
   <component name="IdeDocumentHistory">
-    <option name="changedFiles">
+    <option name="CHANGED_PATHS">
       <list>
-        <option value="$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cu" />
         <option value="$PROJECT_DIR$/theano/misc/pycuda_init.py" />
+        <option value="$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cu" />
+        <option value="$PROJECT_DIR$/theano/misc/gnumpy_utils.py" />
+        <option value="$PROJECT_DIR$/theano/sandbox/cuda/__init__.py" />
+        <option value="$PROJECT_DIR$/theano/sandbox/cuda/nvcc_compiler.py" />
       </list>
     </option>
   </component>
+  <component name="NamedScopeManager">
+    <order />
+  </component>
   <component name="ProjectFrameBounds">
-    <option name="width" value="1280" />
-    <option name="height" value="1410" />
+    <option name="x" value="-8" />
+    <option name="y" value="-8" />
+    <option name="width" value="1696" />
+    <option name="height" value="1026" />
   </component>
   <component name="ProjectLevelVcsManager" settingsEditedManually="false">
     <OptionsSetting value="true" id="Add" />
@@ -97,7 +649,7 @@
     <option name="STATE" value="0" />
   </component>
   <component name="ProjectView">
-    <navigator currentView="ProjectPane" proportions="" version="1" splitterProportion="0.5">
+    <navigator currentView="ProjectPane" proportions="" version="1">
       <flattenPackages />
       <showMembers />
       <showModules />
@@ -109,7 +661,6 @@
       <sortByType />
     </navigator>
     <panes>
-      <pane id="Scope" />
       <pane id="ProjectPane">
         <subPane>
           <PATH>
@@ -184,6 +735,8 @@
           </PATH>
         </subPane>
       </pane>
+      <pane id="Scratches" />
+      <pane id="Scope" />
     </panes>
   </component>
   <component name="PropertiesComponent">
@@ -191,46 +744,170 @@
     <property name="options.splitter.main.proportions" value="0.3" />
     <property name="options.splitter.details.proportions" value="0.2" />
     <property name="options.searchVisible" value="true" />
-    <property name="last_opened_file_path" value="$PROJECT_DIR$/../pycuda" />
-  </component>
-  <component name="PyConsoleOptionsProvider">
-    <option name="myPythonConsoleState">
-      <console-settings />
-    </option>
+    <property name="last_opened_file_path" value="$PROJECT_DIR$" />
+    <property name="settings.editor.selected.configurable" value="preferences.fileTypes" />
+    <property name="settings.editor.splitter.proportion" value="0.2" />
   </component>
   <component name="RunManager">
-    <list size="0" />
+    <configuration default="true" type="PythonConfigurationType" factoryName="Python">
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs>
+        <env name="PYTHONUNBUFFERED" value="1" />
+      </envs>
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <module name="Theano" />
+      <option name="SCRIPT_NAME" value="" />
+      <option name="PARAMETERS" value="" />
+      <option name="SHOW_COMMAND_LINE" value="false" />
+      <method />
+    </configuration>
+    <configuration default="true" type="tests" factoryName="Attests">
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <module name="Theano" />
+      <option name="SCRIPT_NAME" value="" />
+      <option name="CLASS_NAME" value="" />
+      <option name="METHOD_NAME" value="" />
+      <option name="FOLDER_NAME" value="" />
+      <option name="TEST_TYPE" value="TEST_SCRIPT" />
+      <option name="PATTERN" value="" />
+      <option name="USE_PATTERN" value="false" />
+      <method />
+    </configuration>
+    <configuration default="true" type="tests" factoryName="Doctests">
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <module name="Theano" />
+      <option name="SCRIPT_NAME" value="" />
+      <option name="CLASS_NAME" value="" />
+      <option name="METHOD_NAME" value="" />
+      <option name="FOLDER_NAME" value="" />
+      <option name="TEST_TYPE" value="TEST_SCRIPT" />
+      <option name="PATTERN" value="" />
+      <option name="USE_PATTERN" value="false" />
+      <method />
+    </configuration>
+    <configuration default="true" type="tests" factoryName="Nosetests">
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <module name="Theano" />
+      <option name="SCRIPT_NAME" value="" />
+      <option name="CLASS_NAME" value="" />
+      <option name="METHOD_NAME" value="" />
+      <option name="FOLDER_NAME" value="" />
+      <option name="TEST_TYPE" value="TEST_SCRIPT" />
+      <option name="PATTERN" value="" />
+      <option name="USE_PATTERN" value="false" />
+      <option name="PARAMS" value="" />
+      <option name="USE_PARAM" value="false" />
+      <method />
+    </configuration>
+    <configuration default="true" type="tests" factoryName="Unittests">
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <module name="Theano" />
+      <option name="SCRIPT_NAME" value="" />
+      <option name="CLASS_NAME" value="" />
+      <option name="METHOD_NAME" value="" />
+      <option name="FOLDER_NAME" value="" />
+      <option name="TEST_TYPE" value="TEST_SCRIPT" />
+      <option name="PATTERN" value="" />
+      <option name="USE_PATTERN" value="false" />
+      <option name="PUREUNITTEST" value="true" />
+      <option name="PARAMS" value="" />
+      <option name="USE_PARAM" value="false" />
+      <method />
+    </configuration>
+    <configuration default="true" type="tests" factoryName="py.test">
+      <option name="INTERPRETER_OPTIONS" value="" />
+      <option name="PARENT_ENVS" value="true" />
+      <envs />
+      <option name="SDK_HOME" value="" />
+      <option name="WORKING_DIRECTORY" value="" />
+      <option name="IS_MODULE_SDK" value="false" />
+      <option name="ADD_CONTENT_ROOTS" value="true" />
+      <option name="ADD_SOURCE_ROOTS" value="true" />
+      <module name="Theano" />
+      <option name="SCRIPT_NAME" value="" />
+      <option name="CLASS_NAME" value="" />
+      <option name="METHOD_NAME" value="" />
+      <option name="FOLDER_NAME" value="" />
+      <option name="TEST_TYPE" value="TEST_SCRIPT" />
+      <option name="PATTERN" value="" />
+      <option name="USE_PATTERN" value="false" />
+      <option name="testToRun" value="" />
+      <option name="keywords" value="" />
+      <option name="params" value="" />
+      <option name="USE_PARAM" value="false" />
+      <option name="USE_KEYWORD" value="false" />
+      <method />
+    </configuration>
   </component>
   <component name="ShelveChangesManager" show_recycled="false" />
+  <component name="SvnConfiguration">
+    <configuration />
+  </component>
   <component name="TaskManager">
     <task active="true" id="Default" summary="Default task">
       <changelist id="85c0ac90-df1e-44e2-af4a-d941ab27ae78" name="Default" comment="" />
       <created>1393949047781</created>
+      <option name="number" value="Default" />
       <updated>1393949047781</updated>
     </task>
     <servers />
   </component>
   <component name="ToolWindowManager">
-    <frame x="0" y="0" width="1280" height="1410" extended-state="0" />
-    <editor active="true" />
+    <frame x="-8" y="-8" width="1696" height="1026" extended-state="6" />
+    <editor active="false" />
     <layout>
-      <window_info id="Changes" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="7" side_tool="false" content_ui="tabs" />
-      <window_info id="Terminal" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="7" side_tool="false" content_ui="tabs" />
+      <window_info id="Project" active="false" anchor="left" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="true" weight="0.18809524" sideWeight="0.5" order="0" side_tool="false" content_ui="combo" />
       <window_info id="TODO" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="6" side_tool="false" content_ui="tabs" />
-      <window_info id="Structure" active="false" anchor="left" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.25" sideWeight="0.5" order="1" side_tool="false" content_ui="tabs" />
-      <window_info id="Project" active="false" anchor="left" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="true" weight="0.25" sideWeight="0.5" order="0" side_tool="false" content_ui="combo" />
-      <window_info id="Debug" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.4" sideWeight="0.5" order="3" side_tool="false" content_ui="tabs" />
-      <window_info id="Favorites" active="false" anchor="left" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="2" side_tool="true" content_ui="tabs" />
       <window_info id="Event Log" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="7" side_tool="true" content_ui="tabs" />
-      <window_info id="Run" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="2" side_tool="false" content_ui="tabs" />
+      <window_info id="Application Servers" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="-1" side_tool="false" content_ui="tabs" />
+      <window_info id="Find" active="true" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="true" weight="0.2570806" sideWeight="0.5" order="1" side_tool="false" content_ui="tabs" />
+      <window_info id="Python Console" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="-1" side_tool="false" content_ui="tabs" />
       <window_info id="Version Control" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="7" side_tool="false" content_ui="tabs" />
+      <window_info id="Run" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="2" side_tool="false" content_ui="tabs" />
+      <window_info id="Structure" active="false" anchor="left" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.25" sideWeight="0.5" order="1" side_tool="false" content_ui="tabs" />
+      <window_info id="Terminal" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="7" side_tool="false" content_ui="tabs" />
+      <window_info id="Favorites" active="false" anchor="left" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="2" side_tool="true" content_ui="tabs" />
+      <window_info id="Debug" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.4" sideWeight="0.5" order="3" side_tool="false" content_ui="tabs" />
+      <window_info id="Changes" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="7" side_tool="false" content_ui="tabs" />
       <window_info id="Cvs" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.25" sideWeight="0.5" order="4" side_tool="false" content_ui="tabs" />
       <window_info id="Message" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="0" side_tool="false" content_ui="tabs" />
-      <window_info id="Find" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.33" sideWeight="0.5" order="1" side_tool="false" content_ui="tabs" />
-      <window_info id="Ant Build" active="false" anchor="right" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.25" sideWeight="0.5" order="1" side_tool="false" content_ui="tabs" />
       <window_info id="Commander" active="false" anchor="right" auto_hide="false" internal_type="SLIDING" type="SLIDING" visible="false" weight="0.4" sideWeight="0.5" order="0" side_tool="false" content_ui="tabs" />
       <window_info id="Inspection" active="false" anchor="bottom" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.4" sideWeight="0.5" order="5" side_tool="false" content_ui="tabs" />
       <window_info id="Hierarchy" active="false" anchor="right" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.25" sideWeight="0.5" order="2" side_tool="false" content_ui="combo" />
+      <window_info id="Ant Build" active="false" anchor="right" auto_hide="false" internal_type="DOCKED" type="DOCKED" visible="false" weight="0.25" sideWeight="0.5" order="1" side_tool="false" content_ui="tabs" />
     </layout>
   </component>
   <component name="Vcs.Log.UiProperties">
@@ -241,62 +918,113 @@
   <component name="VcsContentAnnotationSettings">
     <option name="myLimit" value="2678400000" />
   </component>
-  <component name="VcsManagerConfiguration">
-    <option name="myTodoPanelSettings">
-      <TodoPanelSettings />
-    </option>
-  </component>
   <component name="XDebuggerManager">
     <breakpoint-manager />
+    <watches-manager />
   </component>
   <component name="editorHistoryManager">
     <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/__init__.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state line="206" column="13" selection-start="7660" selection-end="7660" vertical-scroll-proportion="0.0" vertical-offset="2652" max-vertical-offset="8415">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="206" column="13" selection-start-line="206" selection-start-column="13" selection-end-line="206" selection-end-column="13" />
           <folding />
         </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cu">
       <provider selected="true" editor-type-id="text-editor">
-        <state line="3537" column="0" selection-start="122753" selection-end="122753" vertical-scroll-proportion="0.0" vertical-offset="59691" max-vertical-offset="87737">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="3537" column="0" selection-start-line="3537" selection-start-column="0" selection-end-line="3537" selection-end-column="0" />
           <folding />
         </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/theano/misc/pycuda_init.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state line="0" column="0" selection-start="0" selection-end="0" vertical-scroll-proportion="0.0" vertical-offset="0" max-vertical-offset="1173">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="0" column="0" selection-start-line="0" selection-start-column="0" selection-end-line="0" selection-end-column="0" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/__init__.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="206" column="13" selection-start-line="0" selection-start-column="0" selection-end-line="0" selection-end-column="0" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cu">
+      <provider selected="true" editor-type-id="text-editor">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="3537" column="0" selection-start-line="0" selection-start-column="0" selection-end-line="0" selection-end-column="0" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/theano/misc/pycuda_init.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="0" column="0" selection-start-line="0" selection-start-column="0" selection-end-line="0" selection-end-column="0" />
           <folding />
         </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/theano/sandbox/__init__.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state line="0" column="0" selection-start="0" selection-end="0" vertical-scroll-proportion="0.0" vertical-offset="0" max-vertical-offset="1278" />
+        <state vertical-scroll-proportion="0.0">
+          <caret line="0" column="0" selection-start-line="0" selection-start-column="0" selection-end-line="0" selection-end-column="0" />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/theano/misc/pycuda_init.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="56" column="39" selection-start-line="56" selection-start-column="39" selection-end-line="56" selection-end-column="39" />
+          <folding />
+        </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/cuda_ndarray.cu">
       <provider selected="true" editor-type-id="text-editor">
-        <state line="3537" column="0" selection-start="122753" selection-end="122753" vertical-scroll-proportion="0.0" vertical-offset="59691" max-vertical-offset="87737">
+        <state vertical-scroll-proportion="-14.586206">
+          <caret line="3668" column="0" selection-start-line="3668" selection-start-column="0" selection-end-line="3668" selection-end-column="0" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/theano/misc/gnumpy_utils.py">
+      <provider selected="true" editor-type-id="text-editor">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="70" column="0" selection-start-line="70" selection-start-column="0" selection-end-line="70" selection-end-column="0" />
           <folding />
         </state>
       </provider>
     </entry>
     <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/__init__.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state line="206" column="13" selection-start="7660" selection-end="7660" vertical-scroll-proportion="0.0" vertical-offset="2652" max-vertical-offset="8415">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="235" column="0" selection-start-line="235" selection-start-column="0" selection-end-line="235" selection-end-column="0" />
           <folding />
         </state>
       </provider>
     </entry>
-    <entry file="file://$PROJECT_DIR$/theano/misc/pycuda_init.py">
+    <entry file="file://$PROJECT_DIR$/theano/sandbox/cuda/nvcc_compiler.py">
       <provider selected="true" editor-type-id="text-editor">
-        <state line="52" column="96" selection-start="1998" selection-end="1998" vertical-scroll-proportion="0.6251956" vertical-offset="0" max-vertical-offset="1278">
+        <state vertical-scroll-proportion="0.0">
+          <caret line="435" column="16" selection-start-line="435" selection-start-column="16" selection-end-line="435" selection-end-column="16" />
+          <folding />
+        </state>
+      </provider>
+    </entry>
+    <entry file="file://$PROJECT_DIR$/theano/scan_module/scan_perform.c">
+      <provider selected="true" editor-type-id="text-editor">
+        <state vertical-scroll-proportion="0.48929664">
+          <caret line="575" column="18" selection-start-line="575" selection-start-column="18" selection-end-line="575" selection-end-column="18" />
           <folding />
         </state>
       </provider>
     </entry>
   </component>
 </project>
-

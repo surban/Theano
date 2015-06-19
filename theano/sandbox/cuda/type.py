@@ -1,5 +1,6 @@
 """Provide CudaNdarrayType
 """
+from __future__ import print_function
 import os
 import copy_reg
 import warnings
@@ -7,7 +8,6 @@ import warnings
 import numpy
 
 import theano
-from theano import config
 from theano import Type, Variable
 from theano import tensor, config
 from theano import scalar as scal
@@ -71,6 +71,11 @@ class CudaNdarrayType(Type):
         self.broadcastable = tuple(broadcastable)
         self.name = name
         self.dtype_specs()  # error checking is done there
+
+    def clone(self, dtype=None, broadcastable=None):
+        if broadcastable is None:
+            broadcastable = self.broadcastable
+        return self.__class__(broadcastable, name=self.name, dtype=dtype)
 
     def filter(self, data, strict=False, allow_downcast=None):
         return self.filter_inplace(data, None, strict=strict,
@@ -152,9 +157,9 @@ class CudaNdarrayType(Type):
     def bound(a):
         high = a.gpudata
         low = a.gpudata
-        #stride is in the number of element.
-        #we must convert that to bytes in case we
-        #will view the element as a different type.
+        # stride is in the number of element.
+        # we must convert that to bytes in case we
+        # will view the element as a different type.
         elem_size = numpy.zeros(0, dtype=a.dtype).dtype.itemsize
 
         for stri, shp in zip(a._strides, a.shape):
@@ -166,8 +171,8 @@ class CudaNdarrayType(Type):
 
     @staticmethod
     def may_share_memory(a, b):
-        #when this is called with a an ndarray and b
-        #a sparce matrix, numpy.may_share_memory fail.
+        # when this is called with a an ndarray and b
+        # a sparce matrix, numpy.may_share_memory fail.
         if a is b:
             return True
         if a.__class__ is b.__class__:
@@ -181,13 +186,13 @@ class CudaNdarrayType(Type):
 
     @staticmethod
     def values_eq(a, b):
-        #TODO: make the comparaison without transfert.
+        # TODO: make the comparaison without transfert.
         return tensor.TensorType.values_eq(numpy.asarray(a), numpy.asarray(b))
 
     @staticmethod
     def values_eq_approx(a, b, allow_remove_inf=False, allow_remove_nan=False,
                          rtol=None, atol=None):
-        #TODO: make the comparaison without transfert.
+        # TODO: make the comparaison without transfert.
         return tensor.TensorType.values_eq_approx(
             numpy.asarray(a),
             numpy.asarray(b),
@@ -202,8 +207,8 @@ class CudaNdarrayType(Type):
 
         This function is used internally as part of C code generation.
         """
-        #TODO: add more type correspondances for e.g. int32, int64, float32,
-        #complex64, etc.
+        # TODO: add more type correspondances for e.g. int32, int64, float32,
+        # complex64, etc.
         try:
             return {'float32': (float, 'npy_float32', 'NPY_FLOAT32'),
                     'float64': (float, 'npy_float64', 'NPY_FLOAT64'),
@@ -227,6 +232,13 @@ class CudaNdarrayType(Type):
         """Compare True iff other is the same kind of CudaNdarrayType"""
         return (type(self) == type(other) and
                 other.broadcastable == self.broadcastable)
+
+    def convert_variable(self, var):
+        if (type(self) == type(var.type) and
+            self.ndim == var.type.ndim and
+            all(sb == ob or ob for sb, ob in zip(self.broadcastable,
+                                                 var.type.broadcastable))):
+            return theano.tensor.patternbroadcast(var, self.broadcastable)
 
     def __hash__(self):
         """Hash equal for same kinds of CudaNdarrayType"""
@@ -274,17 +286,18 @@ class CudaNdarrayType(Type):
         return str(self)
         #"CudaNdarrayType{%s, %s}" % (str(self.dtype), str(self.broadcastable))
 
-    def c_declare(self, name, sub):
+    def c_declare(self, name, sub, check_input=True):
         return """ CudaNdarray * %(name)s;""" % locals()
 
     def c_init(self, name, sub):
         return "%(name)s = NULL;" % locals()
 
-    def c_extract(self, name, sub):
+    def c_extract(self, name, sub, check_input=True,
+                  check_broadcast=True):
         sio = StringIO()
         fail = sub['fail']
         nd = self.ndim
-        print >> sio, """
+        print("""
         assert(py_%(name)s->ob_refcnt >= 2); // There should be at least one ref from the container object,
         // and one ref from the local scope.
 
@@ -293,63 +306,90 @@ class CudaNdarrayType(Type):
             //fprintf(stderr, "c_extract CNDA object w refcnt %%p %%i\\n", py_%(name)s, (py_%(name)s->ob_refcnt));
             %(name)s = (CudaNdarray*)py_%(name)s;
             //std::cerr << "c_extract " << %(name)s << '\\n';
-            if (%(name)s->nd != %(nd)s)
+        """ % locals(), file=sio)
+        if(check_input):
+            print("""
+                if (%(name)s->nd != %(nd)s)
+                {
+                    PyErr_Format(PyExc_RuntimeError,
+                                 "c_extract: Some CudaNdarray has rank %%i, it was supposed to have rank %(nd)s",
+                                 %(name)s->nd);
+                    %(name)s = NULL;
+                    %(fail)s;
+                }
+                //std::cerr << "c_extract " << %(name)s << " nd check passed\\n";
+            """ % locals(), file=sio)
+            for i, b in enumerate(self.broadcastable):
+                if b and check_broadcast:
+                    print("""
+                if (CudaNdarray_HOST_DIMS(%(name)s)[%(i)s] != 1)
+                {
+                    PyErr_Format(PyExc_RuntimeError,
+                                 "c_extract: Some CudaNdarray has dim %%i on broadcastable dimension %%i",
+                                 CudaNdarray_HOST_DIMS(%(name)s)[%(i)s], %(i)s);
+                    %(name)s = NULL;
+                    %(fail)s;
+                }
+                //std::cerr << "c_extract " << %(name)s << "dim check %(i)s passed\\n";
+                //std::cerr << "c_extract " << %(name)s << "checking bcast %(i)s <" << %(name)s->str<< ">\\n";
+                //std::cerr << "c_extract " << %(name)s->str[%(i)s] << "\\n";
+                if (CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s])
+                {
+                    //std::cerr << "c_extract bad stride detected...\\n";
+                    PyErr_Format(PyExc_RuntimeError,
+                                 "c_extract: Some CudaNdarray has a nonzero stride %%i on a broadcastable dimension %%i",
+                                 CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s], %(i)s);
+                    %(name)s = NULL;
+                    %(fail)s;
+                }
+                //std::cerr << "c_extract " << %(name)s << "bcast check %(i)s passed\\n";
+                    """ % locals(), file=sio)
+            print("""
+                assert(%(name)s);
+                Py_INCREF(py_%(name)s);
+            }
+            else if (py_%(name)s == Py_None)
             {
-                PyErr_Format(PyExc_RuntimeError,
-                             "c_extract: Some CudaNdarray has rank %%i, it was supposed to have rank %(nd)s",
-                             %(name)s->nd);
+                PyErr_SetString(PyExc_TypeError,
+                                "expected a CudaNdarray, not None");
                 %(name)s = NULL;
                 %(fail)s;
             }
-            //std::cerr << "c_extract " << %(name)s << " nd check passed\\n";
-        """ % locals()
-        for i, b in enumerate(self.broadcastable):
-            if b:
-                print >> sio, """
-            if (CudaNdarray_HOST_DIMS(%(name)s)[%(i)s] != 1)
+            else
             {
-                PyErr_Format(PyExc_RuntimeError,
-                             "c_extract: Some CudaNdarray has dim %%i on broadcastable dimension %%i",
-                             CudaNdarray_HOST_DIMS(%(name)s)[%(i)s], %(i)s);
+                //fprintf(stderr, "FAILING c_extract CNDA object w refcnt %%p %%i\\n", py_%(name)s, (py_%(name)s->ob_refcnt));
+                PyErr_SetString(PyExc_TypeError, "Argument not a CudaNdarray");
                 %(name)s = NULL;
                 %(fail)s;
             }
-            //std::cerr << "c_extract " << %(name)s << "dim check %(i)s passed\\n";
-            //std::cerr << "c_extract " << %(name)s << "checking bcast %(i)s <" << %(name)s->str<< ">\\n";
-            //std::cerr << "c_extract " << %(name)s->str[%(i)s] << "\\n";
-            if (CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s])
-            {
-                //std::cerr << "c_extract bad stride detected...\\n";
-                PyErr_Format(PyExc_RuntimeError,
-                             "c_extract: Some CudaNdarray has a nonzero stride %%i on a broadcastable dimension %%i",
-                             CudaNdarray_HOST_STRIDES(%(name)s)[%(i)s], %(i)s);
-                %(name)s = NULL;
-                %(fail)s;
+            //std::cerr << "c_extract done " << %(name)s << '\\n';
+            """ % locals(), file=sio)
+        else:
+            print("""
+                assert(%(name)s);
+                Py_INCREF(py_%(name)s);
             }
-            //std::cerr << "c_extract " << %(name)s << "bcast check %(i)s passed\\n";
-                """ % locals()
-        print >> sio, """
-            assert(%(name)s);
-            Py_INCREF(py_%(name)s);
-        }
-        else if (py_%(name)s == Py_None)
+            """ % locals(), file=sio)
+        # print sio.getvalue()
+        return sio.getvalue()
+
+    def c_extract_out(self, name, sub, check_input=True, check_broadcast=True):
+        """ To allow the hack to skip check_broadcast.
+        """
+        return """
+        if (py_%(name)s == Py_None)
         {
-            PyErr_SetString(PyExc_TypeError,
-                            "expected a CudaNdarray, not None");
-            %(name)s = NULL;
-            %(fail)s;
+            %(c_init_code)s
         }
         else
         {
-            //fprintf(stderr, "FAILING c_extract CNDA object w refcnt %%p %%i\\n", py_%(name)s, (py_%(name)s->ob_refcnt));
-            PyErr_SetString(PyExc_TypeError, "Argument not a CudaNdarray");
-            %(name)s = NULL;
-            %(fail)s;
+            %(c_extract_code)s
         }
-        //std::cerr << "c_extract done " << %(name)s << '\\n';
-        """ % locals()
-        #print sio.getvalue()
-        return sio.getvalue()
+        """ % dict(
+            name=name,
+            c_init_code=self.c_init(name, sub),
+            c_extract_code=self.c_extract(name, sub, check_input,
+                                          check_broadcast))
 
     def c_cleanup(self, name, sub):
         return """
@@ -399,9 +439,6 @@ class CudaNdarrayType(Type):
 
     def c_lib_dirs(self):
         ret = [os.path.dirname(cuda_ndarray.__file__)]
-        cuda_root = config.cuda.root
-        if cuda_root:
-            ret.append(os.path.join(cuda_root, 'lib'))
         return ret
 
     def c_libraries(self):
@@ -413,10 +450,10 @@ class CudaNdarrayType(Type):
         return ""
 
     def c_code_cache_version(self):
-        #return ()
-        #no need to put nvcc.fastmath in the tuple as the
-        #c_compile_args is put in the key.
-        return (2,)  # with assertion about refcounts
+        # return ()
+        # no need to put nvcc.fastmath in the tuple as the
+        # c_compile_args is put in the key.
+        return (3,)  # cublas v2 changes
 
     def c_compiler(self):
         return NVCC_compiler
@@ -445,12 +482,22 @@ theano.compile.register_view_op_c_code(
         """,
         version=1)
 
-theano.compile.register_shape_i_c_code(CudaNdarrayType, """
+theano.compile.register_shape_i_c_code(
+    CudaNdarrayType,
+    """
     if(!%(oname)s)
         %(oname)s=(PyArrayObject*)PyArray_ZEROS(0, NULL, NPY_INT64, 0);
     ((npy_int64*)PyArray_DATA(%(oname)s))[0] =
                               CudaNdarray_HOST_DIMS(%(iname)s)[%(i)s];
-""", version=(0,))
+    """,
+    """
+    if (%(i)s>=CudaNdarray_NDIM(%(iname)s)){
+        PyErr_SetString(PyExc_TypeError,
+            "Number of dimensions lower than expected");
+        %(fail)s
+    }
+    """,
+    version=(1,))
 
 # Register CudaNdarrayType to the DeepCopyOp list of types with c code.
 theano.compile.register_deep_copy_op_c_code(

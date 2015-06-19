@@ -1,3 +1,4 @@
+from __future__ import print_function
 import numpy
 
 import theano
@@ -7,10 +8,9 @@ from theano.sandbox.cuda.basic_ops import as_cuda_ndarray_variable
 from theano.misc import strutil
 
 from theano.tensor.nnet.ConvGrad3D import ConvGrad3D
-from theano.sandbox.cuda.opt import register_opt
+from theano.sandbox.cuda.opt import gpu_optimizer
 from theano.sandbox.cuda import (CudaNdarrayType, HostFromGpu,
                                  host_from_gpu, GpuOp)
-
 
 
 class GpuConvGrad3D(GpuOp):
@@ -27,15 +27,16 @@ class GpuConvGrad3D(GpuOp):
         d_ = T.as_tensor_variable(d)
         WShape_ = T.as_tensor_variable(WShape)
         dCdH_ = as_cuda_ndarray_variable(dCdH)
-
+        broad = (False,)*5
         return theano.Apply(self, inputs=[V_, d_, WShape_, dCdH_],
-                            outputs = [ CudaNdarrayType(dtype=V_.dtype, broadcastable=(False,)*5)()])
+                            outputs=[CudaNdarrayType(dtype=V_.dtype,
+                                                     broadcastable=broad)()])
 
     def perform_(self, node, inputs, output_storage):
         V, d, WShape, dCdH = inputs
-        print "GpuConvGrad3D python code (warning not updated to new format)"
+        print("GpuConvGrad3D python code (warning not updated to new format)")
 
-        #partial C / partial W[j,z,k,l,m] = sum_i sum_p sum_q sum_r (partial C /partial H[i,j,p,q,r] ) *  V[i,z,dr*p+k,dc*q+l,dt*r+m]
+        # partial C / partial W[j,z,k,l,m] = sum_i sum_p sum_q sum_r (partial C /partial H[i,j,p,q,r] ) *  V[i,z,dr*p+k,dc*q+l,dt*r+m]
 
         batchSize = dCdH.shape[0]
         outputFilters = dCdH.shape[1]
@@ -51,19 +52,19 @@ class GpuConvGrad3D(GpuOp):
 
         dCdW = numpy.zeros(WShape, dtype=V.dtype)
 
-        #block
-        for j in xrange(0,WShape[0]):
-            for z in xrange(0,WShape[1]):
-                for k in xrange(0,WShape[2]):
-                    for l in xrange(0,WShape[3]):
-                        #threads
-                        for m in xrange(0,WShape[4]):
-                            #thread
-                            for i in xrange(0,batchSize):
-                                for p in xrange(0,outputHeight):
-                                    for q in xrange(0,outputWidth):
-                                        for r in xrange(0,outputDur):
-                                            dCdW[j,z,k,l,m] += dCdH[i,j,p,q,r] * V[i,z,dr*p+k,dc*q+l,dt*r+m]
+        # block
+        for j in xrange(0, WShape[0]):
+            for z in xrange(0, WShape[1]):
+                for k in xrange(0, WShape[2]):
+                    for l in xrange(0, WShape[3]):
+                        # threads
+                        for m in xrange(0, WShape[4]):
+                            # thread
+                            for i in xrange(0, batchSize):
+                                for p in xrange(0, outputHeight):
+                                    for q in xrange(0, outputWidth):
+                                        for r in xrange(0, outputDur):
+                                            dCdW[j, z, k, l, m] += dCdH[i, j, p, q, r] * V[i, z, dr*p+k, dc*q+l, dt*r+m]
 
         output_storage[0][0] = dCdW
 
@@ -79,33 +80,33 @@ class GpuConvGrad3D(GpuOp):
             //printf("\t\t\t\tGpuConvGrad3DW c code\\n");
 
             //Check dimensionality of inputs
-            if (%(dCdH)s->nd != 5)
+            if (CudaNdarray_NDIM(%(dCdH)s) != 5)
             {
                 PyErr_Format(PyExc_ValueError, "GpuConvGrad3D: dCdH must be a 5-d CudaNdArray");
                 %(fail)s
             }
 
-            if (%(V)s->nd != 5)
+            if (CudaNdarray_NDIM(%(V)s) != 5)
             {
                 PyErr_Format(PyExc_ValueError, "GpuConvGrad3D: V must be a 5-d CudaNdArray");
                 %(fail)s
             }
 
-            if (%(WShape)s->nd != 1)
+            if (CudaNdarray_NDIM(%(WShape)s) != 1)
             {
                 PyErr_Format(PyExc_ValueError, "GpuConvGrad3D: WShape must be a 1-d CudaNdArray");
                 %(fail)s
             }
 
-            if (%(d)s->nd != 1)
+            if (PyArray_NDIM(%(d)s) != 1)
             {
                 PyErr_Format(PyExc_ValueError, "GpuConvGrad3D: d must be a 1-d CudaNdArray");
                 %(fail)s
             }
 
-            if (%(d)s->dimensions[0] != 3)
+            if (PyArray_DIMS(%(d)s)[0] != 3)
             {
-                PyErr_Format(PyExc_ValueError, "GpuConvGrad3D: 3 stride lengths arguments expected(for row, col, and time) but %%li were given", %(d)s->dimensions[0]);
+                PyErr_Format(PyExc_ValueError, "GpuConvGrad3D: 3 stride lengths arguments expected(for row, col, and time) but %%li were given", PyArray_DIMS(%(d)s)[0]);
                 %(fail)s
             }
 
@@ -113,7 +114,7 @@ class GpuConvGrad3D(GpuOp):
 
             //Read and check sizes of inputs
             const int batchSize = CudaNdarray_HOST_DIMS(%(V)s)[0];
-            if (%(WShape)s->dimensions[0] != 5)
+            if (PyArray_DIMS(%(WShape)s)[0] != 5)
             {
                 PyErr_Format(PyExc_ValueError, "GpuConvGrad3D: WShape must specify a 5-d shape");
                 %(fail)s
@@ -125,7 +126,7 @@ class GpuConvGrad3D(GpuOp):
 
             }
 { //for fail
-            dtype_%(WShape)s * WShape = (dtype_%(WShape)s *) %(WShape)s->data;
+            dtype_%(WShape)s * WShape = (dtype_%(WShape)s *) PyArray_DATA(%(WShape)s);
             const int outputChannels =  WShape[0];
             const int inputChannels = CudaNdarray_HOST_DIMS(%(V)s)[4];
             if (WShape[4] != inputChannels)
@@ -266,7 +267,7 @@ if(!work_complete){
             ///////////// < /code generated by GpuConvGrad3D >
         """
 
-        return strutil.render_string(codeSource,locals())
+        return strutil.render_string(codeSource, locals())
 
     def c_support_code_apply(self, node, nodename):
         # This code is not sensitive to the ignore_border flag.
@@ -340,11 +341,18 @@ convgrad_rows_stack( float* img, float* dCdH, float* dCdW,
 
 gpu_conv_grad3d = GpuConvGrad3D()
 
-@register_opt()
+
 @local_optimizer([ConvGrad3D])
-def local_gpu_conv_gradd(node):
+def local_gpu_conv_grad3d(node):
     if isinstance(node.op, ConvGrad3D):
-        if numpy.any([i.owner and isinstance(i.owner.op, HostFromGpu) for i in node.inputs]):
+        if numpy.any([i.owner and isinstance(i.owner.op, HostFromGpu)
+                      for i in node.inputs]):
             if numpy.all([o.type.dtype == 'float32' for o in node.outputs]):
                 V, d, WShape, dCdH = node.inputs
-                return [host_from_gpu(gpu_conv_grad3d(as_cuda_ndarray_variable(V),d, WShape, as_cuda_ndarray_variable(dCdH)))]
+                return [host_from_gpu(gpu_conv_grad3d(
+                    as_cuda_ndarray_variable(V),
+                    d,
+                    WShape,
+                    as_cuda_ndarray_variable(dCdH)))]
+# Not enabled by default as we don't want people to use it.
+gpu_optimizer.register("local_gpu_conv_grad3d", local_gpu_conv_grad3d)

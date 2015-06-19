@@ -1,5 +1,5 @@
+import theano
 from theano import gof
-from theano import gradient as G
 from theano.compile.function_module import orig_function
 from theano.compile import SharedVariable, rebuild_collect_shared
 from theano.gof import ops_with_inner_function
@@ -15,7 +15,9 @@ class OpFromGraph(gof.Op):
 
     TODO:
         - examples for a multi-layer mlp. where?
-        - __hash__, __eq__ otherwise won't merge, try gof.opt.is_same_graph_with_merge(op1.new_outputs, op2, new_outputs)
+        - __hash__, __eq__ otherwise won't merge, try
+          gof.opt.is_same_graph_with_merge(op1.new_outputs, op2,
+          new_outputs)
         - c_code() to remove the double overhead?
         - opt to unfold it, work inplace on inputs
         - grad() make it support DisconnectedType and the new interface
@@ -24,6 +26,7 @@ class OpFromGraph(gof.Op):
         - Add support for the GPU? Probably just need an opt to remove transfer
         - Add support to pickle this Op.
         - Add support/test with random generator
+
     :note:
         - We support shared variables in the inner graph. This is automatic and
           invisible to the user. They can be as input to the node or in the
@@ -67,7 +70,7 @@ class OpFromGraph(gof.Op):
         for i in inputs + outputs:
             if not isinstance(i, gof.Variable):
                 raise TypeError(
-                        'inputs and outputs must be Variable instances', i)
+                    'inputs and outputs must be Variable instances', i)
         if 'updates' in kwargs:
             raise TypeError('updates are not allowed in kwargs')
 
@@ -75,8 +78,6 @@ class OpFromGraph(gof.Op):
         # not see them. Otherwise their is problem with the gradient.
         self.shared_inputs = [var for var in gof.graph.inputs(outputs)
                               if isinstance(var, SharedVariable)]
-        used_inputs = [var for var in gof.graph.inputs(outputs)
-                       if not isinstance(var, gof.Constant)]
         shared_vars = [var.type() for var in self.shared_inputs]
         new = rebuild_collect_shared(outputs, inputs=inputs + shared_vars,
                                      replace=dict(zip(self.shared_inputs,
@@ -98,20 +99,19 @@ class OpFromGraph(gof.Op):
         self.input_types = [input.type for input in inputs]
         self.output_types = [output.type for output in outputs]
 
-
     def __eq__(self, other):
-        #TODO: recognize a copy
+        # TODO: recognize a copy
         return self is other
 
     def __hash__(self):
-        #TODO: use internal variables in hash
+        # TODO: use internal variables in hash
         return hash(type(self))
 
     def make_node(self, *inputs):
         for input, type in zip(inputs, self.input_types):
             if not type == input.type:
-                raise TypeError("Wrong type, expected %s but got %s"
-                        % (type, input.type))
+                raise TypeError("Wrong type, expected %s but got %s" %
+                                (type, input.type))
         return gof.Apply(self,
                          list(inputs) + self.shared_inputs,
                          [type() for type in self.output_types])
@@ -129,7 +129,7 @@ class OpFromGraph(gof.Op):
         variables = self.fn(*inputs)
         assert len(variables) == len(outputs)
         for output, variable in zip(outputs, variables):
-            ##TODO: when function's output-borrowing semantics are correct,
+            # TODO: when function's output-borrowing semantics are correct,
             # we wont need this copy anymore
             output[0] = variable.copy()
 
@@ -142,10 +142,11 @@ class OpFromGraph(gof.Op):
         if hasattr(self, "grad_ops"):
             grad_ops = self.grad_ops
         else:
-            gs = G.grad(cost=None,
-                        known_grads=dict(zip(self.new_outputs, output_grads)),
-                        wrt=self.new_inputs,
-                        disconnected_inputs='ignore')
+            gs = theano.gradient.grad(cost=None,
+                                      known_grads=dict(zip(self.new_outputs,
+                                                           output_grads)),
+                                      wrt=self.new_inputs,
+                                      disconnected_inputs='ignore')
 
             grad_ops = []
             for g in gs:

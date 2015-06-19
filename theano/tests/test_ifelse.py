@@ -2,6 +2,7 @@
  Tests fof the lazy conditiona
 """
 
+from __future__ import print_function
 __docformat__ = 'restructedtext en'
 __authors__ = ("Razvan Pascanu ")
 __copyright__ = "(c) 2010, Universite de Montreal"
@@ -16,7 +17,6 @@ from theano import tensor
 import theano.ifelse
 from theano.ifelse import IfElse, ifelse
 from theano.tests  import unittest_tools as utt
-from theano.gof.python25 import all
 
 
 class test_ifelse(unittest.TestCase, utt.TestOptimizationMixin):
@@ -50,6 +50,33 @@ class test_ifelse(unittest.TestCase, utt.TestOptimizationMixin):
 
         assert numpy.allclose(vx, f(1, vx, vy))
         assert numpy.allclose(vy, f(0, vx, vy))
+
+    def test_mixed_dtype(self):
+        x1 = tensor.vector('x1', dtype='int32')
+        x2 = tensor.vector('x2', dtype=self.dtype)
+        y1 = tensor.vector('y1', dtype='int32')
+        y2 = tensor.vector('y2', dtype=self.dtype)
+        c = tensor.iscalar('c')
+        f = theano.function([c, x1, x2, y1, y2],
+                            ifelse(c, (x1, x2), (y1, y2)), mode=self.mode)
+        self.assertFunctionContains1(f, self.get_ifelse(2))
+        rng = numpy.random.RandomState(utt.fetch_seed())
+
+        xlen = rng.randint(200)
+        ylen = rng.randint(200)
+
+        vx1 = numpy.asarray(rng.uniform(size=(xlen,))*3, 'int32')
+        vx2 = numpy.asarray(rng.uniform(size=(xlen,)), self.dtype)
+        vy1 = numpy.asarray(rng.uniform(size=(ylen,))*3, 'int32')
+        vy2 = numpy.asarray(rng.uniform(size=(ylen,)), self.dtype)
+
+        o1, o2 = f(1, vx1, vx2, vy1, vy2)
+        assert numpy.allclose(vx1, o1)
+        assert numpy.allclose(vx2, o2)
+
+        o1, o2 = f(0, vx1, vx2, vy1, vy2)
+        assert numpy.allclose(vy1, o1)
+        assert numpy.allclose(vy2, o2)
 
     def test_lazy_if_on_generics(self):
         x = theano.generic()
@@ -226,9 +253,9 @@ class test_ifelse(unittest.TestCase, utt.TestOptimizationMixin):
         rng = numpy.random.RandomState(utt.fetch_seed())
         data = rng.rand(5).astype(self.dtype)
         x = self.shared(data)
-        #print x.broadcastable
+        # print x.broadcastable
         y = tensor.row('y', self.dtype)
-        #print y.broadcastable
+        # print y.broadcastable
         cond = theano.tensor.iscalar('cond')
 
         self.assertRaises(TypeError, ifelse, cond, x, y)
@@ -426,4 +453,4 @@ class test_ifelse(unittest.TestCase, utt.TestOptimizationMixin):
 
 
 if __name__ == '__main__':
-    print ' Use nosetests to run these tests '
+    print(' Use nosetests to run these tests ')

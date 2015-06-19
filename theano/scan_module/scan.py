@@ -45,6 +45,7 @@ __contact__ = "Razvan Pascanu <r.pascanu@gmail>"
 import itertools
 import logging
 import numpy
+import warnings
 
 from theano.compile import SharedVariable, function
 from theano import compile
@@ -54,7 +55,7 @@ from theano import tensor
 from theano import config
 from theano.updates import OrderedUpdates
 from theano.compile import ops
-from theano.gof.python25 import OrderedDict
+from theano.compat import OrderedDict
 
 
 from theano.scan_module import scan_op
@@ -74,7 +75,9 @@ def scan(fn,
          go_backwards=False,
          mode=None,
          name=None,
-         profile=False):
+         profile=False,
+         allow_gc=None,
+         strict=False):
     """
     This function constructs and applies a Scan op to the provided
     arguments.
@@ -309,6 +312,14 @@ def scan(fn,
         inner graph with the new cvm linker ( with default modes,
         other linkers this argument is useless)
 
+    :param allow_gc:
+        Set the value of allow gc for the internal graph of scan.  If
+        set to None, this will use the value of config.scan.allow_gc.
+
+    :param strict:
+        If true, all the shared variables used in ``fn`` must be provided as a
+        part of ``non_sequences`` or ``sequences``.
+
     :rtype: tuple
     :return: tuple of the form (outputs, updates); ``outputs`` is either a
              Theano variable or a list of Theano variables representing the
@@ -326,7 +337,7 @@ def scan(fn,
     # anything (to speed things up)
 
     ##
-    ###   Step 1. Wrap all inputs in dictionaries and add default values
+    # Step 1. Wrap all inputs in dictionaries and add default values
     ##
 
     # check if inputs are just single variables instead of lists
@@ -426,8 +437,8 @@ def scan(fn,
             outs_info[i] = OrderedDict()
 
     ##
-    ###   Step 2. Generate inputs and outputs of the inner functions
-    ###           for compiling a dummy function (Iteration #1)
+    # Step 2. Generate inputs and outputs of the inner functions
+    # for compiling a dummy function (Iteration #1)
     ##
 
     # create theano inputs for the recursive function
@@ -469,7 +480,7 @@ def scan(fn,
                     try:
                         nw_slice.tag.test_value = gof.Op._get_test_value(
                             _seq_val_slice)
-                    except AttributeError, e:
+                    except AttributeError as e:
                         if config.compute_test_value != 'ignore':
                             # No need to print a warning or raise an error now,
                             # it will be done when fn will be called.
@@ -489,20 +500,18 @@ def scan(fn,
                     nw_slice.name = nw_name
 
                 # We cut the sequence such that seq[i] to correspond to
-                # seq[i-k]
-                if maxtap < 0:
-                    offset = abs(maxtap)
+                # seq[i-k]. For the purposes of cutting the sequences, we
+                # need to pretend tap 0 is used to avoid cutting the sequences
+                # too long if the taps are all lower or all higher than 0.
+                maxtap_proxy = max(maxtap, 0)
+                mintap_proxy = min(mintap, 0)
+                start = (k - mintap_proxy)
+                if k == maxtap_proxy:
+                    nw_seq = seq['input'][start:]
                 else:
-                    offset = 0
-                if maxtap == mintap and maxtap != 0:
-                    if maxtap < 0:
-                        nw_seq = seq['input'][:maxtap]
-                    else:
-                        nw_seq = seq['input'][maxtap:]
-                elif maxtap - k != 0:
-                    nw_seq = seq['input'][offset + k - mintap: -(maxtap - k)]
-                else:
-                    nw_seq = seq['input'][offset + k - mintap:]
+                    end = -(maxtap_proxy - k)
+                    nw_seq = seq['input'][start:end]
+
                 if go_backwards:
                     nw_seq = nw_seq[::-1]
 
@@ -589,7 +598,9 @@ def scan(fn,
         if init_out.get('taps', None) == [-1]:
 
             actual_arg = init_out['initial']
-            arg = safe_new(init_out['initial'])
+            if not isinstance(actual_arg, tensor.Variable):
+                actual_arg = tensor.as_tensor_variable(actual_arg)
+            arg = safe_new(actual_arg)
             if isinstance(arg, tensor.Constant):
                 # safe new returns a clone of the constants, but that is not
                 # what we need for initial states
@@ -599,7 +610,7 @@ def scan(fn,
             if config.compute_test_value != 'off':
                 try:
                     arg.tag.test_value = gof.Op._get_test_value(actual_arg)
-                except AttributeError, e:
+                except AttributeError as e:
                     if config.compute_test_value != 'ignore':
                         # No need to print a warning or raise an error now,
                         # it will be done when fn will be called.
@@ -659,7 +670,7 @@ def scan(fn,
                     try:
                         nw_slice.tag.test_value = gof.Op._get_test_value(
                             _init_out_var_slice)
-                    except AttributeError, e:
+                    except AttributeError as e:
                         if config.compute_test_value != 'ignore':
                             # No need to print a warning or raise an error now,
                             # it will be done when fn will be called.
@@ -679,7 +690,7 @@ def scan(fn,
                                             '[t%d]' % k)
                 mit_sot_inner_inputs.append(nw_slice)
                 mit_sot_inner_slices.append(actual_nw_slice)
-        #NOTE: there is another case, in which we do not want to provide
+        # NOTE: there is another case, in which we do not want to provide
         #      any previous value of the output to the inner function (i.e.
         #      a map); in that case we do not have to do anything ..
 
@@ -735,7 +746,7 @@ def scan(fn,
     else:
         as_while = False
     ##
-    ###   Step 3. Check if we actually need scan and remove it if we don't
+    # Step 3. Check if we actually need scan and remove it if we don't
     ##
 
     if n_fixed_steps in [1, -1]:
@@ -763,7 +774,7 @@ def scan(fn,
         return (outputs, updates)
 
     ##
-    ###   Step 4. Compile the dummy function
+    # Step 4. Compile the dummy function
     ##
 
     # We can now compile a dummy function just to see what shared variable
@@ -787,8 +798,8 @@ def scan(fn,
         gof.graph.inputs(fake_outputs))
     extra_inputs = [x for x in all_inputs if x not in args + fake_nonseqs]
     non_seqs += extra_inputs
-    ## Note we do not use all_inputs directly since the order of variables
-    ## in args is quite important
+    # Note we do not use all_inputs directly since the order of variables
+    # in args is quite important
     dummy_args += extra_inputs
 
     dummy_outs = outputs
@@ -803,11 +814,11 @@ def scan(fn,
                        profile=False)
 
     ##
-    ### Step 5. Re-arange inputs of scan into a more strict order
+    # Step 5. Re-arange inputs of scan into a more strict order
     ##
 
-    ## Step 5.0 Check the outputs of the dummy function to see if they
-    ##          match with user provided data
+    # Step 5.0 Check the outputs of the dummy function to see if they
+    # match with user provided data
 
     # if the number of outputs to the function does not match the number of
     # assumed outputs until now (provided by the user) there can be
@@ -827,18 +838,18 @@ def scan(fn,
             n_outs = n_outs - 1
         outs_info = [OrderedDict() for x in xrange(n_outs)]
 
-    ## Step 5.1 Outputs with taps different then -1
+    # Step 5.1 Outputs with taps different then -1
 
     for i, out in enumerate(outs_info):
         if 'taps' in out and out['taps'] != [-1]:
             mit_sot_inner_outputs.append(outputs[i])
 
-    ## Step 5.2 Outputs with tap equal to -1
+    # Step 5.2 Outputs with tap equal to -1
     for i, out in enumerate(outs_info):
         if 'taps' in out and out['taps'] == [-1]:
             sit_sot_inner_outputs.append(outputs[i])
 
-    ## Step 5.3 Outputs that correspond to update rules of shared variables
+    # Step 5.3 Outputs that correspond to update rules of shared variables
     givens = OrderedDict()
     n_shared_outs = 0
     shared_scan_inputs = []
@@ -857,7 +868,8 @@ def scan(fn,
                         tensor.unbroadcast(
                             tensor.shape_padleft(input.variable), 0),
                         actual_n_steps))
-                sit_sot_inner_outputs.append(input.update)
+                tensor_update = tensor.as_tensor_variable(input.update)
+                sit_sot_inner_outputs.append(tensor_update)
                 # Not that pos is not a negative index. The sign of pos is used
                 # as a flag to indicate if this output should be part of the
                 # update rules or part of the standard outputs of scan.
@@ -876,7 +888,7 @@ def scan(fn,
                 givens[input.variable] = new_var
                 n_shared_outs += 1
     n_sit_sot = len(sit_sot_inner_inputs)
-    ## Step 5.4 Outputs with no taps used in the input
+    # Step 5.4 Outputs with no taps used in the input
     n_nit_sot = 0
     nit_sot_inner_outputs = []
     nit_sot_return_steps = OrderedDict()
@@ -889,7 +901,7 @@ def scan(fn,
             nit_sot_rightOrder.append(i)
             n_nit_sot += 1
 
-    ## Step 5.5 all other arguments including extra inputs
+    # Step 5.5 all other arguments including extra inputs
     other_scan_args = []
     other_inner_args = []
 
@@ -897,26 +909,41 @@ def scan(fn,
                         if (not isinstance(arg, SharedVariable) and
                             not isinstance(arg, tensor.Constant))]
 
-    ## Step 5.6 all shared variables with no update rules
+    # Step 5.6 all shared variables with no update rules
     other_inner_args += [safe_new(arg, '_copy') for arg in non_seqs
                          if (not isinstance(arg, SharedVariable) and
                              not isinstance(arg, tensor.Constant))]
 
     givens.update(OrderedDict(zip(other_scan_args, other_inner_args)))
-    other_shared_scan_args = [arg.variable for arg
-                        in dummy_f.maker.expanded_inputs
-                        if (isinstance(arg.variable, SharedVariable) and
-                            not arg.update)]
-    other_shared_inner_args = [safe_new(arg.variable, '_copy') for arg
-                        in dummy_f.maker.expanded_inputs
-                        if (isinstance(arg.variable, SharedVariable) and
-                            not arg.update)]
+
+    if strict:
+        non_seqs_set = set(non_sequences if non_sequences != None else [])
+
+        other_shared_scan_args = [arg.variable for arg
+                            in dummy_f.maker.expanded_inputs
+                            if (isinstance(arg.variable, SharedVariable) and
+                                not arg.update and
+                                arg.variable in non_seqs_set)]
+        other_shared_inner_args = [safe_new(arg.variable, '_copy') for arg
+                            in dummy_f.maker.expanded_inputs
+                            if (isinstance(arg.variable, SharedVariable) and
+                                not arg.update and
+                                arg.variable in non_seqs_set)]
+    else:
+        other_shared_scan_args = [arg.variable for arg
+                            in dummy_f.maker.expanded_inputs
+                            if (isinstance(arg.variable, SharedVariable) and
+                                not arg.update)]
+        other_shared_inner_args = [safe_new(arg.variable, '_copy') for arg
+                            in dummy_f.maker.expanded_inputs
+                            if (isinstance(arg.variable, SharedVariable) and
+                                not arg.update)]
     givens.update(OrderedDict(zip(other_shared_scan_args,
                            other_shared_inner_args)))
 
     ##
-    ### Step 6. Re-order the outputs and clone them replacing things
-    ###         using the givens
+    # Step 6. Re-order the outputs and clone them replacing things
+    # using the givens
     ##
     inner_inputs = (inner_seqs +
                     mit_mot_inner_inputs +
@@ -933,21 +960,23 @@ def scan(fn,
                   shared_inner_outputs)
     if condition is not None:
         inner_outs.append(condition)
-    # Cuda is imported here, instead of being imported on top of the file
-    # because forces on the user some dependencies that we might do not want
-    # to. Currently we are working on removing the dependencies on sandbox
-    # code completeley.
-    from theano.sandbox import cuda
-    if cuda.cuda_available:
+    # Cuda and Gpuarray are imported here, instead of being imported on top of
+    # the file because that would force on the user some dependencies that we
+    # might do not want to. Currently we are working on removing the
+    # dependencies on sandbox code completeley.
+    from theano.sandbox import cuda, gpuarray
+    if cuda.cuda_available or gpuarray.pygpu_activated:
         # very often we end up in this situation when we want to
-        # replace w with w_copy, where w is CudaNdarray
+        # replace w with w_copy, where w is a GPU variable
         # and w_copy is TensorType. This is caused because shared
         # variables are put on GPU right aways >:| ,
         new_givens = OrderedDict()
 
         for w, w_copy in givens.iteritems():
-            if (isinstance(w.type, cuda.CudaNdarrayType)
-                and isinstance(w_copy.type, tensor.TensorType)):
+            if ((isinstance(w.type, cuda.CudaNdarrayType) or
+                 isinstance(w.type, gpuarray.GpuArrayType)) and
+                isinstance(w_copy.type, tensor.TensorType)):
+
                 for o in inner_outs:
                     new_givens = traverse(o, w, w_copy, new_givens)
             else:
@@ -958,10 +987,12 @@ def scan(fn,
     new_outs = scan_utils.clone(inner_outs, replace=new_givens)
 
     ##
-    ### Step 7. Create the Scan Op
+    # Step 7. Create the Scan Op
     ##
 
     tap_array = mit_sot_tap_array + [[-1] for x in xrange(n_sit_sot)]
+    if allow_gc is None:
+        allow_gc = config.scan.allow_gc
     info = OrderedDict()
 
     info['tap_array'] = tap_array
@@ -980,11 +1011,16 @@ def scan(fn,
     info['gpu'] = False
     info['as_while'] = as_while
     info['profile'] = profile
+    info['allow_gc'] = allow_gc
+    info['strict'] = strict
+    if strict:
+        warnings.warn('In the strict mode, all neccessary shared variables '
+                      'must be passed as a part of non_sequences', Warning)
 
     local_op = scan_op.Scan(inner_inputs, new_outs, info)
 
     ##
-    ### Step 8. Compute the outputs using the scan op
+    # Step 8. Compute the outputs using the scan op
     ##
     _scan_inputs = (scan_seqs +
                     mit_mot_scan_inputs +
@@ -1008,8 +1044,8 @@ def scan(fn,
     if type(scan_outs) not in (list, tuple):
         scan_outs = [scan_outs]
     ##
-    ### Step 9. Figure out which outs are update rules for shared variables
-    ###         and so on ...
+    # Step 9. Figure out which outs are update rules for shared variables
+    # and so on ...
     ##
 
     update_map = OrderedUpdates()

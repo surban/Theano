@@ -1,9 +1,9 @@
 import unittest
 
+from nose.plugins.skip import SkipTest
 import numpy
 
 import theano
-
 import theano.gof.op as op
 from theano.gof.type import Type, Generic
 from theano.gof.graph import Apply, Variable
@@ -44,6 +44,14 @@ class MyType(Type):
             raise ValueError("Invalid value")
         return x
 
+    # Added to make those tests pass in DebugMode
+    @staticmethod
+    def may_share_memory(a, b):
+        # As this represent a string and string are immutable, they
+        # never share memory in the DebugMode sence. This is needed as
+        # Python reuse string internally.
+        return False
+
 
 class MyOp(Op):
 
@@ -75,6 +83,33 @@ class NoInputOp(Op):
         output_storage[0][0] = 'test Op no input'
 
 
+class StructOp(Op):
+    __props__ = ()
+
+    def do_constant_folding(self, node):
+        # we are not constant
+        return False
+
+    # The input only serves to distinguish thunks
+    def make_node(self, i):
+        return Apply(self, [i], [scalar.uint64()])
+
+    def c_support_code_struct(self, node, name):
+        return "npy_uint64 counter%s;" % (name,)
+
+    def c_init_code_struct(self, node, name, sub):
+        return "counter%s = 0;" % (name,)
+
+    def c_code(self, node, name, input_names, outputs_names, sub):
+        return """
+%(out)s = counter%(name)s;
+counter%(name)s++;
+""" % dict(out=outputs_names[0], name=name)
+
+    def c_code_cache_version(self):
+        return (1,)
+
+
 class TestOp:
 
     # Sanity tests
@@ -92,7 +127,7 @@ class TestOp:
         try:
             MyOp(Generic()(), MyType(1)())  # MyOp requires MyType instances
             raise Exception("Expected an exception")
-        except Exception, e:
+        except Exception as e:
             if str(e) != "Error 1":
                 raise
 
@@ -101,6 +136,25 @@ class TestOp:
         f = theano.function([], x)
         rval = f()
         assert rval == 'test Op no input'
+
+    def test_op_struct(self):
+        if not theano.config.cxx:
+            raise SkipTest("G++ not available, so we need to skip this test.")
+        sop = StructOp()
+        c = sop(theano.tensor.constant(0))
+        mode = None
+        if theano.config.mode == 'FAST_COMPILE':
+            mode = 'FAST_RUN'
+        f = theano.function([], c, mode=mode)
+        rval = f()
+        assert rval == 0
+        rval = f()
+        assert rval == 1
+
+        c2 = sop(theano.tensor.constant(1))
+        f2 = theano.function([], [c, c2], mode=mode)
+        rval = f2()
+        assert rval == [0, 0]
 
 
 class TestMakeThunk(unittest.TestCase):
@@ -303,16 +357,16 @@ def test_get_debug_values_exc():
 
         try:
             for x_val in op.get_debug_values(x):
-                #this assert catches the case where we
-                #erroneously get a value returned
+                # this assert catches the case where we
+                # erroneously get a value returned
                 assert False
             raised = False
         except AttributeError:
             raised = True
 
-        #this assert catches the case where we got []
-        #returned, and possibly issued a warning,
-        #rather than raising an exception
+        # this assert catches the case where we got []
+        # returned, and possibly issued a warning,
+        # rather than raising an exception
         assert raised
 
     finally:

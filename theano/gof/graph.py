@@ -5,21 +5,26 @@ To read about what theano graphs are from a user perspective, have a look at
 `graph.html <../doc/graph.html>`__.
 
 """
+from __future__ import print_function
 
 __docformat__ = "restructuredtext en"
 
 
 from copy import copy
+from itertools import count
+
 
 import theano
 import warnings
 from theano.gof import utils
-from theano.gof.python25 import any, deque
+from theano.compat import deque
 from theano.misc.ordered_set import OrderedSet
 
 # Lazy imports to avoid circular dependencies.
 is_same_graph_with_merge = None
 equal_computations = None
+
+NoContext = object()
 
 
 class Node(utils.object2):
@@ -31,7 +36,6 @@ class Node(utils.object2):
     Variable.owner / Apply.inputs and its children
     via Variable.clients / Apply.outputs.
     """
-
     def get_parents(self):
         """ Return a list of the parents of this node.
         Should return a copy--i.e., modifying the return
@@ -96,14 +100,14 @@ class Apply(Node):
         if not isinstance(outputs, (list, tuple)):
             raise TypeError("The output of an Apply must be a list or tuple")
 
-        ## filter inputs to make sure each element is a Variable
+        # filter inputs to make sure each element is a Variable
         for input in inputs:
             if isinstance(input, Variable):
                 self.inputs.append(input)
             else:
                 raise TypeError("The 'inputs' argument to Apply must contain Variable instances, not %s" % input)
         self.outputs = []
-        ## filter outputs to make sure each element is a Variable
+        # filter outputs to make sure each element is a Variable
         for i, output in enumerate(outputs):
             if isinstance(output, Variable):
                 if output.owner is None:
@@ -114,6 +118,13 @@ class Apply(Node):
                 self.outputs.append(output)
             else:
                 raise TypeError("The 'outputs' argument to Apply must contain Variable instances with no owner, not %s" % output)
+
+    def run_context(self):
+        """Returns the context for the node, or NoContext if no context is set.
+        """
+        if hasattr(self.op, 'get_context'):
+            return self.op.get_context(self)
+        return NoContext
 
     def default_output(self):
         """Returns the default output for this node.
@@ -135,27 +146,15 @@ class Apply(Node):
             if len(self.outputs) == 1:
                 return self.outputs[0]
             else:
-                raise AttributeError("%s.default_output should be an output index." % self.op)
+                raise AttributeError(
+                    "%s.default_output should be an output index." % self.op)
+        elif not isinstance(do, (int, long)):
+            raise AttributeError("%s.default_output should be an int or long" %
+                                 self.op)
         elif do < 0 or do >= len(self.outputs):
-            raise AttributeError("%s.default_output is out of range." % self.op)
+            raise AttributeError("%s.default_output is out of range." %
+                                 self.op)
         return self.outputs[do]
-
-    def env_getter(self):
-        warnings.warn("Apply.env is deprecated, it has been renamed 'fgraph'",
-                stacklevel=2)
-        return self.fgraph
-
-    def env_setter(self, value):
-        warnings.warn("Apply.env is deprecated, it has been renamed 'fgraph'",
-                stacklevel=2)
-        self.fgraph = value
-
-    def env_deleter(self):
-        warnings.warn("Apply.env is deprecated, it has been renamed 'fgraph'",
-                stacklevel=2)
-        del self.fgraph
-
-    env = property(env_getter, env_setter, env_deleter)
 
     out = property(default_output,
                    doc="alias for self.default_output()")
@@ -179,7 +178,8 @@ class Apply(Node):
         :note:
             tags are copied from self to the returned instance.
         """
-        cp = self.__class__(self.op, self.inputs, [output.clone() for output in self.outputs])
+        cp = self.__class__(self.op, self.inputs,
+                            [output.clone() for output in self.outputs])
         cp.tag = copy(self.tag)
         return cp
 
@@ -224,12 +224,14 @@ class Apply(Node):
     def get_parents(self):
         return list(self.inputs)
 
-    #convenience properties
+    # convenience properties
     nin = property(lambda self: len(self.inputs), doc='same as len(self.inputs)')
     """property: Number of inputs"""
 
     nout = property(lambda self: len(self.outputs), doc='same as len(self.outputs)')
     """property: Number of outputs"""
+
+    context_type = property(lambda self: self.op.context_type, doc='type to use for the context')
 
 
 class Variable(Node):
@@ -308,9 +310,10 @@ class Variable(Node):
 
     `compile.function` uses each `Apply` instance's `inputs` attribute
     together with each Variable's `owner` field to determine which inputs are necessary to compute the function's outputs.
-
     """
     #__slots__ = ['type', 'owner', 'index', 'name']
+    __count__ = count(0)
+
     def __init__(self, type, owner=None, index=None, name=None):
         """Initialize type, owner, index, name.
 
@@ -328,6 +331,8 @@ class Variable(Node):
         :param name: a string for pretty-printing and debugging
 
         """
+        super(Variable, self).__init__()
+
         self.tag = utils.scratchpad()
         self.type = type
         if owner is not None and not isinstance(owner, Apply):
@@ -339,6 +344,7 @@ class Variable(Node):
         if name is not None and not isinstance(name, basestring):
             raise TypeError("name must be a string", name)
         self.name = name
+        self.auto_name = 'auto_' + str(next(self.__count__))
 
     def __str__(self):
         """WRITEME"""
@@ -365,7 +371,7 @@ class Variable(Node):
         :note: tags are copied to the returned instance.
         :note: name is copied to the returned instance.
         """
-        #return copy(self)
+        # return copy(self)
         cp = self.__class__(self.type, None, None, self.name)
         cp.tag = copy(self.tag)
         return cp
@@ -390,21 +396,6 @@ class Variable(Node):
         if self.owner is not None:
             return [self.owner]
         return []
-
-    def env_getter(self):
-        warnings.warn("Variable.env is deprecated, it has been renamed 'fgraph'",
-                stacklevel=2)
-        return self.fgraph
-
-    def env_setter(self, value):
-        warnings.warn("Variable.env is deprecated, it has been renamed 'fgraph'",
-                stacklevel=2)
-        self.fgraph = value
-
-    def env_deleter(self):
-        warnings.warn("Variable.env is deprecated, it has been renamed 'fgraph'",
-                stacklevel=2)
-        del self.fgraph
 
     def eval(self, inputs_to_values=None):
         """ Evaluates this variable.
@@ -431,7 +422,6 @@ class Variable(Node):
         d = self.__dict__.copy()
         d.pop("_fn_cache", None)
         return d
-    env = property(env_getter, env_setter, env_deleter)
 
 
 class Constant(Variable):
@@ -460,6 +450,9 @@ class Constant(Variable):
 
     def signature(self):
         return (self.type, self.data)
+
+    def merge_signature(self):
+        return self.signature()
 
     def __str__(self):
         if self.name is not None:
@@ -724,7 +717,8 @@ def clone_get_equiv(inputs, outputs,
     return memo
 
 
-def general_toposort(r_out, deps, debug_print=False):
+def general_toposort(r_out, deps, debug_print=False,
+                     compute_deps_cache=None, deps_cache=None):
     """WRITEME
 
     :note:
@@ -735,26 +729,44 @@ def general_toposort(r_out, deps, debug_print=False):
 
     :note:
         The order of the return value list is determined by the order of nodes returned by the deps() function.
-    """
-    deps_cache = {}
 
-    def _deps(io):
-        if io not in deps_cache:
-            d = deps(io)
-            if d:
-                if not isinstance(d, (list, OrderedSet)):
-                    raise TypeError("Non-deterministic collections here make"
+    :param deps: a python function that take a node as input and
+        return its dependence.
+    :param compute_deps_cache: Optional,
+        if provided deps_cache should also be provided. This is a
+        function like deps, but that also cache its results in a dict
+        passed as deps_cache.
+    :param deps_cache: a dict. Must be used with compute_deps_cache.
+
+    :note: deps should be provided or can be None and the caller
+        provide compute_deps_cache and deps_cache. The second option
+        remove a Python function call, and allow for more specialized
+        code, so it can be faster.
+
+    """
+    if compute_deps_cache is None:
+        deps_cache = {}
+
+        def compute_deps_cache(io):
+            if io not in deps_cache:
+                d = deps(io)
+                if d:
+                    if not isinstance(d, (list, OrderedSet)):
+                        raise TypeError(
+                            "Non-deterministic collections here make"
                             " toposort non-deterministic.")
-                deps_cache[io] = list(d)
+                    deps_cache[io] = list(d)
+                else:
+                    deps_cache[io] = d
+                return d
             else:
-                deps_cache[io] = d
-            return d
-        else:
-            return deps_cache[io]
+                return deps_cache[io]
+    assert deps_cache is not None
 
     assert isinstance(r_out, (tuple, list, deque))
 
-    reachable, clients = stack_search(deque(r_out), _deps, 'dfs', True)
+    reachable, clients = stack_search(deque(r_out), compute_deps_cache,
+                                      'dfs', True)
     sources = deque([r for r in reachable if not deps_cache.get(r, None)])
 
     rset = set()
@@ -771,9 +783,9 @@ def general_toposort(r_out, deps, debug_print=False):
 
     if len(rlist) != len(reachable):
         if debug_print:
-            print ''
-            print reachable
-            print rlist
+            print('')
+            print(reachable)
+            print(rlist)
         raise ValueError('graph contains cycles')
 
     return rlist
@@ -783,7 +795,7 @@ def io_toposort(inputs, outputs, orderings=None):
     """WRITEME
 
     inputs: a list or tuple of Variable instances
-    outputs: a list or tuple of Variable instances
+    outputs: a list or tuple of Apply instances
 
     orderings: a dictionary
                 key: Apply instance
@@ -794,26 +806,55 @@ def io_toposort(inputs, outputs, orderings=None):
                 order. no sets allowed!
 
     """
-    if orderings is None:
-        orderings = {}
-
-    #the inputs are used only here in the function that decides what 'predecessors' to explore
+    # the inputs are used only here in the function that decides what 'predecessors' to explore
     iset = set(inputs)
 
-    def deps(obj):
-        rval = []
-        if obj not in iset:
-            if isinstance(obj, Variable):
-                if obj.owner:
-                    rval = [obj.owner]
-            elif isinstance(obj, Apply):
-                rval = list(obj.inputs)
-            rval.extend(orderings.get(obj, []))
-        else:
-            assert not orderings.get(obj, [])
-        return rval
+    # We build 2 functions as a speed up
+    deps_cache = {}
 
-    topo = general_toposort(outputs, deps)
+    compute_deps = None
+    compute_deps_cache = None
+    if not orderings:  # can be None or empty dict
+        # Specialized function that is faster when no ordering.
+        # Also include the cache in the function itself for speed up.
+        def compute_deps_cache(obj):
+            if obj in deps_cache:
+                return deps_cache[io]
+            rval = []
+            if obj not in iset:
+                if isinstance(obj, Variable):
+                    if obj.owner:
+                        rval = [obj.owner]
+                elif isinstance(obj, Apply):
+                    rval = list(obj.inputs)
+                if rval:
+                    if not isinstance(rval, (list, OrderedSet)):
+                        raise TypeError(
+                            "Non-deterministic collections here make"
+                            " toposort non-deterministic.")
+                    deps_cache[obj] = list(rval)
+                else:
+                    deps_cache[obj] = rval
+            else:
+                deps_cache[obj] = rval
+            return rval
+    else:
+        def compute_deps(obj):
+            rval = []
+            if obj not in iset:
+                if isinstance(obj, Variable):
+                    if obj.owner:
+                        rval = [obj.owner]
+                elif isinstance(obj, Apply):
+                    rval = list(obj.inputs)
+                rval.extend(orderings.get(obj, []))
+            else:
+                assert not orderings.get(obj, [])
+            return rval
+
+    topo = general_toposort(outputs, deps=compute_deps,
+                            compute_deps_cache=compute_deps_cache,
+                            deps_cache=deps_cache)
     return [o for o in topo if isinstance(o, Apply)]
 
 
@@ -873,6 +914,7 @@ def is_same_graph(var1, var2, givens=None, debug=False):
     # Get result from the merge-based function.
     rval1 = is_same_graph_with_merge(var1=var1, var2=var2, givens=givens)
     # Get result from the function `equal_computations` from scan_utils.
+
     use_equal_computations = True
     if givens:
         # We need to build the `in_xs` and `in_ys` lists. To do this, we need

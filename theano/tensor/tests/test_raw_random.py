@@ -1,3 +1,4 @@
+from __future__ import print_function
 __docformat__ = "restructuredtext en"
 import numpy
 from theano.tests import unittest_tools as utt
@@ -69,15 +70,15 @@ class T_random_function(utt.InferShapeTester):
         f2, f4, f2_4, f2_4_4 = f()
         f2b, f4b, f2_4b, f2_4_4b = f()
 
-        #print f2
-        #print f4
-        #print f2_4
-        #print f2_4_4
+        # print f2
+        # print f4
+        # print f2_4
+        # print f2_4_4
 
-        #print f2b
-        #print f4b
-        #print f2_4b
-        #print f2_4_4b
+        # print f2b
+        # print f4b
+        # print f2_4b
+        # print f2_4_4b
 
         # setting bounds is same as multiplying by 2
         assert numpy.allclose(f2 * 2, f4), (f2, f4)
@@ -230,7 +231,7 @@ class T_random_function(utt.InferShapeTester):
         rng_R = random_state_type()
 
         # No shape, no args -> TypeError
-        self.assertRaises(TypeError, permutation, rng_R, size=None, ndim=2)
+        self.assertRaises(TypeError, poisson, rng_R, size=None, ndim=2)
 
     def test_random_function_ndim_added(self):
         """Test that random_function helper function accepts ndim_added as
@@ -306,8 +307,8 @@ class T_random_function(utt.InferShapeTester):
         self.assertRaises(ValueError, fm11)
         self.assertRaises(ValueError, fm12)
         u01, u02 = f0()
-        print u01
-        print u02
+        print(u01)
+        print(u02)
         self.assertTrue(numpy.allclose(u01, u02[0]))
 
     def test_uniform(self):
@@ -328,10 +329,10 @@ class T_random_function(utt.InferShapeTester):
         val1 = f()
         numpy_val0 = numpy_rng.uniform(-2.0, 2.0, size=(4,))
         numpy_val1 = numpy_rng.uniform(-2.0, 2.0, size=(4,))
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.allclose(val0, numpy_val0))
         self.assertTrue(numpy.allclose(val1, numpy_val1))
 
@@ -355,10 +356,10 @@ class T_random_function(utt.InferShapeTester):
         val1 = f()
         numpy_val0 = numpy_rng.binomial(5, 0.8, size=(7, 12))
         numpy_val1 = numpy_rng.binomial(5, 0.8, size=(7, 12))
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.all(val0 == numpy_val0))
         self.assertTrue(numpy.all(val1 == numpy_val1))
 
@@ -380,10 +381,10 @@ class T_random_function(utt.InferShapeTester):
         val1 = f()
         numpy_val0 = numpy_rng.normal(4.0, 2.0, size=(2, 3))
         numpy_val1 = numpy_rng.normal(4.0, 2.0, size=(2, 3))
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.allclose(val0, numpy_val0))
         self.assertTrue(numpy.allclose(val1, numpy_val1))
 
@@ -407,10 +408,10 @@ class T_random_function(utt.InferShapeTester):
         val1 = f()
         numpy_val0 = numpy_rng.random_integers(-3, 16, size=(11, 8))
         numpy_val1 = numpy_rng.random_integers(-3, 16, size=(11, 8))
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.allclose(val0, numpy_val0))
         self.assertTrue(numpy.allclose(val1, numpy_val1))
 
@@ -443,10 +444,10 @@ class T_random_function(utt.InferShapeTester):
                                     for i in range(7)])
         numpy_val1 = numpy.asarray([numpy_rng.permutation(8)
                                     for i in range(7)])
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.all(val0 == numpy_val0))
         self.assertTrue(numpy.all(val1 == numpy_val1))
 
@@ -498,10 +499,10 @@ class T_random_function(utt.InferShapeTester):
         val1 = f()
         numpy_val0 = numpy_rng.choice(10, (11, 8), True, None)
         numpy_val1 = numpy_rng.choice(10, (11, 8), True, None)
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.allclose(val0, numpy_val0))
         self.assertTrue(numpy.allclose(val1, numpy_val1))
 
@@ -512,7 +513,7 @@ class T_random_function(utt.InferShapeTester):
         rng_R = random_state_type()
         # Use non-default parameters, and larger dimensions because of
         # the integer nature of the result
-        post_r, out = poisson(rng_R, lam=5, size=(11,8))
+        post_r, out = poisson(rng_R, lam=5, size=(11, 8))
 
         f = compile.function(
                 [compile.In(rng_R,
@@ -523,12 +524,12 @@ class T_random_function(utt.InferShapeTester):
         numpy_rng = numpy.random.RandomState(utt.fetch_seed())
         val0 = f()
         val1 = f()
-        numpy_val0 = numpy_rng.poisson(5,size=(11,8))
-        numpy_val1 = numpy_rng.poisson(5,size=(11,8))
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        numpy_val0 = numpy_rng.poisson(5, size=(11, 8))
+        numpy_val1 = numpy_rng.poisson(5, size=(11, 8))
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.allclose(val0, numpy_val0))
         self.assertTrue(numpy.allclose(val1, numpy_val1))
 
@@ -537,7 +538,7 @@ class T_random_function(utt.InferShapeTester):
         results as numpy."""
         rng_R = random_state_type()
         post_r, out = permutation(rng_R, size=(9,), n=6)
-        print 'OUT NDIM', out.ndim
+        print('OUT NDIM', out.ndim)
         f = compile.function(
                 [compile.In(rng_R,
                     value=numpy.random.RandomState(utt.fetch_seed()),
@@ -554,12 +555,25 @@ class T_random_function(utt.InferShapeTester):
                                     for i in range(9)])
         numpy_val1 = numpy.asarray([numpy_rng.permutation(6)
                                     for i in range(9)])
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.all(val0 == numpy_val0))
         self.assertTrue(numpy.all(val1 == numpy_val1))
+
+        # Test that we can generate a list: have size=None or ().
+        for ndim in [1, None]:
+            post_r, out = permutation(rng_R, n=10, size=None, ndim=ndim)
+            inp = compile.In(rng_R,
+                             value=numpy.random.RandomState(utt.fetch_seed()),
+                             update=post_r, mutable=True)
+            f = theano.function([inp], out)
+            o = f()
+            assert o.shape == (10,)
+            assert (numpy.sort(o) == numpy.arange(10)).all()
+        # Wrong number of dimensions asked
+        self.assertRaises(TypeError, permutation, rng_R, size=None, ndim=2)
 
     def test_multinomial(self):
         """Test that raw_random.multinomial generates the same
@@ -579,10 +593,10 @@ class T_random_function(utt.InferShapeTester):
         val1, = f()
         numpy_val0 = numpy_rng.multinomial(6, [0.2] * 5, (7, 3))
         numpy_val1 = numpy_rng.multinomial(6, [0.2] * 5, (7, 3))
-        print val0
-        print numpy_val0
-        print val1
-        print numpy_val1
+        print(val0)
+        print(numpy_val0)
+        print(val1)
+        print(numpy_val1)
         self.assertTrue(numpy.all(val0 == numpy_val0))
         self.assertTrue(numpy.all(val1 == numpy_val1))
 
@@ -696,7 +710,7 @@ class T_random_function(utt.InferShapeTester):
         assert numpy.all(val0b == numpy_val0b)
         assert numpy.all(val1b == numpy_val1b)
         self.assertRaises(ValueError, fb, post1b, [-4., -2], [-1, 0, 1])
-        #TODO: do we want that?
+        # TODO: do we want that?
         #self.assertRaises(ValueError, fb, post1b, [-4., -2], [-1])
 
         size = tensor.lvector()
@@ -713,7 +727,7 @@ class T_random_function(utt.InferShapeTester):
         self.assertRaises(ValueError, fc, post1c, [-4., -2], [-1, 0], [1, 2])
         self.assertRaises(ValueError, fc, post1c, [-4., -2], [-1, 0], [2, 1])
         self.assertRaises(ValueError, fc, post1c, [-4., -2], [-1], [1])
-        #TODO: do we want that?
+        # TODO: do we want that?
         #self.assertRaises(ValueError, fc, post1c, [-4., -2], [-1], [2])
 
     def test_broadcast_arguments(self):

@@ -9,7 +9,6 @@ except ImportError:
 import theano
 from theano import sparse, config, tensor
 from theano.sparse import enable_sparse
-from theano.gof.python25 import any
 if not enable_sparse:
     raise SkipTest('Optional package sparse disabled')
 
@@ -139,3 +138,17 @@ def test_local_sampling_dot_csr():
             # be inserted
             assert not any(isinstance(node.op, sparse.opt.SamplingDotCSR) for node
                        in f.maker.fgraph.toposort())
+
+
+def test_local_dense_from_sparse_sparse_from_dense():
+    mode = theano.compile.mode.get_default_mode()
+    mode = mode.including("local_dense_from_sparse_sparse_from_dense")
+
+    m = theano.tensor.matrix()
+    for op in [theano.sparse.csr_from_dense, theano.sparse.csc_from_dense]:
+        s = op(m)
+        o = theano.sparse.dense_from_sparse(s)
+        f = theano.function([m], o, mode=mode)
+        # We should just have a deep copy.
+        assert len(f.maker.fgraph.apply_nodes) == 1
+        f([[1, 2], [3, 4]])

@@ -1,9 +1,12 @@
+from __future__ import print_function
 # For flag of bool type, we consider the strings 'False', 'false' and '0'
 # as False, and the string s'True', 'true', '1' as True.
 # We also accept the bool type as its corresponding value!
 
+import inspect
 import logging
 import os
+import shlex
 import sys
 import warnings
 
@@ -21,13 +24,6 @@ class TheanoConfigWarning(Warning):
         warnings.warn(message, cls, stacklevel=stacklevel + 3)
     warn = classmethod(warn)
 
-# Check for deprecated environment variables
-for key in os.environ:
-    if key.startswith("THEANO"):
-        if key not in ("THEANO_FLAGS", "THEANORC"):
-            TheanoConfigWarning.warn(
-                    "Ignoring deprecated environment variable %s" % key)
-
 THEANO_FLAGS = os.getenv("THEANO_FLAGS", "")
 # The THEANO_FLAGS environment variable should be a list of comma-separated
 # [section.]option=value entries. If the section part is omitted, there should
@@ -39,7 +35,10 @@ def parse_config_string(config_string, issue_warnings=True):
     Parses a config string (comma-separated key=value components) into a dict.
     """
     config_dict = {}
-    for kv_pair in THEANO_FLAGS.split(','):
+    my_splitter = shlex.shlex(config_string, posix=True)
+    my_splitter.whitespace = ','
+    my_splitter.whitespace_split = True
+    for kv_pair in my_splitter:
         kv_pair = kv_pair.strip()
         if not kv_pair:
             continue
@@ -47,9 +46,9 @@ def parse_config_string(config_string, issue_warnings=True):
         if len(kv_tuple) == 1:
             if issue_warnings:
                 TheanoConfigWarning.warn(
-                        ("Config key '%s' has no value, ignoring it"
-                            % kv_tuple[0]),
-                        stacklevel=1)
+                    ("Config key '%s' has no value, ignoring it"
+                        % kv_tuple[0]),
+                    stacklevel=1)
         else:
             k, v = kv_tuple
             # subsequent values for k will override earlier ones
@@ -74,14 +73,51 @@ def config_files_from_theanorc():
 
 config_files = config_files_from_theanorc()
 theano_cfg = ConfigParser.SafeConfigParser(
-        {'USER': os.getenv("USER", os.path.split(os.path.expanduser('~'))[-1])}
-        )
+    {'USER': os.getenv("USER", os.path.split(os.path.expanduser('~'))[-1]),
+     'LSCRATCH': os.getenv("LSCRATCH", ""),
+     'TMPDIR': os.getenv("TMPDIR", ""),
+     'TEMP': os.getenv("TEMP", ""),
+     'TMP': os.getenv("TMP", ""),
+     'PID': str(os.getpid()),
+     }
+)
 theano_cfg.read(config_files)
 # Having a raw version of the config around as well enables us to pass
 # through config values that contain format strings.
 # The time required to parse the config twice is negligible.
 theano_raw_cfg = ConfigParser.RawConfigParser()
 theano_raw_cfg.read(config_files)
+
+
+def change_flags(**kwargs):
+    """
+    Use this as a decorator to change the value of Theano config variable.
+
+    Useful during tests.
+    """
+    def change_flags_exec(f):
+        def inner(*args, **kwargs_):
+            old_val = {}
+            for k in kwargs:
+                l = [v for v in theano.configparser._config_var_list
+                     if v.fullname == k]
+                assert len(l) == 1
+                old_val[k] = l[0].__get__()
+            try:
+                for k in kwargs:
+                    l = [v for v in theano.configparser._config_var_list
+                         if v.fullname == k]
+                    assert len(l) == 1
+                    l[0].__set__(None, kwargs[k])
+                return f(*args, **kwargs_)
+            finally:
+                for k in kwargs:
+                    l = [v for v in theano.configparser._config_var_list
+                         if v.fullname == k]
+                    assert len(l) == 1
+                    l[0].__set__(None, old_val[k])
+        return inner
+    return change_flags_exec
 
 
 def fetch_val_for_key(key):
@@ -125,10 +161,10 @@ _config_var_list = []
 
 def _config_print(thing, buf):
     for cv in _config_var_list:
-        print >> buf, cv
-        print >> buf, "    Doc: ", cv.doc
-        print >> buf, "    Value: ", cv.__get__()
-        print >> buf, ""
+        print(cv, file=buf)
+        print("    Doc: ", cv.doc, file=buf)
+        print("    Value: ", cv.__get__(), file=buf)
+        print("", file=buf)
 
 
 def get_config_md5():
@@ -142,11 +178,11 @@ def get_config_md5():
     all_opts = sorted([c for c in _config_var_list if c.in_c_key],
                       key=lambda cv: cv.fullname)
     return theano.gof.cc.hash_from_code('\n'.join(
-                    ['%s = %s' % (cv.fullname, cv.__get__()) for cv in all_opts]))
+        ['%s = %s' % (cv.fullname, cv.__get__()) for cv in all_opts]))
 
 
 class TheanoConfigParser(object):
-    #properties are installed by AddConfigVar
+    # properties are installed by AddConfigVar
     _i_am_a_config_class = True
 
     def __str__(self):
@@ -202,7 +238,7 @@ def AddConfigVar(name, doc, configparam, root=config, in_c_key=True):
     # instances
 
     if root is config:
-        #only set the name in the first call, not the recursive ones
+        # only set the name in the first call, not the recursive ones
         configparam.fullname = name
     sections = name.split('.')
     if len(sections) > 1:
@@ -214,11 +250,11 @@ def AddConfigVar(name, doc, configparam, root=config, in_c_key=True):
                 _i_am_a_config_class = True
             setattr(root.__class__, sections[0], SubObj())
         newroot = getattr(root, sections[0])
-        if (not getattr(newroot, '_i_am_a_config_class', False)
-                or isinstance(newroot, type)):
+        if (not getattr(newroot, '_i_am_a_config_class', False) or
+                isinstance(newroot, type)):
             raise TypeError(
-                    'Internal config nodes must be config class instances',
-                    newroot)
+                'Internal config nodes must be config class instances',
+                newroot)
         return AddConfigVar('.'.join(sections[1:]), doc, configparam,
                             root=newroot, in_c_key=in_c_key)
     else:
@@ -232,7 +268,8 @@ def AddConfigVar(name, doc, configparam, root=config, in_c_key=True):
         if not callable(configparam.default):
             configparam.__get__()
         else:
-            # We do not want to evaluate now the default value when it is a callable.
+            # We do not want to evaluate now the default value
+            # when it is a callable.
             try:
                 fetch_val_for_key(configparam.fullname)
                 # The user provided a value, filter it now.
@@ -268,20 +305,24 @@ class ConfigParam(object):
             try:
                 val_str = fetch_val_for_key(self.fullname)
             except KeyError:
-                if callable(self.default):
+                if inspect.isgeneratorfunction(self.default):
+                    for v in self.default():
+                        val_str = v
+                        self.__set__(None, val_str)
+                elif callable(self.default):
                     val_str = self.default()
                 else:
                     val_str = self.default
             self.__set__(None, val_str)
-        #print "RVAL", self.val
+        # print "RVAL", self.val
         return self.val
 
     def __set__(self, cls, val):
         if not self.allow_override and hasattr(self, 'val'):
             raise Exception(
-                    "Can't change the value of this config parameter "
-                    "after initialization!")
-        #print "SETTING PARAM", self.fullname,(cls), val
+                "Can't change the value of this config parameter "
+                "after initialization!")
+        # print "SETTING PARAM", self.fullname,(cls), val
         if self.filter:
             self.val = self.filter(val)
         else:
@@ -297,9 +338,13 @@ class EnumStr(ConfigParam):
         for val in self.all:
             if not isinstance(val, basestring):
                 raise ValueError('Valid values for an EnumStr parameter '
-                        'should be strings', val, type(val))
+                                 'should be strings', val, type(val))
+
+        convert = kwargs.get("convert", None)
 
         def filter(val):
+            if convert:
+                val = convert(val)
             if val in self.all:
                 return val
             else:
@@ -325,13 +370,13 @@ class TypedParam(ConfigParam):
                     return cast_val
                 else:
                     raise ValueError(
-                            'Invalid value (%s) for configuration variable '
-                            '"%s".'
-                            % (val, self.fullname), val)
+                        'Invalid value (%s) for configuration variable '
+                        '"%s".'
+                        % (val, self.fullname), val)
             return cast_val
 
         super(TypedParam, self).__init__(default, filter,
-                allow_override=allow_override)
+                                         allow_override=allow_override)
 
     def __str__(self):
         return '%s (%s) ' % (self.fullname, self.mytype)
@@ -350,7 +395,7 @@ def FloatParam(default, is_valid=None, allow_override=True):
 
 
 def BoolParam(default, is_valid=None, allow_override=True):
-    #see comment at the beginning of this file.
+    # see comment at the beginning of this file.
 
     def booltype(s):
         if s in ['False', 'false', '0', False]:
@@ -368,4 +413,4 @@ def BoolParam(default, is_valid=None, allow_override=True):
         is_valid = is_valid_bool
 
     return TypedParam(default, booltype, is_valid,
-            allow_override=allow_override)
+                      allow_override=allow_override)

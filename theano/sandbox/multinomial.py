@@ -4,7 +4,6 @@ import theano
 from theano import Op, Apply
 import theano.tensor as T
 from theano.gof import local_optimizer
-from theano.gof.python25 import any
 
 from theano.sandbox.cuda import cuda_available, GpuOp
 if cuda_available:
@@ -59,7 +58,14 @@ class MultinomialFromUniform(Op):
     def c_code(self, node, name, ins, outs, sub):
         (pvals, unis) = ins
         (z,) = outs
-
+        if self.odtype == 'auto':
+            t = "PyArray_TYPE((PyArrayObject*) py_%(pvals)s)" % locals()
+        else:
+            t = theano.scalar.Scalar(self.odtype).dtype_specs()[1]
+            if t.startswith('theano_complex'):
+                t = t.replace('theano_complex', 'NPY_COMPLEX')
+            else:
+                t = t.upper()
         fail = sub['fail']
         return """
         if (PyArray_NDIM(%(pvals)s) != 2)
@@ -87,7 +93,7 @@ class MultinomialFromUniform(Op):
             Py_XDECREF(%(z)s);
             %(z)s = (PyArrayObject*) PyArray_ZEROS(2,
                 PyArray_DIMS(%(pvals)s),
-                type_num_%(z)s,
+                %(t)s,
                 0);
             if (!%(z)s)
             {
@@ -186,9 +192,9 @@ class GpuMultinomialFromUniform(MultinomialFromUniform, GpuOp):
         return Apply(self, [pvals, unis], [out])
 
     def perform(self, node, ins, outs):
-        #The perform from parent don't work with CudaNdarray.  We
-        #don't need it as DebugMode will test again it as an
-        #optimization insert the GPU op.
+        # The perform from parent don't work with CudaNdarray.  We
+        # don't need it as DebugMode will test again it as an
+        # optimization insert the GPU op.
         return Op.perform(self, node, ins, outs)
 
     def c_code_cache_version(self):
@@ -242,12 +248,12 @@ class GpuMultinomialFromUniform(MultinomialFromUniform, GpuOp):
 
         fail = sub['fail']
         return """
-        if (PyArray_NDIM(%(pvals)s) != 2)
+        if (CudaNdarray_NDIM(%(pvals)s) != 2)
         {
             PyErr_Format(PyExc_TypeError, "pvals wrong rank");
             %(fail)s;
         }
-        if (PyArray_NDIM(%(unis)s) != 1)
+        if (CudaNdarray_NDIM(%(unis)s) != 1)
         {
             PyErr_Format(PyExc_TypeError, "unis wrong rank");
             %(fail)s;

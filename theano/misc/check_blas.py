@@ -1,10 +1,11 @@
 #!/usr/bin/env python
 
-#print info to check we link with witch version of blas
-#test the speed of the blas gemm fct:
-#C=a*C+dot(A,B)*b
-#A,B,C matrix
-#a,b scalar
+# print info to check we link with witch version of blas
+# test the speed of the blas gemm fct:
+# C=a*C+dot(A,B)*b
+# A,B,C matrix
+# a,b scalar
+from __future__ import print_function
 
 s = """
 result for shapes=(2000,2000) and iters=100
@@ -23,8 +24,6 @@ import numpy
 import theano
 import theano.tensor as T
 
-from theano.gof.python25 import any
-
 
 def execute(execute=True, verbose=True, M=2000, N=2000, K=2000,
             iters=10, order='C'):
@@ -39,32 +38,32 @@ def execute(execute=True, verbose=True, M=2000, N=2000, K=2000,
     """
 
     if verbose:
-        print 'Some Theano flags:'
-        print '    blas.ldflags=', theano.config.blas.ldflags
-        print '    compiledir=', theano.config.compiledir
-        print '    floatX=', theano.config.floatX
-        print '    device=', theano.config.device
-        print 'Some OS information:'
-        print '    sys.platform=', sys.platform
-        print '    sys.version=', sys.version
-        print '    sys.prefix=', sys.prefix
-        print 'Some environment variables:'
-        print '    MKL_NUM_THREADS=', os.getenv('MKL_NUM_THREADS')
-        print '    OMP_NUM_THREADS=', os.getenv('OMP_NUM_THREADS')
-        print '    GOTO_NUM_THREADS=', os.getenv('GOTO_NUM_THREADS')
-        print
+        print('Some Theano flags:')
+        print('    blas.ldflags=', theano.config.blas.ldflags)
+        print('    compiledir=', theano.config.compiledir)
+        print('    floatX=', theano.config.floatX)
+        print('    device=', theano.config.device)
+        print('Some OS information:')
+        print('    sys.platform=', sys.platform)
+        print('    sys.version=', sys.version)
+        print('    sys.prefix=', sys.prefix)
+        print('Some environment variables:')
+        print('    MKL_NUM_THREADS=', os.getenv('MKL_NUM_THREADS'))
+        print('    OMP_NUM_THREADS=', os.getenv('OMP_NUM_THREADS'))
+        print('    GOTO_NUM_THREADS=', os.getenv('GOTO_NUM_THREADS'))
+        print()
         print ('Numpy config: (used when the Theano flag'
                ' "blas.ldflags" is empty)')
         numpy.show_config()
-        print 'Numpy dot module:', numpy.dot.__module__
-        print 'Numpy location:', numpy.__file__
-        print 'Numpy version:', numpy.__version__
+        print('Numpy dot module:', numpy.dot.__module__)
+        print('Numpy location:', numpy.__file__)
+        print('Numpy version:', numpy.__version__)
         if (theano.config.device.startswith("gpu") or
             theano.config.init_gpu_device.startswith("gpu")):
-            print 'nvcc version:'
+            print('nvcc version:')
             subprocess.call((theano.sandbox.cuda.nvcc_compiler.nvcc_path,
                              "--version"))
-            print
+            print()
 
     a = theano.shared(numpy.ones((M, N), dtype=theano.config.floatX,
                                  order=order))
@@ -113,7 +112,7 @@ def jobman_job(state, channel):
 
 
 def test():
-    execute()
+    return execute()
 
 
 parser = OptionParser(
@@ -150,11 +149,11 @@ if __name__ == "__main__":
     options, arguments = parser.parse_args(sys.argv)
 
     if hasattr(options, "help"):
-        print options.help
+        print(options.help)
         sys.exit(0)
 
     if not options.quiet:
-        print """
+        print("""
         Some results that you can compare against. They were 10 executions
         of gemm in float64 with matrices of shape 2000x2000 (M=N=K=2000).
         All memory layout was in C order.
@@ -201,36 +200,47 @@ if __name__ == "__main__":
 
         Test time in float32
 
-        cuda version      5.5    5.0    4.2    4.1    4.0    3.2    3.0   # note
+        cuda version      6.5    6.0    5.5    5.0    4.2    4.1    4.0    3.2    3.0   # note
         gpu
-        K20m/ECC                 0.07s
-        K20/NOECC                0.07s
-        M2090             0.19s
-        C2075                           0.25s
-        M2075                    0.25s
-        M2070                    0.25s         0.27s         0.32s
-        M2070-Q                  0.48s         0.27s         0.32s
-        M2050(Amazon)            0.25s
-        C1060                                                0.46s
+        K6000/NOECC       0.06s         0.06s
+        K40                             0.07s
+        K20m/ECC          0.08s 0.08s          0.07s
+        K20/NOECC                              0.07s
+        M2090                           0.19s
+        C2075                                         0.25s
+        M2075                                  0.25s
+        M2070                                  0.25s         0.27s         0.32s
+        M2070-Q                                0.48s         0.27s         0.32s
+        M2050(Amazon)                          0.25s
+        C1060                                                              0.46s
+        K600                            1.04s
 
-        GTX Titan(D15U-50)0.06s  0.06s  don't work
-        GTX 680                  0.12s  0.154s               0.218s
-        GTX 580           0.16s  0.16s  0.164s               0.203s
-        GTX 480           0.19s  0.19s  0.192s               0.237s 0.27s
-        GTX 470           0.23s  0.23s  0.238s               0.297s 0.34s
-        GTX 660           0.18s  0.20s  0.23s
-        GTX 560                         0.30s
-        GTX 650 Ti               0.27s
-        GTX 460                  0.37s                0.45s
-        GTX 285           0.42s         0.452s        0.452s        0.40s # cuda 3.0 seems faster? driver version?
-        750M                     0.49s
-        GTX 550 Ti                                    0.57s
-        GT 520                          2.68s                3.06s
-        520M                     2.44s                       3.19s        # with bumblebee on Ubuntu 12.04
-        GT 220                                               3.80s
-        GT 210                                        6.35s
-        8500 GT                                                     10.68s
-        """
+        GTX Titan Black                 0.05s
+        GTX Titan(D15U-50)              0.06s  0.06s  don't work
+        GTX 780                         0.06s
+        GTX 980           0.06s
+        GTX 970           0.08s
+        GTX 680                         0.11s  0.12s  0.154s               0.218s
+        GRID K520         0.14s
+        GTX 580                         0.16s  0.16s  0.164s               0.203s
+        GTX 480                         0.19s  0.19s  0.192s               0.237s 0.27s
+        GTX 750 Ti        0.20s
+        GTX 470                         0.23s  0.23s  0.238s               0.297s 0.34s
+        GTX 660                         0.18s  0.20s  0.23s
+        GTX 560                                       0.30s
+        GTX 650 Ti                             0.27s
+        GTX 765M                 0.27s
+        GTX 460                                0.37s                0.45s
+        GTX 285                         0.42s         0.452s        0.452s        0.40s # cuda 3.0 seems faster? driver version?
+        750M                                   0.49s
+        GT 610            2.38s
+        GTX 550 Ti                                                  0.57s
+        GT 520                                        2.68s                3.06s
+        520M                                   2.44s                       3.19s        # with bumblebee on Ubuntu 12.04
+        GT 220                                                             3.80s
+        GT 210                                                      6.35s
+        8500 GT                                                                   10.68s
+        """)
 
     t, impl = execute(not options.print_only, not options.quiet,
                       M=options.M, N=options.N, K=options.K,
@@ -239,17 +249,17 @@ if __name__ == "__main__":
     if options.print_only:
         pass
     elif options.quiet:
-        print t
+        print(t)
     else:
-        print
-        print "We executed", options.iter,
-        print "calls to gemm with a and b matrices of shapes",
-        print "(%d, %d) and (%d, %d)." % (options.M, options.N,
-                                          options.N, options.K)
+        print()
+        print("We executed", options.iter, end=' ')
+        print("calls to gemm with a and b matrices of shapes", end=' ')
+        print("(%d, %d) and (%d, %d)." % (options.M, options.N,
+                                          options.N, options.K))
 
-        print
-        print 'Total execution time: %.2fs on %s.' % (t, impl)
-        print
+        print()
+        print('Total execution time: %.2fs on %s.' % (t, impl))
+        print()
         print ('Try to run this script a few times. Experience shows that'
                ' the first time is not as fast as followings calls. The'
                ' difference is not big, but consistent.')

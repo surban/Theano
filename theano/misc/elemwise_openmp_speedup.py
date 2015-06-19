@@ -1,3 +1,4 @@
+from __future__ import print_function
 import os
 import subprocess
 import sys
@@ -9,7 +10,7 @@ parser = OptionParser(usage='%prog <options>\n Compute time for'
                       ' fast and slow elemwise operations')
 parser.add_option('-N', '--N', action='store', dest='N',
                   default=theano.config.openmp_elemwise_minsize, type="int",
-                  help="Number of vector element")
+                  help="Number of vector elements")
 
 
 def runScript(N):
@@ -20,14 +21,14 @@ def runScript(N):
                             cwd=dir)
     (out, err) = proc.communicate()
     if err:
-        print err
+        print(err)
         sys.exit()
     return map(float, out.split(" "))
 
 if __name__ == '__main__':
     options, arguments = parser.parse_args(sys.argv)
     if hasattr(options, "help"):
-        print options.help
+        print(options.help)
         sys.exit(0)
     orig_flags = os.environ.get('THEANO_FLAGS', '')
     os.environ['THEANO_FLAGS'] = orig_flags + ',openmp=false'
@@ -49,6 +50,6 @@ if __name__ == '__main__':
         costlySpeed = costlyTimeOpenmp / costlyTime
         costlySpeedstring = "slowdown"
 
-    print "Fast op time without openmp %fs with openmp %fs %s %2.2f" % (cheapTime, cheapTimeOpenmp, cheapSpeedstring, cheapSpeed)
+    print("Fast op time without openmp %fs with openmp %fs %s %2.2f" % (cheapTime, cheapTimeOpenmp, cheapSpeedstring, cheapSpeed))
     
-    print "Slow op time without openmp %fs with openmp %fs %s %2.2f" % (costlyTime, costlyTimeOpenmp, costlySpeedstring, costlySpeed)
+    print("Slow op time without openmp %fs with openmp %fs %s %2.2f" % (costlyTime, costlyTimeOpenmp, costlySpeedstring, costlySpeed))

@@ -1,5 +1,4 @@
 import theano
-from theano.compat import any
 from theano.gradient import DisconnectedType
 from theano.gof import Op, Apply, TopoOptimizer
 from theano import tensor
@@ -174,9 +173,10 @@ def conv3d(signals, filters,
     :param filters_shape: None or a tuple/list with the shape of filters
     :param border_mode: The only one tested is 'valid'.
 
-    :note: Work on the GPU.
-           Another way to define signals: (batch,  time, in channel, row, column)
+    :note: Another way to define signals: (batch,  time, in channel, row, column)
            Another way to define filters: (out channel,time,in channel, row, column)
+    :note: For the GPU, you can use this implementation or
+           :func:`conv3d_fft <theano.sandbox.cuda.fftconv.conv3d_fft>`.
 
     :see: Someone made a script that shows how to swap the axes between
           both 3d convolution implementations in Theano. See the last
@@ -224,7 +224,7 @@ def conv3d(signals, filters,
         filters.reshape(_filters_shape_4d),
         image_shape=conv2d_signal_shape,
         filter_shape=conv2d_filter_shape,
-        border_mode = border_mode[1])  # ignoring border_mode[2]
+        border_mode=border_mode[1])  # ignoring border_mode[2]
 
     # reshape the output to restore its original size
     # shape = Ns, Ts, Nf, Tf, W-Wf+1, H-Hf+1
@@ -254,7 +254,16 @@ def conv3d(signals, filters,
     # now sum out along the Tf to get the output
     # but we have to sum on a diagonal through the Tf and Ts submatrix.
     if border_mode[0] == 'valid':
-        out_5d = diagonal_subtensor(out_tmp, 1, 3).sum(axis=3)
+        if _filters_shape_5d[1]!=1:
+          out_5d = diagonal_subtensor(out_tmp, 1, 3).sum(axis=3)
+        else: # for Tf==1, no sum along Tf, the Ts-axis of the output is unchanged!
+          out_5d = out_tmp.reshape((
+            _signals_shape_5d[0],
+            _signals_shape_5d[1],
+            _filters_shape_5d[0],
+            _signals_shape_5d[3] - _filters_shape_5d[3] + 1,
+            _signals_shape_5d[4] - _filters_shape_5d[4] + 1,
+            ))
     elif border_mode[0] in ('full', 'same'):
         raise NotImplementedError('sequence border mode', border_mode[0])
     else:
@@ -282,9 +291,9 @@ def make_gpu_optimizer(op, to_gpu):
         gpu_from_host(op) -> op(gpu_from_host)
         """
         if isinstance(node.op, op):
-            #op(host_from_gpu()) -> host_from_gpu(op)
-            #If any of the input that go on the GPU are on the GPU,
-            #move the op to the gpu.
+            # op(host_from_gpu()) -> host_from_gpu(op)
+            # If any of the input that go on the GPU are on the GPU,
+            # move the op to the gpu.
             if any(node.inputs[idx].owner and
                    isinstance(node.inputs[idx].owner.op, cuda.HostFromGpu)
                    for idx in to_gpu):
@@ -293,7 +302,7 @@ def make_gpu_optimizer(op, to_gpu):
                     new_inp[idx] = cuda.gpu_from_host(new_inp[idx])
                 return [cuda.host_from_gpu(op()(*new_inp))]
         if node.op == cuda.gpu_from_host:
-            #gpu_from_host(op) -> op(gpu_from_host)
+            # gpu_from_host(op) -> op(gpu_from_host)
             host_input = node.inputs[0]
             if host_input.owner and isinstance(host_input.owner.op,
                                                op):

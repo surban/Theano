@@ -41,45 +41,63 @@ from theano.configdefaults import config
 # Version information.
 from theano.version import version as __version__
 
-from theano.gof import \
-    CLinker, OpWiseCLinker, DualLinker, Linker, LocalLinker, PerformLinker, \
-    Container, \
-    InconsistencyError, FunctionGraph, \
-    Apply, Variable, Constant, \
-    Op, OpenMPOp, \
-    opt, \
-    toolbox, \
-    Type, Generic, generic, \
-    object2, utils
+# This is the api version for ops that generate C code.  External ops
+# might need manual changes if this number goes up.  An undefined
+# __api_version__ can be understood to mean api version 0.
+#
+# This number is not tied to the release version and should change
+# very rarely.
+__api_version__ = 1
 
-from theano.compile import \
-    SymbolicInput, In, \
-    SymbolicOutput, Out, \
-    Mode, \
-    predefined_modes, predefined_linkers, predefined_optimizers, \
-    FunctionMaker, function, OpFromGraph, \
-    Component, External, Member, Method, \
-    Composite, ComponentList, ComponentDict, Module, \
-    ProfileMode, ProfileStats, \
-    Param, shared
+from theano.gof import (
+    CLinker, OpWiseCLinker, DualLinker, Linker, LocalLinker, PerformLinker,
+    Container,
+    InconsistencyError, FunctionGraph,
+    Apply, Variable, Constant,
+    Op, OpenMPOp,
+    opt,
+    toolbox,
+    Type, Generic, generic,
+    object2, utils)
+
+from theano.compile import (
+    SymbolicInput, In,
+    SymbolicOutput, Out,
+    Mode,
+    predefined_modes, predefined_linkers, predefined_optimizers,
+    FunctionMaker, function, function_dump, OpFromGraph,
+    ProfileMode, ProfileStats,
+    Param, shared, as_op)
 
 from theano.misc.safe_asarray import _asarray
-
-FancyModule = Module
 
 from theano.printing import pprint, pp
 
 from theano.scan_module import scan, map, reduce, foldl, foldr, clone
 
-from theano.updates import Updates, OrderedUpdates
+from theano.updates import OrderedUpdates
 
-# scan_module import above initializes tensor and scalar making these imports redundant
-#import tensor
-#import scalar
-#we don't import by default as we don't want to force having scipy installed.
-#import sparse
+# scan_module import above initializes tensor and scalar making these imports
+# redundant
 
-from theano.gradient import Rop, Lop, grad
+# import tensor
+# import scalar
+
+# we don't import by default as we don't want to force having scipy installed.
+
+# import sparse
+
+from theano.gradient import Rop, Lop, grad, subgraph_grad
+
+# This need to be before the init of GPU, as it add config variable
+# needed during that phase.
+import theano.tests
+if hasattr(theano.tests, "TheanoNoseTester"):
+    test = theano.tests.TheanoNoseTester().test
+else:
+    def test():
+        raise ImportError("The nose module is not installed."
+                          " It is needed for Theano tests.")
 
 if config.device.startswith('gpu') or config.init_gpu_device.startswith('gpu'):
     import theano.sandbox.cuda
@@ -126,9 +144,7 @@ numpy.seterr(
     invalid=_invalid)
 del _all, _divide, _over, _under, _invalid
 
-## import scalar_opt
-
-### This is defined here because it is designed to work across symbolic
+# This is defined here because it is designed to work across symbolic
 #   datatypes (Sparse and Tensor)
 
 
@@ -140,12 +156,12 @@ def dot(l, r):
     if rval == NotImplemented and hasattr(l, '__dot__'):
         try:
             rval = l.__dot__(r)
-        except Exception, e0:
+        except Exception as e0:
             rval = NotImplemented
     if rval == NotImplemented and hasattr(r, '__rdot__'):
         try:
             rval = r.__rdot__(l)
-        except Exception, e1:
+        except Exception as e1:
             rval = NotImplemented
     if rval == NotImplemented:
         raise NotImplementedError("Dot failed for the following reasons:",
@@ -186,20 +202,4 @@ def sparse_grad(var):
     return ret
 
 
-import theano.tests
-if hasattr(theano.tests, "TheanoNoseTester"):
-    test = theano.tests.TheanoNoseTester().test
-else:
-    def test():
-        raise ImportError("The nose module is not installed."
-                          " It is needed for Theano tests.")
-
-# This cannot be done in tensor/__init__.py due to a circular dependency -- randomstreams
-# depends on raw_random which depends on tensor.  As a work-around, we import RandomStreams
-# here and inject an instance in tensor.
-from theano import tensor
-from theano.tensor.randomstreams import RandomStreams
-# Imitate the numpy.random symbol with a tensor.random one
-tensor.random = RandomStreams(seed=0xBAD5EED, no_warn=True)
-del RandomStreams
 __import__('theano.tensor.shared_randomstreams')

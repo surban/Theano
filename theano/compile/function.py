@@ -1,16 +1,55 @@
 """Define the `function` function
 """
-__docformat__ = "restructuredtext en"
-
+import cPickle
 import logging
-_logger = logging.getLogger('theano.compile.function')
+
+import traceback as tb
+import re
 
 from theano.compile.io import In
 from theano.compile.function_module import orig_function
 from theano.compile.pfunc import pfunc
-from numpy import any  # to work in python 2.4
+from numpy import any
 import warnings
-from theano import gof
+from theano import compat
+
+__docformat__ = "restructuredtext en"
+_logger = logging.getLogger('theano.compile.function')
+
+
+def function_dump(filename, inputs, outputs=None, mode=None, updates=None,
+                  givens=None,
+                  no_default_updates=False, accept_inplace=False, name=None,
+                  rebuild_strict=True, allow_input_downcast=None, profile=None,
+                  on_unused_input=None):
+    """This is helpful to make a reproducable case for problem during
+    Theano compilation.
+
+    Ex:
+
+    replace `theano.function(...)` by
+    `theano.function_dump('filename.pkl', ...)`.
+
+    If you see this, you where probably asked to use this function to
+    help debug a particular case during the compilation of a Theano
+    function. `function_dump` allows to easily reproduce your
+    compilation without asking any code. It pickle all the objects and
+    parameters needed to reproduce a call to `theano.function()`. This
+    include shared variables and there values. If you do not want
+    that, you can set to replace shared variables values by zeros by
+    calling set_value(...) on them before calling `function_dump`.
+
+    """
+    assert isinstance(filename, basestring)
+    d = dict(inputs=inputs, outputs=outputs, mode=mode, updates=updates,
+             givens=givens, no_default_updates=no_default_updates,
+             accept_inplace=accept_inplace, name=name,
+             rebuild_strict=rebuild_strict,
+             allow_input_downcast=allow_input_downcast, profile=profile,
+             on_unused_input=on_unused_input)
+    with open(filename, 'wb') as f:
+        cPickle.dump(d, f, -1)
+
 
 def function(inputs, outputs=None, mode=None, updates=None, givens=None,
              no_default_updates=False, accept_inplace=False, name=None,
@@ -23,60 +62,74 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
     :param inputs: function parameters, these are not allowed to be shared
     variables
 
-    :type outputs: list of Variables or Out instances
+    :type outputs: list or dict of Variables or Out instances.  If it is a
+                   dict, the keys must be strings
     :param outputs: expressions to compute
 
     :type mode: string or `Mode` instance.
     :param mode: compilation mode
 
-    :type updates: iterable over pairs (shared_variable, new_expression). List, tuple or OrderedDict.
-    :param updates: update the values for SharedVariable inputs according to these expressions
+    :type updates: iterable over pairs (shared_variable, new_expression).
+                   List, tuple or OrderedDict.
+    :param updates: update the values for SharedVariable inputs
+                    according to these expressions
 
-    :type givens: iterable over pairs (Var1, Var2) of Variables. List, tuple or dict.  The Var1
-    and Var2 in each pair must have the same Type.
-
-    :param givens: specific substitutions to make in the computation graph (Var2 replaces
-    Var1).
+    :type givens: iterable over pairs (Var1, Var2) of Variables. List,
+                  tuple or dict.  The Var1 and Var2 in each pair must
+                  have the same Type.
+    :param givens: specific substitutions to make in the computation
+                   graph (Var2 replaces Var1).
 
     :type no_default_updates: either bool or list of Variables
-    :param no_default_updates: if True, do not perform any automatic update on Variables.
-    If False (default), perform them all. Else, perform automatic updates on all Variables
-    that are neither in "updates" nor in "no_default_updates".
+    :param no_default_updates: if True, do not perform any automatic
+        update on Variables.  If False (default), perform them
+        all. Else, perform automatic updates on all Variables that are
+        neither in "updates" nor in "no_default_updates".
 
-    :param name: an optional name for this function. The profile mode will print the time spent in this function.
+    :param name: an optional name for this function. The profile mode
+        will print the time spent in this function.
 
-    :param rebuild_strict: True (Default) is the safer and better tested setting, in which case
-    `givens` must substitute new variables with the same Type as the variables they replace.
-    False is a you-better-know-what-you-are-doing setting, that permits `givens` to replace
-    variables with new variables of any Type.  The consequence of changing a Type is that all
-    results depending on that variable may have a different Type too (the graph is rebuilt from
-    inputs to outputs).  If one of the new types does not make sense for one of the Ops in the
-    graph, an Exception will be raised.
+    :param rebuild_strict: True (Default) is the safer and better
+        tested setting, in which case `givens` must substitute new
+        variables with the same Type as the variables they replace.
+        False is a you-better-know-what-you-are-doing setting, that
+        permits `givens` to replace variables with new variables of
+        any Type.  The consequence of changing a Type is that all
+        results depending on that variable may have a different Type
+        too (the graph is rebuilt from inputs to outputs).  If one of
+        the new types does not make sense for one of the Ops in the
+        graph, an Exception will be raised.
 
     :type allow_input_downcast: Boolean or None
     :param allow_input_downcast: True means that the values passed as
-    inputs when calling the function can be silently downcasted to fit
-    the dtype of the corresponding Variable, which may lose precision.
-    False means that it will only be cast to a more general, or
-    precise, type. None (default) is almost like False, but allows
-    downcasting of Python float scalars to floatX.
+        inputs when calling the function can be silently downcasted to
+        fit the dtype of the corresponding Variable, which may lose
+        precision.  False means that it will only be cast to a more
+        general, or precise, type. None (default) is almost like
+        False, but allows downcasting of Python float scalars to
+        floatX.
 
     :type profile: None, True, or ProfileStats instance
-    :param profile: accumulate profiling information into a given ProfileStats
-    instance. If argument is `True` then a new ProfileStats instance will be
-    used.  This profiling object will be available via self.profile.
+    :param profile: accumulate profiling information into a given
+        ProfileStats instance. If argument is `True` then a new
+        ProfileStats instance will be used.  This profiling object
+        will be available via self.profile.
 
-    :param on_unused_input: What to do if a variable in the 'inputs' list is
-    not used in the graph. Possible values are 'raise', 'warn', 'ignore' and None.
+    :param on_unused_input: What to do if a variable in the 'inputs'
+        list is not used in the graph. Possible values are 'raise',
+        'warn', 'ignore' and None.
 
     :rtype: Function instance
-    :returns: a callable object that will compute the outputs (given the inputs)
-    and update the implicit function arguments according to the `updates`.
+    :returns: a callable object that will compute the outputs (given
+        the inputs) and update the implicit function arguments
+        according to the `updates`.
 
-    :note: Regarding givens: Be careful to make sure that these substitutions are
-    independent--behaviour when Var1 of one pair appears in the graph leading to Var2 in
-    another expression is undefined.  Replacements specified with givens are different from
-    optimizations in that Var2 is not expected to be equivalent to Var1.
+    :note: Regarding givens: Be careful to make sure that these
+        substitutions are independent--behaviour when Var1 of one pair
+        appears in the graph leading to Var2 in another expression is
+        undefined.  Replacements specified with givens are different
+        from optimizations in that Var2 is not expected to be
+        equivalent to Var1.
 
 
     Internal documentation:
@@ -154,16 +207,46 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
         was easier to develop the VM in Python then translate it to C instead
         of just writing it in C from scratch.
                CVM stands for C Virtual Machine.
-
-
-
-
     """
+    if isinstance(outputs, dict):
+        output_items = outputs.items()
+
+        for item_pair in output_items:
+            assert isinstance(item_pair[0], basestring)
+
+        output_items_sorted = sorted(output_items)
+
+        output_keys = []
+        outputs = []
+        for pair in output_items_sorted:
+            output_keys.append(pair[0])
+            outputs.append(pair[1])
+
+    else:
+        output_keys = None
+
+    if name is None:
+        # Determine possible file names
+        source_file = re.sub('\.pyc?', '.py', __file__)
+        compiled_file = source_file + 'c'
+
+        stack = tb.extract_stack()
+        idx = len(stack) - 1
+
+        last_frame = stack[idx]
+        if (last_frame[0] == source_file or last_frame[0] == compiled_file):
+            func_frame = stack[idx - 1]
+            while "theano/gof" in func_frame[0] and idx > 0:
+                idx -= 1
+                # This can hapen if we call var.eval()
+                func_frame = stack[idx - 1]
+            name = func_frame[0] + ':' + str(func_frame[1])
+
     if updates is None:
         updates = []
 
     if (isinstance(updates, dict) and
-            not isinstance(updates, gof.python25.OrderedDict) and
+            not isinstance(updates, compat.OrderedDict) and
             len(updates) > 1):
         warnings.warn(
             "The parameter 'updates' of theano.function()"
@@ -171,7 +254,7 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
             " got " + str(type(updates)) + ". Using "
             "a standard dictionary here results in "
             "non-deterministic behavior. You should use an OrderedDict"
-            " if you are using Python 2.7 (theano.compat.python2x.OrderedDict"
+            " if you are using Python 2.7 (theano.compat.OrderedDict"
             " for older python), or use a list of (shared, update)"
             " pairs. Do not just convert your dictionary to this type before"
             " the call as the conversion will still be non-deterministic.",
@@ -180,12 +263,13 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
     if givens is None:
         givens = []
     if not isinstance(inputs, (list, tuple)):
-        raise Exception("Input variables of a Theano function should be"
-                        " contained in a list, even when there is a single input.")
+        raise Exception("Input variables of a Theano function should be "
+                        "contained in a list, even when there is a single "
+                        "input.")
 
     # compute some features of the arguments:
-    uses_In = any([isinstance(i, In) for i in inputs])  # N.B. the square brackets are ncessary
-    uses_tuple = any([isinstance(i, (list, tuple)) for i in inputs])  # N.B. the square brackets are ncessary
+    uses_In = any([isinstance(i, In) for i in inputs])
+    uses_tuple = any([isinstance(i, (list, tuple)) for i in inputs])
     uses_updates = bool(updates)
     uses_givens = bool(givens)
 
@@ -199,28 +283,30 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
     if uses_In or uses_tuple:
         # we must use old semantics in this case.
         if profile:
-            raise NotImplementedError('profiling not supported in old-style function')
+            raise NotImplementedError("profiling not supported in old-style "
+                                      "function")
         if uses_updates or uses_givens:
             raise NotImplementedError(
-                    "In() instances and tuple inputs trigger the old "
-                    "semantics, which disallow using updates and givens")
+                "In() instances and tuple inputs trigger the old "
+                "semantics, which disallow using updates and givens")
         fn = orig_function(inputs, outputs,
                            mode=mode,
                            accept_inplace=accept_inplace, name=name)
     else:
-        #note: pfunc will also call orig_function-- orig_function is a choke point
-        #      that all compilation must pass through
+        # note: pfunc will also call orig_function-- orig_function is
+        #      a choke point that all compilation must pass through
         fn = pfunc(params=inputs,
-                outputs=outputs,
-                mode=mode,
-                updates=updates,
-                givens=givens,
-                no_default_updates=no_default_updates,
-                accept_inplace=accept_inplace, name=name,
-                rebuild_strict=rebuild_strict,
-                allow_input_downcast=allow_input_downcast,
-                on_unused_input=on_unused_input,
-                profile=profile)
+                   outputs=outputs,
+                   mode=mode,
+                   updates=updates,
+                   givens=givens,
+                   no_default_updates=no_default_updates,
+                   accept_inplace=accept_inplace, name=name,
+                   rebuild_strict=rebuild_strict,
+                   allow_input_downcast=allow_input_downcast,
+                   on_unused_input=on_unused_input,
+                   profile=profile,
+                   output_keys=output_keys)
     # We need to add the flag check_aliased inputs if we have any mutable or
     # borrowed used defined inputs
     fn._check_for_aliased_inputs = check_for_aliased_inputs

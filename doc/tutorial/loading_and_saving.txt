@@ -114,6 +114,31 @@ For instance, you can define functions along the lines of:
         self.training_set = cPickle.load(file(self.training_set_file, 'rb'))
 
 
+Robust Serialization
+====================
+
+This type of serialization uses some helper functions particular to Theano. It
+serializes the object using Python's pickling protocol, but any ``ndarray`` or
+``CudaNdarray`` objects contained within the object are saved separately as NPY
+files. These NPY files and the Pickled file are all saved together in single
+ZIP-file.
+
+The main advantage of this approach is that you don't even need Theano installed
+in order to look at the values of shared variables that you pickled. You can
+just load the parameters manually with `numpy`.
+
+.. code-block:: python
+
+    numpy.load('model.zip')
+
+This approach could be beneficial if you are sharing your model with people who
+might not have Theano installed, who are using a different Python version, or if
+you are planning to save your model for a long time (in which case version
+mismatches might make it difficult to unpickle objects).
+
+See :func:`theano.misc.pkl_utils.dump` and :func:`theano.misc.pkl_utils.load`.
+
+
 Long-Term Serialization
 =======================
 
@@ -131,7 +156,7 @@ matrix *W* and a bias *b*, you can define:
 .. code-block:: python
 
     def __getstate__(self):
-        return (W, b)
+        return (self.W, self.b)
 
     def __setstate__(self, state):
         W, b = state
@@ -145,7 +170,7 @@ functions to reflect the change in name:
 .. code-block:: python
 
     def __getstate__(self):
-        return (weights, bias)
+        return (self.weights, self.bias)
 
     def __setstate__(self, state):
         W, b = state
@@ -154,4 +179,3 @@ functions to reflect the change in name:
 
 For more information on advanced use of ``pickle`` and its internals, see Python's
 pickle_ documentation.
-

@@ -1,3 +1,4 @@
+from __future__ import print_function
 import numpy, scipy.linalg
 from theano import gof, tensor, scalar, function
 import unittest
@@ -34,34 +35,36 @@ class Minimal(gof.Op):
 
         # do what you want here,
         # but do not modify any of the arguments [inplace].
-        print "perform got %i arguments" % len(inputs)
+        print("perform got %i arguments" % len(inputs))
 
-        print "Max of input[0] is ", numpy.max(inputs[0])
+        print("Max of input[0] is ", numpy.max(inputs[0]))
 
         # return some computed value.
         # do not return something that is aliased to one of the inputs.
-        output[0]=numpy.asarray(0, dtype='int64')
+        output[0] = numpy.asarray(0, dtype='int64')
 
 minimal = Minimal()
 
 
-## TODO: test dtype conversion
-## TODO: test that invalid types are rejected by make_node
-## TODO: test that each valid type for A and b works correctly
+# TODO: test dtype conversion
+# TODO: test that invalid types are rejected by make_node
+# TODO: test that each valid type for A and b works correctly
 from theano.tests import unittest_tools as utt
+
+
 class T_minimal(unittest.TestCase):
     def setUp(self):
         self.rng = numpy.random.RandomState(utt.fetch_seed(666))
 
     def test0(self):
-        A=tensor.matrix()
-        b=tensor.vector()
+        A = tensor.matrix()
+        b = tensor.vector()
 
-        print 'building function'
+        print('building function')
         f = function([A, b], minimal(A, A, b, b, A))
-        print 'built'
+        print('built')
 
-        Aval=self.rng.randn(5,5)
-        bval=numpy.array(range(5),dtype=float)
-        f(Aval,bval)
-        print 'done'
+        Aval = self.rng.randn(5, 5)
+        bval = numpy.array(range(5), dtype=float)
+        f(Aval, bval)
+        print('done')

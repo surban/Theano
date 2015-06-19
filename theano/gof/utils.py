@@ -1,23 +1,95 @@
-import re
+from __future__ import print_function
+import linecache
 import traceback
+import sys
 
 from theano import config
 
 
-def add_tag_trace(thing):
+def simple_extract_stack(f=None, limit=None):
+    """This is traceback.extract_stack from python 2.7 with this
+    change:
+
+    - Comment the update of the cache
+
+    This is because this update cause an call to os.stat to get the
+    line content. This cause too much long on cluster.
+    """
+    if f is None:
+        try:
+            raise ZeroDivisionError
+        except ZeroDivisionError:
+            f = sys.exc_info()[2].tb_frame.f_back
+    if limit is None:
+        if hasattr(sys, 'tracebacklimit'):
+            limit = sys.tracebacklimit
+    list = []
+    n = 0
+    while f is not None and (limit is None or n < limit):
+        lineno = f.f_lineno
+        co = f.f_code
+        filename = co.co_filename
+        name = co.co_name
+#        linecache.checkcache(filename)
+        line = linecache.getline(filename, lineno, f.f_globals)
+        if line:
+            line = line.strip()
+        else:
+            line = None
+        list.append((filename, lineno, name, line))
+        f = f.f_back
+        n = n + 1
+    list.reverse()
+    return list
+
+if sys.version_info[:2] > (3, 4):
+    # I enable my implementation only for some python version just to
+    # be sure the Python internal do not change. If this work with
+    # other python version, you can enable it.
+    simple_extract_stack = traceback.extract_stack  # noqa
+
+
+def add_tag_trace(thing, user_line=1):
     """Add tag.trace to an node or variable.
 
     The argument is returned after being affected (inplace).
+    :param thing: the object where we add .tag.trace
+    :param user_line: The max number of user line to keep.
+
+    :note: we alse use config.traceback.limit for the maximum number
+        of stack level we look.
+
     """
     limit = config.traceback.limit
     if limit == -1:
         limit = None
-    tr = traceback.extract_stack(limit=limit)[:-1]
+    tr = simple_extract_stack(limit=limit)[:-1]
     # Different python version use different sementic for
     # limit. python 2.7 include the call to extrack_stack. The -1 get
-    # rid of it.  We also want to get rid of the add_tag_trace call.
-    if tr and "add_tag_trace" in tr[-1][-1]:
-        tr = tr[:-1]
+    # rid of it.
+
+    # Get rid of Theano internal
+    while tr:
+        file_path = tr[-1][0]
+        rm = False
+        for p in ["theano/tensor/",
+                  "theano/gof/",
+                  "theano/scalar/basic.py",
+                  "theano/sandbox/",
+                  "theano/scan_module/",
+                  "theano/sparse/",
+                  "theano/typed_list/",
+                  ]:
+            if p in file_path:
+                tr = tr[:-1]
+                rm = True
+                break
+        if not rm:
+            break
+    # Keep only the most recent stack level.
+    # The order is from the oldest to the newest
+    if len(tr) > user_line:
+        tr = tr[-user_line:]
     thing.tag.trace = tr
     return thing
 
@@ -25,6 +97,11 @@ def add_tag_trace(thing):
 def hashtype(self):
     t = type(self)
     return hash(t.__name__) ^ hash(t.__module__)
+
+
+# Object to mark that a parameter is undefined (useful in cases where
+# None is a valid value with defined semantics)
+undef = object()
 
 
 class MethodNotDefined(Exception):
@@ -64,9 +141,9 @@ class scratchpad:
         return "scratchpad" + str(self.__dict__)
 
     def info(self):
-        print "<theano.gof.utils.scratchpad instance at %i>" % id(self)
+        print("<theano.gof.utils.scratchpad instance at %i>" % id(self))
         for k, v in self.__dict__.items():
-            print "  %s: %s" % (k, v)
+            print("  %s: %s" % (k, v))
 
 
 class D:
@@ -95,15 +172,15 @@ def memoize(f):
 def deprecated(filename, msg=''):
     """Decorator which will print a warning message on the first call.
 
-    Use it like this:
+    Use it like this::
 
-    @deprecated('myfile', 'do something different...')
-    def fn_name(...)
-        ...
+      @deprecated('myfile', 'do something different...')
+      def fn_name(...)
+          ...
 
-    And it will print
+    And it will print::
 
-    WARNING myfile.fn_name deprecated. do something different...
+      WARNING myfile.fn_name deprecated. do something different...
 
     """
     def _deprecated(f):
@@ -111,8 +188,8 @@ def deprecated(filename, msg=''):
 
         def g(*args, **kwargs):
             if printme[0]:
-                print 'WARNING: %s.%s deprecated. %s'\
-                        % (filename, f.__name__, msg)
+                print('WARNING: %s.%s deprecated. %s' %
+                      (filename, f.__name__, msg))
                 printme[0] = False
             return f(*args, **kwargs)
         return g
@@ -126,8 +203,8 @@ def uniq(seq):
     If we just exchange other values, but keep the same pattern of duplication,
     we must keep the same order.
     """
-    #TODO: consider building a set out of seq so that the if condition
-    #is constant time -JB
+    # TODO: consider building a set out of seq so that the if condition
+    # is constant time -JB
     return [x for i, x in enumerate(seq) if seq.index(x) == i]
 
 
@@ -141,7 +218,7 @@ def difference(seq1, seq2):
             raise Exception('not worth it')
         set2 = set(seq2)
         return [x for x in seq1 if x not in set2]
-    except Exception, e:
+    except Exception:
         # maybe a seq2 element is not hashable
         # maybe seq2 is too short
         # -> use O(len(seq1) * len(seq2)) algo
@@ -232,11 +309,11 @@ def comm_guard(type1, type2):
         old_f = f.func_globals[f.__name__]
 
         def new_f(arg1, arg2, *rest):
-            if (type1 is ANY_TYPE or isinstance(arg1, type1)) \
-                   and (type2 is ANY_TYPE or isinstance(arg2, type2)):
+            if ((type1 is ANY_TYPE or isinstance(arg1, type1)) and
+                    (type2 is ANY_TYPE or isinstance(arg2, type2))):
                 pass
-            elif (type1 is ANY_TYPE or isinstance(arg2, type1)) \
-                     and (type2 is ANY_TYPE or isinstance(arg1, type2)):
+            elif ((type1 is ANY_TYPE or isinstance(arg2, type1)) and
+                  (type2 is ANY_TYPE or isinstance(arg1, type2))):
                 arg1, arg2 = arg2, arg1
             else:
                 return old_f(arg1, arg2, *rest)
@@ -258,8 +335,9 @@ def comm_guard(type1, type2):
                 return type.__name__
 
         new_f.__doc__ = (str(old_f.__doc__) + "\n" +
-                ", ".join([typename(type) for type in (type1, type2)]) +
-                "\n" + str(f.__doc__ or ""))
+                         ", ".join([typename(type)
+                                    for type in (type1, type2)]) +
+                         "\n" + str(f.__doc__ or ""))
         return new_f
 
     return wrap
@@ -290,8 +368,8 @@ def type_guard(type1):
                 return type.__name__
 
         new_f.__doc__ = (str(old_f.__doc__) + "\n" +
-                ", ".join([typename(type) for type in (type1,)]) +
-                "\n" + str(f.__doc__ or ""))
+                         ", ".join([typename(type) for type in (type1,)]) +
+                         "\n" + str(f.__doc__ or ""))
         return new_f
 
     return wrap
@@ -327,15 +405,16 @@ def give_variables_names(variables):
     This function is idempotent."""
     names = map(lambda var: var.name, variables)
     h = hist(names)
-    bad_var = lambda var: not var.name or h[var.name] > 1
+
+    def bad_var(var):
+        return not var.name or h[var.name] > 1
 
     for i, var in enumerate(filter(bad_var, variables)):
         var.name = (var.name or "") + "_%d" % i
 
     if not unique(map(str, variables)):
-        raise ValueError("Not all variables have unique names."
-                "Maybe you've named some of the variables identically")
-
+        raise ValueError("Not all variables have unique names. Maybe you've "
+                         "named some of the variables identically")
     return variables
 
 

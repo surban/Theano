@@ -2,6 +2,7 @@
 
 These functions implement special cases of exp and log to improve numerical stability.
 """
+from __future__ import print_function
 
 import warnings
 from itertools import imap
@@ -31,6 +32,11 @@ class ScalarSigmoid(scalar.UnaryScalarOp):
             return 0.0
         if x > 30.0:
             return 1.0
+        # If x is an int8 or uint8, numpy.exp will compute the result in
+        # half-precision (float16), where we want float32.
+        x_dtype = str(getattr(x, 'dtype', ''))
+        if x_dtype in ('int8', 'uint8'):
+            return 1.0 / (1.0 + numpy.exp(-x, sig='f'))
         return 1.0 / (1.0 + numpy.exp(-x))
 
     def impl(self, x):
@@ -52,16 +58,21 @@ class ScalarSigmoid(scalar.UnaryScalarOp):
         # We add boundary checks prevent exp from generating inf or
         # 0. The reset of the logic always generate 0 or 1 in those
         # cases. This is a speed optimization.
-        # The constants were obtained by looking at the output of python commands like:
-        """
-import numpy, theano
-dt='float32'  # or float64
-for i in xrange(750):
-    print i, repr(theano._asarray(1.0, dtype=dt) /
-                              (theano._asarray(1.0, dtype=dt) +
-                              numpy.exp(-theano._asarray([i,-i], dtype=dt))))
-        """
-        if node.inputs[0].type == scalar.float32:
+        # The constants were obtained by looking at the output of
+        # python commands like:
+        #
+        # import numpy, theano
+        # dt='float32'  # or float64
+        # for i in xrange(750):
+        #     print i, repr(theano._asarray(1.0, dtype=dt) /
+        #                   (theano._asarray(1.0, dtype=dt) +
+        #                    numpy.exp(-theano._asarray([i,-i], dtype=dt))))
+
+        # float16 limits: -11.0, 7.0f
+        # We use the float32 limits for float16 for now as the
+        # computation will happend in float32 anyway.
+        if (node.inputs[0].type == scalar.float32 or
+                node.inputs[0].type == scalar.float16):
             return """%(z)s = %(x)s < -88.0f ? 0.0 : %(x)s > 15.0f ? 1.0f : 1.0f /(1.0f + exp(-%(x)s));""" % locals()
         elif node.inputs[0].type == scalar.float64:
             return """%(z)s = %(x)s < -709.0 ? 0.0 : %(x)s > 19.0 ? 1.0 : 1.0 /(1.0+exp(-%(x)s));""" % locals()
@@ -143,9 +154,9 @@ for i in xrange(750):
                              'doc', 'library', 'tensor', 'nnet',
                              'sigmoid_prec.png')
         plt.savefig(fname)
-        print "New picture saved at", fname
-        print val_ultra.max()
-        print val_ultra.min()
+        print("New picture saved at", fname)
+        print(val_ultra.max())
+        print(val_ultra.min())
 
 
 scalar_sigmoid = ScalarSigmoid(scalar.upgrade_to_float, name='scalar_sigmoid')
@@ -268,8 +279,11 @@ def hard_sigmoid(x):
     Removing the slope and shift does not make it faster.
 
     """
-    slope = 0.2
-    shift = 0.5
+    # Use the same dtype as determined by "upgrade_to_float",
+    # and perform computation in that dtype.
+    out_dtype = scalar.upgrade_to_float(scalar.Scalar(dtype=x.dtype))[0].dtype
+    slope = tensor.constant(0.2, dtype=out_dtype)
+    shift = tensor.constant(0.5, dtype=out_dtype)
     x = (x * slope) + shift
     x = tensor.clip(x, 0, 1)
     return x
@@ -300,6 +314,11 @@ class ScalarSoftplus(scalar.UnaryScalarOp):
             return 0.0
         if x > 30.0:
             return x
+        # If x is an int8 or uint8, numpy.exp will compute the result in
+        # half-precision (float16), where we want float32.
+        x_dtype = str(getattr(x, 'dtype', ''))
+        if x_dtype in ('int8', 'uint8'):
+            return numpy.log1p(numpy.exp(x, sig='f'))
         return numpy.log1p(numpy.exp(x))
 
     def impl(self, x):
@@ -313,11 +332,17 @@ class ScalarSoftplus(scalar.UnaryScalarOp):
     def c_code(self, node, name, inp, out, sub):
         x, = inp
         z, = out
-        if node.inputs[0].type == scalar.float32:
-            # These constants were obtained by looking at the output of python commands like:
-            #  for i in xrange(750):
-            #      print i, repr( numpy.log1p(numpy.exp(theano._asarray([i,-i], dtype=dt))))
-            # the boundary checks prevent us from generating inf
+        # These constants were obtained by looking at the output of
+        # python commands like:
+        #  for i in xrange(750):
+        #      print i, repr(numpy.log1p(numpy.exp(theano._asarray([i,-i], dtype=dt))))
+        # the boundary checks prevent us from generating inf
+
+        # float16 limits: -17.0, 6.0
+        # We use the float32 limits for float16 for now as the
+        # computation will happend in float32 anyway.
+        if (node.inputs[0].type == scalar.float32 or
+                node.inputs[0].type == scalar.float16):
             return """%(z)s = %(x)s < -103.0f ? 0.0 : %(x)s > 14.0f ? %(x)s : log1p(exp(%(x)s));""" % locals()
         elif node.inputs[0].type == scalar.float64:
             return """%(z)s = %(x)s < -745.0 ? 0.0 : %(x)s > 16.0 ? %(x)s : log1p(exp(%(x)s));""" % locals()
@@ -520,7 +545,7 @@ def local_exp_over_1_plus_exp(node):
     # so we don't care to check client counts
     if node.op == tensor.true_div:
 
-        #find all the exp() terms in the numerator
+        # find all the exp() terms in the numerator
         num, denom = node.inputs
         num_exp_x, num_rest, num_neg = partition_num_or_denom(num, is_exp)
         denom_1pexp, denom_rest, \
@@ -660,7 +685,7 @@ def simplify_mul(tree):
             rval = [neg, s_inputs]
     else:
         rval = tree
-    #print 'simplify_mul: %s -> %s' % (tree, rval)
+    # print 'simplify_mul: %s -> %s' % (tree, rval)
     return rval
 
 
@@ -739,13 +764,13 @@ def perform_sigm_times_exp(tree, exp_x=None, exp_minus_x=None, sigm_x=None,
     if full_tree is None:
         full_tree = tree
     if False:  # Debug code.
-        print '<perform_sigm_times_exp>'
-        print '  full_tree   = %s' % full_tree
-        print '  tree        = %s' % tree
-        print '  exp_x       = %s' % exp_x
-        print '  exp_minus_x = %s' % exp_minus_x
-        print '  sigm_x      = %s' % sigm_x
-        print '  sigm_minus_x= %s' % sigm_minus_x
+        print('<perform_sigm_times_exp>')
+        print('  full_tree   = %s' % full_tree)
+        print('  tree        = %s' % tree)
+        print('  exp_x       = %s' % exp_x)
+        print('  exp_minus_x = %s' % exp_minus_x)
+        print('  sigm_x      = %s' % sigm_x)
+        print('  sigm_minus_x= %s' % sigm_minus_x)
     neg, inputs = tree
     if isinstance(inputs, list):
         # Recurse through inputs of the multiplication.
@@ -866,7 +891,7 @@ def local_1msigmoid(node):
         if sub_r.owner and sub_r.owner.op == sigmoid:
             try:
                 val_l = opt.get_scalar_constant_value(sub_l)
-            except Exception, e:
+            except Exception as e:
                 return
             if numpy.allclose(numpy.sum(val_l), 1):
                 return [sigmoid(-sub_r.owner.inputs[0])]
@@ -891,8 +916,8 @@ if 0:
     @opt.register_stabilize
     @gof.local_optimizer([tensor.mul])
     def local_sigm_gest(node):
-        print "CANONICALIZE"
-        print sigm_canonicalize(node)
+        print("CANONICALIZE")
+        print(sigm_canonicalize(node))
 
     def sigm_canonicalize(node):
         add = tensor.add

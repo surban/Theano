@@ -1,7 +1,7 @@
 ..  ../../../../theano/sandbox/linalg/ops.py
 ..  ../../../../theano/sandbox/linalg
 
-.. _libdoc_linalg:
+.. _libdoc_sandbox_linalg:
 
 ===================================================================
 :mod:`sandbox.linalg` --  Linear Algebra Ops
@@ -16,6 +16,4 @@ API
 ===
 
 .. automodule:: theano.sandbox.linalg.ops
-    :members:
-.. automodule:: theano.sandbox.linalg.kron
     :members:

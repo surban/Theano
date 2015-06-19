@@ -6,7 +6,7 @@ U{http://www-users.cs.umn.edu/~saad/software/SPARSKIT/paper.ps}.
 
 @todo: Automatic methods for determining best sparse format?
 """
-#### COPIED FROM hpu/icml09/sp.py
+# COPIED FROM hpu/icml09/sp.py
 
 import numpy
 import scipy
@@ -15,7 +15,6 @@ from scipy import sparse as scipy_sparse
 import theano
 import theano.sparse
 from theano import sparse, gof, Op, tensor
-from theano.gof.python25 import all, any
 from theano.sparse.basic import Remove0, remove0
 
 # To maintain compatibility
@@ -43,18 +42,20 @@ class ConvolutionIndices(Op):
     """
 
     @staticmethod
-    def sparse_eval(inshp, kshp, nkern, (dx, dy)=(1, 1), mode='valid'):
+    def sparse_eval(inshp, kshp, nkern, strides=(1, 1), mode='valid'):
+        (dx, dy) = strides
         return convolution_indices.evaluate(inshp, kshp, (dx, dy),
                                             nkern, mode=mode, ws=False)
 
     @staticmethod
-    def conv_eval(inshp, kshp, (dx, dy)=(1, 1), mode='valid'):
+    def conv_eval(inshp, kshp, strides=(1, 1), mode='valid'):
+        (dx, dy) = strides
         return convolution_indices.evaluate(inshp, kshp, (dx, dy),
                                             mode=mode, ws=True)
 
     # img_shape and ker_shape are (height,width)
     @staticmethod
-    def evaluate(inshp, kshp, (dx, dy)=(1, 1), nkern=1, mode='valid', ws=True):
+    def evaluate(inshp, kshp, strides=(1, 1), nkern=1, mode='valid', ws=True):
         """Build a sparse matrix which can be used for performing...
         * convolution: in this case, the dot product of this matrix
         with the input images will generate a stack of images
@@ -80,6 +81,7 @@ class ConvolutionIndices(Op):
         :returns: the structure of a sparse matrix, and the logical dimensions
                   of the image which will be the result of filtering.
         """
+        (dx, dy) = strides
         N = numpy
 
         # inshp contains either 2 entries (height,width) or 3 (nfeatures,h,w)
@@ -229,7 +231,7 @@ class ConvolutionIndices(Op):
         else:
             kmap = N.zeros(ntaps, dtype='int')
             k = 0
-            #print 'TEMPORARY BUGFIX: REMOVE !!!'
+            # print 'TEMPORARY BUGFIX: REMOVE !!!'
             for j in xrange(spmat.shape[1]):
                 for i_idx in xrange(spmat.indptr[j], spmat.indptr[j + 1]):
                     if spmat.data[i_idx] != 0:
@@ -252,8 +254,9 @@ class ConvolutionIndices(Op):
 
         return rval
 
-    def perform(self, node, (inshp, kshp),\
-                (out_indices, out_indptr, spmat_shape)):
+    def perform(self, node, inputs, outputs):
+        (inshp, kshp) = inputs
+        (out_indices, out_indptr, spmat_shape) = outputs
         indices, indptr, spmatshp, outshp = self.evaluate(inshp, kshp)
         out_indices[0] = indices
         out_indptr[0] = indptr

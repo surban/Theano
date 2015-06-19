@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+from __future__ import print_function
 
 __authors__ = "Olivier Delalleau, Eric Larsen"
 __contact__ = "delallea@iro"
@@ -62,7 +63,7 @@ import sys
 import time
 
 import theano
-from theano.misc.windows import call_subprocess_Popen
+from theano.misc.windows import output_subprocess_Popen
 
 
 def main(stdout=None, stderr=None, argv=None, theano_nose=None,
@@ -92,7 +93,7 @@ def main(stdout=None, stderr=None, argv=None, theano_nose=None,
     if argv is None:
         argv = sys.argv
     if theano_nose is None:
-    #If Theano is installed with pip/easy_install, it can be in the
+    # If Theano is installed with pip/easy_install, it can be in the
     #*/lib/python2.7/site-packages/theano, but theano-nose in */bin
         for i in range(1, 5):
             path = theano.__path__[0]
@@ -131,10 +132,10 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
         os.remove('.noseids')
 
     # Collect test IDs.
-    print """\
+    print("""\
 ####################
 # COLLECTING TESTS #
-####################"""
+####################""")
     stdout.flush()
     stderr.flush()
     dummy_in = open(os.devnull)
@@ -152,7 +153,10 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
     stderr.flush()
     assert rval == 0
     noseids_file = '.noseids'
-    data = cPickle.load(open(noseids_file, 'rb'))
+
+    with open(noseids_file, 'rb') as f:
+        data = cPickle.load(f)
+
     ids = data['ids']
     n_tests = len(ids)
     if n_tests == 0:
@@ -162,10 +166,10 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
     # Standard batch testing is called for
     if not time_profile:
         failed = set()
-        print """\
+        print("""\
 ###################################
 # RUNNING TESTS IN BATCHES OF %s #
-###################################""" % batch_size
+###################################""" % batch_size)
         # When `display_batch_output` is False, we suppress all output because
         # we want the user to focus only on the failed tests, which are re-run
         # (with output) below.
@@ -193,18 +197,19 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
             # otherwise this field may get erased. We use a set because it
             # seems like it is not systematically erased though, and we want
             # to avoid duplicates.
-            failed = failed.union(cPickle.load(open(noseids_file, 'rb'))
-                                  ['failed'])
-            print '%s%% done in %.3fs (failed: %s)' % (
-                (test_range[-1] * 100) // n_tests, t1 - t0, len(failed))
+            with open(noseids_file, 'rb') as f:
+                failed = failed.union(cPickle.load(f)['failed'])
+
+            print('%s%% done in %.3fs (failed: %s)' % (
+                (test_range[-1] * 100) // n_tests, t1 - t0, len(failed)))
         # Sort for cosmetic purpose only.
         failed = sorted(failed)
         if failed:
             # Re-run only failed tests
-            print """\
+            print("""\
 ################################
 # RE-RUNNING FAILED TESTS ONLY #
-################################"""
+################################""")
             stdout.flush()
             stderr.flush()
             subprocess.call(
@@ -218,17 +223,17 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
             stderr.flush()
             return 0
         else:
-            print """\
+            print("""\
 ####################
 # ALL TESTS PASSED #
-####################"""
+####################""")
 
     # Time-profiling is called for
     else:
-        print """\
+        print("""\
 ########################################
 # RUNNING TESTS IN TIME-PROFILING MODE #
-########################################"""
+########################################""")
 
         # finds first word of list l containing string s
         def getIndexOfFirst(l, s):
@@ -271,19 +276,17 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
                     time.ctime(), test_id, data["ids"][test_id]))
                 f_rawlog.flush()
 
-                proc = call_subprocess_Popen(
+                p_out = output_subprocess_Popen(
                     ([python, theano_nose, '-v', '--with-id']
-                    + [str(test_id)] + argv +
-                     ['--disabdocstring']),
+                     + [str(test_id)] + argv +
+                     ['--disabdocstring']))
                     # the previous option calls a custom Nosetests plugin
                     # precluding automatic sustitution of doc. string for
                     # test name in display
                     # (see class 'DisabDocString' in file theano-nose)
-                    stderr=subprocess.PIPE,
-                    stdout=dummy_out.fileno())
 
                 # recovering and processing data from pipe
-                err = proc.stderr.read()
+                err = p_out[1]
                 # print the raw log
                 f_rawlog.write(err)
                 f_rawlog.flush()
@@ -333,7 +336,7 @@ def run(stdout, stderr, argv, theano_nose, batch_size, time_profile,
                 f_nosort.write(s_nosort)
                 f_nosort.flush()
 
-            print '%s%% time-profiled' % ((test_id * 100) // n_tests)
+            print('%s%% time-profiled' % ((test_id * 100) // n_tests))
         f_rawlog.close()
 
         # sorting tests according to running-time

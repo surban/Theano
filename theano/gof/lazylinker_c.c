@@ -1,17 +1,7 @@
 #include <Python.h>
+#include "theano_mod_helper.h"
 #include "structmember.h"
 #include <sys/time.h>
-
-// Old Python compatibility from here:
-// http://www.python.org/dev/peps/pep-0353/
-#if PY_VERSION_HEX < 0x02050000 && !defined(PY_SSIZE_T_MIN)
-typedef int Py_ssize_t;
-#define PY_SSIZE_T_MAX INT_MAX
-#define PY_SSIZE_T_MIN INT_MIN
-// This one was taken from:
-// http://svn.python.org/projects/python/trunk/Modules/_ctypes/ctypes.h
-#define PyNumber_AsSsize_t(ob, exc) PyInt_AsLong(ob)
-#endif
 
 #if PY_VERSION_HEX >= 0x03000000
 #include "numpy/npy_3kcompat.h"
@@ -930,6 +920,34 @@ static PyMethodDef CLazyLinker_methods[] = {
 };
 #endif
 
+
+static PyObject *
+CLazyLinker_get_allow_gc(CLazyLinker *self, void *closure)
+{
+    return PyBool_FromLong(self->allow_gc);
+}
+
+static int
+CLazyLinker_set_allow_gc(CLazyLinker *self, PyObject *value, void *closure)
+{
+  if(!PyBool_Check(value))
+    return -1;
+
+  if (value == Py_True)
+    self->allow_gc = true;
+  else
+    self->allow_gc = false;
+  return 0;
+}
+
+static PyGetSetDef CLazyLinker_getset[] = {
+  {(char*)"allow_gc",
+   (getter)CLazyLinker_get_allow_gc,
+   (setter)CLazyLinker_set_allow_gc,
+   (char*)"do this function support allow_gc",
+   NULL},
+  {NULL, NULL, NULL, NULL}  /* Sentinel */
+};
 static PyMemberDef CLazyLinker_members[] = {
     {(char*)"nodes", T_OBJECT_EX, offsetof(CLazyLinker, nodes), 0,
      (char*)"list of nodes"},
@@ -983,7 +1001,7 @@ static PyTypeObject lazylinker_ext_CLazyLinkerType = {
     0,                         /* tp_iternext */
     0,//CLazyLinker_methods,       /* tp_methods */
     CLazyLinker_members,       /* tp_members */
-    0,                         /* tp_getset */
+    CLazyLinker_getset,        /* tp_getset */
     0,                         /* tp_base */
     0,                         /* tp_dict */
     0,                         /* tp_descr_get */
@@ -996,7 +1014,7 @@ static PyTypeObject lazylinker_ext_CLazyLinkerType = {
 
 static PyObject * get_version(PyObject *dummy, PyObject *args)
 {
-  PyObject *result = PyFloat_FromDouble(0.20);
+  PyObject *result = PyFloat_FromDouble(0.21);
   return result;
 }
 
@@ -1004,10 +1022,6 @@ static PyMethodDef lazylinker_ext_methods[] = {
   {"get_version",  get_version, METH_VARARGS, "Get extension version."},
   {NULL, NULL, 0, NULL}        /* Sentinel */
 };
-
-#ifndef PyMODINIT_FUNC  /* declarations for DLL import/export */
-#define PyMODINIT_FUNC void
-#endif
 
 #if defined(NPY_PY3K)
 static struct PyModuleDef moduledef = {
@@ -1048,4 +1062,3 @@ initlazylinker_ext(void)
 
     return RETVAL;
 }
-

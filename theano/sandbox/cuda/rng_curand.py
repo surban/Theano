@@ -10,7 +10,6 @@ __contact__ = "theano-dev@googlegroups.com"
 import numpy
 import theano.gof
 from theano.compat import PY3
-from theano.gof.python25 import all
 from theano.sandbox.cuda import CudaNdarrayType, GpuOp
 from theano.tensor import (get_vector_length, cast, opt)
 from theano.compile import optdb
@@ -148,27 +147,27 @@ class CURAND_Base(GpuOp):
         int n_elements = 1;
         int must_alloc_sample = ((NULL == %(o_sample)s)
                 || !CudaNdarray_Check(py_%(o_sample)s)
-                || (%(o_sample)s->nd != %(ndim)s));
+                || (CudaNdarray_NDIM(%(o_sample)s) != %(ndim)s));
 
-        if (%(size)s->nd != 1)
+        if (PyArray_NDIM(%(size)s) != 1)
         {
             PyErr_SetString(PyExc_ValueError, "size must be vector");
             %(fail)s
         }
-        if (%(size)s->dimensions[0] != %(ndim)s)
+        if (PyArray_DIMS(%(size)s)[0] != %(ndim)s)
         {
             PyErr_Format(PyExc_ValueError, "size must have length %%i (not %%i)",
-                %(ndim)s, %(size)s->dimensions[0]);
+                %(ndim)s, PyArray_DIMS(%(size)s)[0]);
             %(fail)s
         }
-        if (PyArray_DESCR(%(size)s)->type_num != NPY_INT32)
+        if (PyArray_TYPE(%(size)s) != NPY_INT32)
         {
             PyErr_SetString(PyExc_ValueError, "size must be int32");
             %(fail)s
         }
         for (int i = 0; i < %(ndim)s; ++i)
         {
-            odims[i] = ((npy_int32*)(%(size)s->data + %(size)s->strides[0] * i))[0];
+            odims[i] = ((npy_int32*)PyArray_GETPTR1(%(size)s, i))[0];
             n_elements *= odims[i];
             must_alloc_sample = (must_alloc_sample
                     || CudaNdarray_HOST_DIMS(%(o_sample)s)[i] != odims[i]);

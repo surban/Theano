@@ -1,7 +1,6 @@
 import numpy
 
 import theano
-from theano.compat.python2x import any
 from theano.gof.cc import hash_from_code
 
 
@@ -53,6 +52,7 @@ def hash_from_dict(d):
             second_part += [v]
     tuple_items = tuple(first_part + second_part)
     return hash(tuple_items)
+
 
 def shape_of_variables(fgraph, input_shapes):
     """

@@ -3,9 +3,11 @@
 N.B. the gotcha with this design is listed in the documentation of `TheanoObject`
 
 """
+from __future__ import print_function
 import theano
 from theano import tensor
 import numpy
+
 
 def theano_type(x):
     """Return a theano Type instance suitable for containing value `x`."""
@@ -13,6 +15,7 @@ def theano_type(x):
         return tensor.lscalar
     else:
         raise NotImplementedError()
+
 
 class symbolic_fn_callable(object):
     """This is the class whose instance you get when you access a symbolic function in a
@@ -64,6 +67,7 @@ class symbolic_fn_callable(object):
     def updates(self, *args, **kwargs):
         return self.run_symbolic(*args, **kwargs)['updates']
 
+
 class symbolic_fn(object):
     """A property-like class for decorating symbolic functions in `TheanoObject`
     """
@@ -76,7 +80,8 @@ class symbolic_fn(object):
 
     def __set__(self, o_self, new_val):
         pass
-        #return NotImplemented
+        # return NotImplemented
+
 
 def symbolic_fn_opts(**kwargs):
     """Return a decorator for symbolic_functions in a `TheanoObject`
@@ -86,6 +91,7 @@ def symbolic_fn_opts(**kwargs):
     def deco(f):
         return symbolic_fn(f, **kwargs)
     return deco
+
 
 class RVal(object):
     """A Return-Value object for a `symbolic_fn` """
@@ -106,6 +112,7 @@ class RVal(object):
         self.outputs = outputs
         assert type(updates) is dict
         self.updates = updates
+
 
 class TheanoObject(object):
     """Base for Theano-supported classes
@@ -168,10 +175,10 @@ class TheanoObject(object):
 
         if key not in cache:
             inputs = [a() for a in args_types]
-            print 'compiling', fn, 'for inputs', inputs
+            print('compiling', fn, 'for inputs', inputs)
             rval = fn(o_self, *inputs)
 
-            print 'compiling to compute outputs', rval.outputs
+            print('compiling to compute outputs', rval.outputs)
 
             if isinstance(rval.outputs, (tuple, list)):
                 all_required_inputs = theano.gof.graph.inputs(rval.outputs)
@@ -213,7 +220,7 @@ class TheanoObject(object):
         v = tensor.lscalar(name)
         v._theanoclass_container = \
                 theano.gof.Container(v,
-                        storage = [theano._asarray(ival, dtype='int64')],
+                        storage=[theano._asarray(ival, dtype='int64')],
                         readonly=False)
         assert not hasattr(v, 'set')
         assert not hasattr(v, 'get')

@@ -1,7 +1,7 @@
 .. _libdoc_config:
 
 =======================================
-:mod:`config` -- Theano Configuration 
+:mod:`config` -- Theano Configuration
 =======================================
 
 .. module:: config
@@ -166,7 +166,7 @@ import theano and print the config variable, as in:
     Theano initialize the GPU device.  Newer version of PyCUDA
     (currently only in the trunk) don't have this restriction.
 
-.. attribute:: config.print_active_device
+.. attribute:: print_active_device
 
     Bool value: either ``True`` or ``False``
 
@@ -184,6 +184,15 @@ import theano and print the config variable, as in:
     and similar functions.  It also sets the default theano bit width for
     arguments passed as Python floating-point numbers.
 
+.. attribute:: warn_float64
+
+    String value: either 'ignore', 'warn', 'raise' or 'pdb'
+
+    Default: 'ignore'
+
+    When creating a TensorVariable with dtype float64, what should be done?
+    This is useful to help find upcast to float64 in user code.
+
 .. attribute:: allow_gc
 
     Bool value: either ``True`` or ``False``
@@ -198,6 +207,17 @@ import theano and print the config variable, as in:
     Theano by no longer spending time reallocating space. This gives
     significant speed up on functions with many ops that are fast to
     execute, but this increases Theano's memory usage.
+
+.. attribute:: scan.allow_output_prealloc
+
+    Bool value, either ``True`` or ``False``
+
+    Default: ``True``
+
+    This enables, or not, an optimization in Scan in which it tries to
+    pre-allocate memory for its outputs. Enabling the optimization can
+    give a significant speed up with Scan at the cost of slightly increased
+    memory usage.
 
 .. attribute:: openmp
 
@@ -216,7 +236,7 @@ import theano and print the config variable, as in:
    Positive int value, default: 200000.
 
    This specifies the vectors minimum size for which elemwise ops
-   use openmp, if openmp is enable.
+   use openmp, if openmp is enabled.
 
 .. attribute:: cast_policy
 
@@ -301,24 +321,44 @@ import theano and print the config variable, as in:
     Do the vm/cvm linkers profile the optimization phase when compiling a Theano function?
     It only works when profile=True.
 
-.. attribute:: profiling.n_apply
+.. attribute:: config.profiling.n_apply
 
     Positive int value, default: 20.
 
     The number of Apply nodes to print in the profiler output
 
-.. attribute:: profiling.n_ops
+.. attribute:: config.profiling.n_ops
 
     Positive int value, default: 20.
 
     The number of Ops to print in the profiler output
 
-.. attribute:: profiling.min_memory_size
+.. attribute:: config.profiling.min_memory_size
 
     Positive int value, default: 1024.
 
     For the memory profile, do not print Apply nodes if the size
     of their outputs (in bytes) is lower than this.
+
+.. attribute:: config.profiling.min_peak_memory
+
+    Bool value: either True or False
+
+    Default False
+
+    Does the memory profile print the min peak memory usage?
+    It only works when profile=True, profile_memory=True
+
+.. attribute:: config.profiling.destination
+
+    String value: 'stderr', 'stdout', or a name of a
+    file to be created
+
+    Default 'stderr'
+
+    Name of the destination file for the profiling output.
+    The profiling output can be either directed to stderr
+    (default), or stdout or an arbitrary file.
 
 .. attribute:: config.lib.amdlibm
 
@@ -332,7 +372,7 @@ import theano and print the config variable, as in:
 
 .. attribute:: linker
 
-    String value: 'c|py', 'py', 'c', 'c|py_nogc', 'c&py'
+    String value: 'c|py', 'py', 'c', 'c|py_nogc'
 
     Default: 'c|py'
 
@@ -369,9 +409,9 @@ import theano and print the config variable, as in:
 
 .. attribute:: config.warn.ignore_bug_before
 
-    String value: 'None', 'all', '0.3', '0.4', '0.4.1', '0.5', '0.6'
+    String value: 'None', 'all', '0.3', '0.4', '0.4.1', '0.5', '0.6', '0.7'
 
-    Default: 'None'
+    Default: '0.6'
 
     When we fix a Theano bug that generated bad results under some
     circumstances, we also make Theano raise a warning when it encounters
@@ -431,13 +471,48 @@ import theano and print the config variable, as in:
 
     Default: '-lblas'
 
-    Link arguments to link against a (Fortran) level-3 blas implementation.
+    Link arguments to link against a (Fortran) level-3 blas
+    implementation.  The default will test if '-lblas' work. If not,
+    we will disable our c code for BLAS.
+
+.. attribute:: config.experimental.local_alloc_elemwise_assert
+
+    Bool value: either True or False
+
+    Default: True
+
+    When the local_alloc_optimization is applied, add an assert to highlight
+    shape errors.
+
+    Without such asserts this optimization could hide errors in the user code.
+    We add the assert only if we can't infer that the shapes are equivalent.
+    As such this optimization does not always introduce an assert in the graph.
+    Removing the assert could speed up execution.
 
 .. attribute:: config.cuda.root
 
     Default: $CUDA_ROOT or failing that, "/usr/local/cuda"
 
     A directory with bin/, lib/, include/ folders containing cuda utilities.
+
+.. attribute:: config.dnn.conv.workmem
+
+   String value: 'none', 'small', 'large'
+
+   Default: 'small'
+
+   The default value for the amount of working memory that is
+   tolerated in the convolution implementation in cudnn.
+
+   'none'
+     Don't allow any extra memory.
+
+   'small'
+     Allow extra memory that is much smaller than the input sizes.
+
+   'large'
+     Allow extra memory that is on the order of the input sizes.
+
 
 .. attribute:: config.gcc.cxxflags
 
@@ -446,21 +521,31 @@ import theano and print the config variable, as in:
     Extra parameters to pass to gcc when compiling.  Extra include paths,
     library paths, configuration options, etc.
 
-.. attribute:: config.cxx
+.. attribute:: cxx
 
+    Default: Full path to g++ if g++ is present. Empty string otherwise.
 
-    Default: 'g++' if g++ is present. Empty string otherwise.
+    Indicates which C++ compiler to use. If empty, no C++ code is
+    compiled.  Theano automatically detects whether g++ is present and
+    disables C++ compilation when it is not.  On darwin systems (Mac
+    OS X), it preferably looks for clang++ and uses that if available.
 
-    Indicates which C++ compiler to use. If empty, no C++ code is compiled.
-    Theano automatically detects whether g++ is present and disables
-    C++ compilation when it is not.
-
-    We print a warning if we detect that g++ is not present. It is
+    We print a warning if we detect that no compiler is present. It is
     recommended to run with C++ compilation as Theano will be much
     slower otherwise.
 
-    Currently only g++ is supported, but supporting other compilers should
-    not be too difficult.
+    This can be any compiler binary (full path or not) but things may
+    break if the interface is not g++-compatible to some degree.
+
+.. attribute:: config.nvcc.fastmath
+
+    Default: False
+
+    If true, this will enable fastmath (`--use_fast_math
+    <http://docs.nvidia.com/cuda/cuda-compiler-driver-nvcc/#options-for-steering-cuda-compilation>`_)
+    mode for compiled cuda code which makes div and sqrt faster at the
+    cost of precision.  This also disables support for denormal
+    numbers.
 
 .. attribute:: optimizer_excluding
 
@@ -510,7 +595,33 @@ import theano and print the config variable, as in:
     This means files whose compilation failed are deleted.
     Set to True to keep those files in order to debug compilation errors.
 
-.. attribute:: config.DebugMode
+.. attribute:: compile
+
+   This section contains attributes which influence the compilation of
+   C code for ops.  Due to historical reasons many attributes outside
+   of this section also have an influence over compilation, most
+   notably 'cxx'.  This is not expected to change any time soon.
+
+.. attribute:: config.compile.timeout
+
+   Positive int value, default: :attr:`compile.wait` * 24
+
+   Time to wait before an unrefreshed lock is broken and stolen.  This
+   is in place to avoid manual cleanup of locks in case a process
+   crashed and left a lock in place.
+
+   The refresh time is automatically set to half the timeout value.
+
+.. attribute:: config.compile.wait
+
+   Positive int value, default: 5
+
+   Time to wait between attempts at grabbing the lock if the first
+   attempt is not successful. The actual time will be between
+   :attr:`compile.wait` and :attr:`compile.wait` * 2 to avoid a
+   crowding effect on lock.
+
+.. attribute:: DebugMode
 
     This section contains various attributes configuring the behaviour
     of mode :class:`~debugmode.DebugMode`. See directly this section
@@ -550,7 +661,7 @@ import theano and print the config variable, as in:
     Generate a warning when the destroy_map or view_map tell that an op work
     inplace, but the op did not reuse the input for its output.
 
-.. attribute:: config.numpy
+.. attribute:: numpy
 
     This section contains different attributes for configuring numpy's
     behaviour, described by `numpy.seterr
@@ -624,7 +735,7 @@ import theano and print the config variable, as in:
 
     This flag's value cannot be modified during the program execution.
 
-.. attribute:: config.compute_test_value
+.. attribute:: compute_test_value
 
     String Value: ``'off'``, ``'ignore'``, ``'warn'``, ``'raise'``.
 
@@ -634,7 +745,7 @@ import theano and print the config variable, as in:
     debugging mechanism, where Theano executes the graph on-the-fly, as it is
     being built. This allows the user to spot errors early on (such as
     dimension mis-match), **before** optimizations are applied.
-   
+
     Theano will execute the graph using the Constants and/or shared variables
     provided by the user. Purely symbolic variables (e.g. x = T.dmatrix()) can be
     augmented with test values, by writing to their ``'tag.test_value'``
@@ -647,19 +758,29 @@ import theano and print the config variable, as in:
         - ``'warn'`` will raise a UserWarning and skip the debug mechanism for
           this Op
         - ``'raise'`` will raise an Exception
-    
-.. attribute:: config.compute_test_value_opt
+
+.. attribute:: compute_test_value_opt
 
    As ``compute_test_value``, but it is the value used during Theano
    optimization phase. Theano user's do not need to use this. This is
    to help debug shape error in Theano optimization.
 
-.. attribute:: config.exception_verbosity
+.. attribute:: reoptimize_unpickled_function
+
+    Bool value, default: True
+
+    Theano users can use the standard python pickle tools to save a compiled
+    theano function. When pickling, both graph before and after the optimization
+    are saved, including shared variables. When set to True, the graph is
+    reoptimized when being unpickled. Otherwise, skip the graph optimization and
+    use directly the optimized graph.
+
+.. attribute:: exception_verbosity
 
     String Value: ``'low'``, ``'high'``.
 
     Default: ``'low'``
-  
+
     If ``'low'``, the text of exceptions will generally refer to apply nodes
     with short names such as ``'Elemwise{add_no_inplace}'``. If ``'high'``,
     some exceptions will also refer to apply nodes with long descriptions like:
@@ -694,8 +815,14 @@ import theano and print the config variable, as in:
     This is useful to debug in gdb modules compiled by Theano.
     The parameter -g is passed by default to g++.
 
-.. attribute:: cmodule.compilation_warning
+.. attribute:: config.cmodule.compilation_warning
 
     Bool value, default: False
 
     If True, will print compilation warnings.
+
+.. attribute:: config.cmodule.preload_cache
+
+    Bool value, default: False
+
+    If set to True, will preload the C module cache at import time

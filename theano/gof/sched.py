@@ -1,20 +1,19 @@
 from theano.gof.graph import list_of_nodes
-from theano.gof.python25 import any, defaultdict
-from theano.compat import cmp
+from theano.compat import cmp, defaultdict
 
-## {{{ http://code.activestate.com/recipes/578231/ (r1)
+# {{{ http://code.activestate.com/recipes/578231/ (r1)
 # Copyright (c) Oren Tirosh 2012
 #
-# Permission is hereby granted, free of charge, to any person obtaining a copy of
-# this software and associated documentation files (the "Software"), to deal in
-# the Software without restriction, including without limitation the rights to
-# use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies
-# of the Software, and to permit persons to whom the Software is furnished to do
-# so, subject to the following conditions:
-# 
-# The above copyright notice and this permission notice shall be included in all
-# copies or substantial portions of the Software.
-# 
+# Permission is hereby granted, free of charge, to any person obtaining a copy
+# of this software and associated documentation files (the "Software"), to deal
+# in the Software without restriction, including without limitation the rights
+# to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+# copies of the Software, and to permit persons to whom the Software is
+# furnished to do so, subject to the following conditions:
+#
+# The above copyright notice and this permission notice shall be included in
+# all copies or substantial portions of the Software.
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -31,16 +30,18 @@ def memodict(f):
             ret = self[key] = f(key)
             return ret
     return memodict().__getitem__
-## end of http://code.activestate.com/recipes/578231/ }}}
+
+# end of http://code.activestate.com/recipes/578231/ }}}
 
 
 def make_depends():
     @memodict
-    def depends((a, b)):
+    def depends(pair):
         """ Returns True if a depends on b """
-        return (any(bout in a.inputs for bout in b.outputs)
-                or any(depends((ainp.owner, b)) for ainp in a.inputs
-                       if ainp.owner))
+        a, b = pair
+        return (any(bout in a.inputs for bout in b.outputs) or
+                any(depends((ainp.owner, b)) for ainp in a.inputs
+                    if ainp.owner))
     return depends
 
 
@@ -159,12 +160,12 @@ def posort(l, *cmps):
             for b in l:
                 assert not(b in comes_after[a] and a in comes_after[b])
 
-    for cmp in cmps:
+    for cmp_fn in cmps:
         for a in l:
             for b in l:
-                if cmp(a, b) < 0:  # a wants to come before b
+                if cmp_fn(a, b) < 0:  # a wants to come before b
                     # if this wouldn't cause a cycle and isn't already known
-                    if not b in comes_before[a] and not b in comes_after[a]:
+                    if b not in comes_before[a] and b not in comes_after[a]:
                         add_links(a, b)
     # check() # debug code
 

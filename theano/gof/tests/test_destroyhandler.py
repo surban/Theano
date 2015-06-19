@@ -1,3 +1,4 @@
+from __future__ import print_function
 
 import unittest
 
@@ -14,7 +15,7 @@ from theano.gof.toolbox import ReplaceValidate
 from copy import copy
 
 PatternOptimizer = lambda p1, p2, ign=True: OpKeyOptimizer(PatternSub(p1, p2), ignore_newtrees=ign)
-OpSubOptimizer = lambda op1, op2, fail=NavigatorOptimizer.warn_ignore, ign=True: TopoOptimizer(OpSub(op1, op2), ignore_newtrees=ign, failure_callback = fail)
+OpSubOptimizer = lambda op1, op2, fail=NavigatorOptimizer.warn_ignore, ign=True: TopoOptimizer(OpSub(op1, op2), ignore_newtrees=ign, failure_callback=fail)
 
 
 def as_variable(x):
@@ -113,23 +114,23 @@ class FailureWatch:
 
 
 def consistent(g):
-    #print "Testing consistent:", g
+    # print "Testing consistent:", g
     try:
         assert g.consistent()
     except AssertionError:
-        print "Test failed! The graph was marked as NOT consistent."
+        print("Test failed! The graph was marked as NOT consistent.")
         raise
-    #print "Test OK"
+    # print "Test OK"
 
 
 def inconsistent(g):
-    #print "Testing NOT consistent:", g
+    # print "Testing NOT consistent:", g
     try:
         assert not g.consistent()
     except AssertionError:
-        print "Test failed! The graph was marked as consistent."
+        print("Test failed! The graph was marked as consistent.")
         raise
-    #print "Test OK"
+    # print "Test OK"
 
 #################
 # Test protocol #
@@ -349,7 +350,7 @@ def test_multi_destroyers():
     try:
         g = Env([x, y, z], [e])
         raise Exception("Shouldn't have reached this point.")
-    except InconsistencyError, e:
+    except InconsistencyError as e:
         pass
 
 
