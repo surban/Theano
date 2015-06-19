@@ -297,9 +297,10 @@ SOMEPATH/Canopy_64bit/User/lib/python2.7/site-packages/numpy/distutils/system_in
             if os.path.exists(lib_path):
                 #-LC:\\Users\\*\\Anaconda\\libs
                 flags = ['-L%s' % lib_path]
-                flags += ['-l%s' % l for l in ["mkl_core",
-                                               "mkl_intel_thread",
-                                               "mkl_rt"]]
+                # surban: These libraries are not found during linking using Anaconda Python.
+                #flags += ['-l%s' % l for l in ["mkl_core",
+                #                               "mkl_intel_thread",
+                #                               "mkl_rt"]]
                 return ' '.join(flags)
 
         # if numpy was linked with library that are not installed, we
