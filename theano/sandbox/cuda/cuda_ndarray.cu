@@ -3637,10 +3637,22 @@ static int
 cublas_init()
 {
 	printf("Theano: Initializing cuBLAS\n");
-    cublasInit();
-    if (CUBLAS_STATUS_SUCCESS != cublasGetError())
+
+    cublasStatus_t err;
+    err = cublasCreate(&handle);
+    if (CUBLAS_STATUS_SUCCESS != err)
     {
-        PyErr_SetString(PyExc_RuntimeError, "error initializing cublas");
+        if(CUBLAS_STATUS_NOT_INITIALIZED == err)
+            PyErr_SetString(PyExc_RuntimeError,
+                            "cublasCreate() returned this error "
+                            "'the CUDA Runtime initialization failed'");
+        else if(CUBLAS_STATUS_ALLOC_FAILED == err)
+            PyErr_SetString(PyExc_RuntimeError,
+                            "cublasCreate() returned this error "
+                            "'the resources could not be allocated'");
+        else
+            PyErr_SetString(PyExc_RuntimeError,
+                            "unknow error during returned by cublasCreate()");
         return -1;
     }
     // Set the default stream as the one to execute on (default)
@@ -3659,13 +3671,10 @@ static void
 cublas_shutdown()
 {
 	printf("Theano: Shutting down cuBLAS\n");
-    cublasShutdown();
-    if (CUBLAS_STATUS_SUCCESS != cublasGetError())
-    {
-        PyErr_SetString(PyExc_RuntimeError, "error shutting down cublas");
-        return -1;
-    }
-    return 0;
+    if (handle != NULL)
+        cublasDestroy(handle);
+    // No point in handling any errors here
+    handle = NULL;
 }
 
 int

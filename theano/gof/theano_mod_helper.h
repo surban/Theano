@@ -21,8 +21,9 @@
 #define THEANO_RTYPE PyObject *
 #endif
 
+// surban: disabled because it brakes the CUDA compile process on Win32.
 /* We need to redefine PyMODINIT_FUNC to add MOD_PUBLIC in the middle */
-#undef PyMODINIT_FUNC
-#define PyMODINIT_FUNC THEANO_EXTERN MOD_PUBLIC THEANO_RTYPE
+//#undef PyMODINIT_FUNC
+//#define PyMODINIT_FUNC THEANO_EXTERN MOD_PUBLIC THEANO_RTYPE
 
 #endif
