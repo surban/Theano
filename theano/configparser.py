@@ -68,7 +68,7 @@ def config_files_from_theanorc():
     if os.getenv('THEANORC') is None and sys.platform == "win32":
         # to don't need to change the filename and make it open easily
         # rval.append(os.path.expanduser('~/.theanorc.txt'))
-        # wkoepp: Changed to that theanorc is loaded from Appdata folder instead
+        # Wiebke: Changed to that theanorc is loaded from Appdata folder instead
         # of C:Users\username (no need for synchronization by logout)
         rval = os.path.join(os.getenv('APPDATA'), '.theanorc.txt')
         if not os.path.isfile(rval):

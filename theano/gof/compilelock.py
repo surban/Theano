@@ -224,13 +224,19 @@ def lock(tmp_dir, timeout=notset, min_wait=None, max_wait=None, verbosity=1):
                     except IndexError:
                         other_host = ()  # make sure it isn't equal to any host
                     if other_host == hostname:
-                        try:
+                        # Wiebke: os.kill with argument 0 gives OSError with
+                        # errno 22 (invalid argument) on Windows, therefore
+                        # check if process still exists in a different way
+                        # try:
                             # Just check if the other process still exist.
-                            os.kill(int(read_owner.split('_')[0]), 0)
-                        except OSError:
-                            other_dead = True
-                        except AttributeError:
-                            pass  # os.kill does not exist on windows
+                            # os.kill(int(read_owner.split('_')[0]), 0)
+                        # except OSError:
+                            # other_dead = True
+                        # except AttributeError:
+                            # pass  # os.kill does not exist on windows
+                        import psutil
+                        if not psutil.pid_exists(int(read_owner.split('_')[0])):
+                            other_dead = true
                 except Exception:
                     read_owner = 'failure'
                 if other_dead:
