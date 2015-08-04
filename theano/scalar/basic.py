@@ -691,8 +691,12 @@ class upgrade_to_float(object):
                 uint16: float32,
                 uint32: float64,
                 uint64: float64}
-        return get_scalar_type(Scalar.upcast(*[conv.get(type, type)
-                                      for type in types])),
+        # Wiebke: Fixed so that upcast is possible for ops with multiple outputs
+        # (get_scalar only takes one argument (not a tuple or list) as input
+        return [get_scalar_type(Scalar.upcast(conv.get(type, type))) for
+                     type in types]
+        # return get_scalar_type(Scalar.upcast(*[conv.get(type, type)
+        #                               for type in types])),
 
 
 class same_out(object):
