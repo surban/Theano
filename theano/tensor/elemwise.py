@@ -1181,8 +1181,15 @@ class Elemwise(OpenMPOp):
         code = "\n".join(self._c_all(node, nodename, inames, onames, sub))
         return code
 
+    # Wiebke: c_init_code method was missing completely
+    # (might lead to failure of scalar op compilation otherwise)
+    def c_init_code(self):
+        return self.scalar_op.c_init_code()
+
+    # Wiebke: c_headers from the scalar op should be returned here as well
+    # (might lead to failure of scalar op compilation otherwise)
     def c_headers(self):
-        return ['<vector>', '<algorithm>']
+        return ['<vector>', '<algorithm>'] + self.scalar_op.c_headers()
 
     def c_support_code(self):
         return self.scalar_op.c_support_code()
