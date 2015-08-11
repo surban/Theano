@@ -295,6 +295,12 @@ class GpuElemwise(GpuOp):
         assert self.nout > 0
         return Apply(self, _inputs, [otype() for o in xrange(self.nout)])
 
+    def c_init_code(self):
+        return self.src_generator.c_init_code()
+
+    def c_headers(self):
+        return self.src_generator.c_headers()
+
     def c_support_code(self, *args, **kwargs):
         return self.src_generator.c_support_code(*args, **kwargs)
 

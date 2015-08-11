@@ -861,6 +861,18 @@ nd_collapse_[i]=0;
             + [self.c_src_callkernel(node, nodename)])
         return defines + kernels
 
+    def c_headers(self):
+        try:
+            return self.scalar_op.c_headers()
+        except gof.utils.MethodNotDefined:
+            return []
+
+    def c_init_code(self):
+        try:
+            return self.scalar_op.c_init_code()
+        except gof.utils.MethodNotDefined:
+            return ''
+
     def c_support_code(self):
         return self.scalar_op.c_support_code()
 
