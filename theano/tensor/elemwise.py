@@ -1197,6 +1197,12 @@ class Elemwise(OpenMPOp):
         code = "\n".join(self._c_all(node, nodename, inames, onames, sub))
         return code
 
+    def c_init_code(self):
+        try:
+            return self.scalar_op.c_init_code()
+        except theano.gof.utils.MethodNotDefined:
+            return ''
+
     def c_headers(self):
         return ['<vector>', '<algorithm>']
 
