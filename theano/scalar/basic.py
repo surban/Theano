@@ -3576,6 +3576,15 @@ class Composite(ScalarOp):
                 return ()
         return tuple(rval)
 
+    def c_headers(self):
+        rval = []
+        for subnode in self.fgraph.toposort():
+            try:
+                rval += subnode.op.c_headers()
+            except gof.utils.MethodNotDefined:
+                pass
+        return rval
+
     def c_support_code(self):
         rval = []
         for subnode in self.fgraph.toposort():
