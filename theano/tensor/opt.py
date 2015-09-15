@@ -924,7 +924,7 @@ class ShapeFeature(object):
             # worst case, we loop over shape_of and replace things
             raise NotImplementedError(s_i)
 
-        # s_i is x.shape[i], we change it to Shape_i.
+        # s_i is x.shape[i] for some x, we change it to shape_of[x][i]
         if (s_i.owner and
                 isinstance(s_i.owner.op, Subtensor) and
                 s_i.owner.inputs[0].owner and
@@ -940,9 +940,13 @@ class ShapeFeature(object):
             idx = idx[0]
             try:
                 i = get_scalar_constant_value(idx)
-                s_i = Shape_i(i)(s_i.owner.inputs[0].owner.inputs[0])
             except NotScalarConstantError:
                 pass
+            else:
+                # Executed only if no exception was raised
+                x = s_i.owner.inputs[0].owner.inputs[0]
+                # x should already have been imported, and should be in shape_of.
+                s_i = self.shape_of[x][i]
 
         if s_i.type.dtype[:3] in ('int', 'uint'):
             if getattr(s_i.type, 'ndim', 0):
@@ -3413,31 +3417,35 @@ def local_flatten_lift(node):
 ##################
 
 
-@gof.local_optimizer([T.Reshape])
-def local_reshape_chain(node):
-    """
-    Reshape(Reshape(shape1),shape2) -> Reshape(shape2)
+def local_reshape_chain(op):
+    @gof.local_optimizer([op])
+    def f(node):
+        """
+        Reshape(Reshape(shape1),shape2) -> Reshape(shape2)
 
-    """
-    if not opt.check_chain(node, T.Reshape, T.Reshape):
-        return False
+        """
+        if not opt.check_chain(node, op, op):
+            return False
 
-    # TODO: this can permit a failing program to run by eliminating
-    #       the lower reshape
-    rval = node.op(node.inputs[0].owner.inputs[0], node.inputs[1])
-    # It might happen that the desired output of this node has a broadcastable
-    # pattern that does not match that of 'rval'. This is when originally, we
-    # were able to figure out that one of the dimensions of the reshape is one,
-    # but some other transformation replaced the shape by one for which this
-    # cannot be guessed.
-    # We should try to figure out why we lost the information about this
-    # constant value... but in the meantime, better not apply this
-    # optimization.
-    if rval.broadcastable == node.outputs[0].broadcastable:
-        return [rval]
-    else:
-        return False
-register_canonicalize(local_reshape_chain)
+        # TODO: this can permit a failing program to run by eliminating
+        #       the lower reshape
+        rval = node.op(node.inputs[0].owner.inputs[0], node.inputs[1])
+        # It might happen that the desired output of this node has a
+        # broadcastable pattern that does not match that of 'rval'. This is
+        # when originally, we were able to figure out that one of the
+        # dimensions of the reshape is one, but some other transformation
+        # replaced the shape by one for which this cannot be guessed.
+        # We should try to figure out why we lost the information about this
+        # constant value... but in the meantime, better not apply this
+        # optimization.
+        if rval.broadcastable == node.outputs[0].broadcastable:
+            return [rval]
+        else:
+            return False
+
+    return f
+register_canonicalize(local_reshape_chain(T.Reshape),
+                      name='local_reshape_chain')
 
 
 @register_canonicalize

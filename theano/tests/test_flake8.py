@@ -20,7 +20,7 @@ __contact__ = "Saizheng Zhang <saizhenglisa..at..gmail.com>"
 # We ignore:
 # - "line too long"
 #    too complex to do with the C code
-# - "closing bracket does not match indentation of opening bracket’s line"
+# - "closing bracket does not match indentation of opening bracket's line"
 #    ignored by default by pep8
 ignore = ('E501', 'E123', 'E133')
 
@@ -40,7 +40,6 @@ whitelist_flake8 = [
     "tests/test_pickle_unpickle_theano_fn.py",
     "tests/test_determinism.py",
     "tests/record.py",
-    "tests/test_tutorial.py",
     "tests/unittest_tools.py",
     "compile/__init__.py",
     "compile/profiling.py",
@@ -140,7 +139,6 @@ whitelist_flake8 = [
     "sandbox/cuda/tests/test_blas.py",
     "sandbox/cuda/tests/test_driver.py",
     "sandbox/cuda/tests/test_rng_curand.py",
-    "sandbox/cuda/tests/test_nnet.py",
     "sandbox/cuda/tests/test_basic_ops.py",
     "sandbox/cuda/tests/test_memory.py",
     "sandbox/cuda/tests/test_mlp.py",
@@ -209,6 +207,9 @@ whitelist_flake8 = [
     "gof/unify.py",
     "gof/__init__.py",
     "gof/sandbox/equilibrium.py",
+    "d3viz/__init__.py",
+    "d3viz/tests/test_d3viz.py",
+    "d3viz/tests/test_formatting.py"
 ]
 
 
