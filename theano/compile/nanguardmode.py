@@ -34,11 +34,14 @@ def flatten(l):
 
     Parameters
     ----------
-    l : List/tuple/other objects, might be nested.
+    l : list/tuple/other objects
+        Might be nested.
 
     Returns
     -------
-    A flattened list of objects
+    object
+        A flattened list of objects.
+
     """
     if isinstance(l, (list, tuple, collections.ValuesView)):
         rval = []
@@ -71,6 +74,7 @@ def contains_nan(arr):
     This approach is faster and more memory efficient than the obvious
     alternative, calling `np.any(np.isnan(ndarray))`, which requires the
     construction of a boolean array with the same shape as the input array.
+
     """
     if isinstance(arr, theano.gof.type.CDataType._cdata_type):
         return False
@@ -99,6 +103,7 @@ def contains_inf(arr):
     This approach is more memory efficient than the obvious alternative,
     calling `np.any(np.isinf(ndarray))`, which requires the construction of a
     boolean array with the same shape as the input array.
+
     """
     if isinstance(arr, theano.gof.type.CDataType._cdata_type):
         return False
@@ -115,20 +120,19 @@ class NanGuardMode(Mode):
     Parameters
     ----------
     nan_is_error : bool
-        If True, raise an error anytime a NaN is encountered
-    inf_is_error: bool
+        If True, raise an error anytime a NaN is encountered.
+    inf_is_error : bool
         If True, raise an error anytime an Inf is encountered.  Note that some
         pylearn2 modules currently use np.inf as a default value (e.g.
         mlp.max_pool) and these will cause an error if inf_is_error is True.
-    big_is_error: bool
+    big_is_error : bool
         If True, raise an error when a value greater than 1e10 is encountered.
 
     Note
     ----
-
         We ignore the linker parameter
     """
-    # We currently loose the 3 first param freuquently, when calling
+    # We currently loose the 3 first params frequently, when calling
     # mode.including() and variant.
     def __init__(self, nan_is_error=None, inf_is_error=None, big_is_error=None,
                  optimizer=None, linker=None):
@@ -190,12 +194,13 @@ class NanGuardMode(Mode):
             var : numpy.ndarray
                 The value to be checked.
             nd : theano.gof.Apply
-                The Apply node being executed
+                The Apply node being executed.
             f : callable
-                The thunk for the apply node
+                The thunk for the apply node.
             is_input : bool
                 If True, `var` is an input to `nd`.
                 If False, it is an output.
+
             """
             error = False
             if nan_is_error:
@@ -251,15 +256,18 @@ class NanGuardMode(Mode):
 
         def nan_check(i, node, fn):
             """
-            Runs `fn` while checking its inputs and outputs for NaNs / Infs
+            Runs `fn` while checking its inputs and outputs for NaNs / Infs.
 
             Parameters
             ----------
-            i : currently ignored (TODO: determine why it is here or remove)
+            i :
+                Currently ignored.
+                TODO: determine why it is here or remove).
             node : theano.gof.Apply
-                The Apply node currently being executed
+                The Apply node currently being executed.
             fn : callable
-                The thunk to execute for this Apply node
+                The thunk to execute for this Apply node.
+
             """
             inputs = fn.inputs
             # TODO: figure out why individual inputs are themselves lists

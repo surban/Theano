@@ -17,9 +17,12 @@ __authors__ = ("Saizheng Zhang")
 __copyright__ = "(c) 2015, Universite de Montreal"
 __contact__ = "Saizheng Zhang <saizhenglisa..at..gmail.com>"
 
-# This corresponds to "line too long" and it's too much of a pain with
-# all of the C code
-ignore = ('E501',)
+# We ignore:
+# - "line too long"
+#    too complex to do with the C code
+# - "closing bracket does not match indentation of opening bracket's line"
+#    ignored by default by pep8
+ignore = ('E501', 'E123', 'E133')
 
 whitelist_flake8 = [
     "compat/six.py",  # This is bundled code that will be deleted, don't fix it
@@ -37,7 +40,6 @@ whitelist_flake8 = [
     "tests/test_pickle_unpickle_theano_fn.py",
     "tests/test_determinism.py",
     "tests/record.py",
-    "tests/test_tutorial.py",
     "tests/unittest_tools.py",
     "compile/__init__.py",
     "compile/profiling.py",
@@ -98,17 +100,19 @@ whitelist_flake8 = [
     "tensor/nnet/tests/test_sigm.py",
     "scalar/__init__.py",
     "scalar/tests/test_basic.py",
-    "sandbox/test_theano_object.py",
-    "sandbox/test_scan.py",
+    "sandbox/__init__.py",
     "sandbox/rng_mrg.py",
     "sandbox/theano_object.py",
     "sandbox/scan.py",
-    "sandbox/test_multinomial.py",
-    "sandbox/test_rng_mrg.py",
-    "sandbox/test_neighbourhoods.py",
     "sandbox/symbolic_module.py",
     "sandbox/conv.py",
     "sandbox/debug.py",
+    "sandbox/tests/test_theano_object.py",
+    "sandbox/tests/test_scan.py",
+    "sandbox/tests/test_rng_mrg.py",
+    "sandbox/tests/test_neighbourhoods.py",
+    "sandbox/tests/test_multinomial.py",
+    "sandbox/tests/__init__.py",
     "sandbox/cuda/dnn.py",
     "sandbox/cuda/var.py",
     "sandbox/cuda/GpuConvGrad3D.py",
@@ -135,7 +139,6 @@ whitelist_flake8 = [
     "sandbox/cuda/tests/test_blas.py",
     "sandbox/cuda/tests/test_driver.py",
     "sandbox/cuda/tests/test_rng_curand.py",
-    "sandbox/cuda/tests/test_nnet.py",
     "sandbox/cuda/tests/test_basic_ops.py",
     "sandbox/cuda/tests/test_memory.py",
     "sandbox/cuda/tests/test_mlp.py",
@@ -203,19 +206,10 @@ whitelist_flake8 = [
     "sparse/sandbox/sp.py",
     "gof/unify.py",
     "gof/__init__.py",
-    "gof/tests/test_cmodule.py",
-    "gof/tests/test_destroyhandler.py",
-    "gof/tests/test_opt.py",
-    "gof/tests/test_lazy.py",
-    "gof/tests/test_toolbox.py",
-    "gof/tests/test_link.py",
-    "gof/tests/test_fg.py",
-    "gof/tests/test_sched.py",
-    "gof/tests/test_graph_opt_caching.py",
-    "gof/tests/test_graph.py",
-    "gof/tests/test_cc.py",
-    "gof/tests/test_compute_test_value.py",
     "gof/sandbox/equilibrium.py",
+    "d3viz/__init__.py",
+    "d3viz/tests/test_d3viz.py",
+    "d3viz/tests/test_formatting.py"
 ]
 
 

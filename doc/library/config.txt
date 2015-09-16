@@ -370,7 +370,7 @@ import theano and print the config variable, as in:
     `amdlibm <http://developer.amd.com/cpu/libraries/libm/>`__
     library, which is faster than the standard libm.
 
-.. attribute:: lib.cnmem
+.. attribute:: config.lib.cnmem
 
     Float value: >= 0
 
@@ -541,22 +541,35 @@ import theano and print the config variable, as in:
 
 .. attribute:: config.dnn.conv.workmem
 
-   String value: 'none', 'small', 'large'
+   Deprecated, use dnn.conv.algo_fwd.
 
-   Default: 'small'
 
-   The default value for the amount of working memory that is
-   tolerated in the convolution implementation in cudnn.
+.. attribute:: config.dnn.conv.workmem_bwd
 
-   'none'
-     Don't allow any extra memory.
+   Deprecated, use dnn.conv.algo_bwd.
 
-   'small'
-     Allow extra memory that is much smaller than the input sizes.
+.. attribute:: config.dnn.conv.algo_fwd
 
-   'large'
-     Allow extra memory that is on the order of the input sizes.
+  String value: ``small``, ``none``, ``large``, ``fft``, ``guess_once``,
+                ``guess_on_shape_change``, ``time_once``,
+                ``time_on_shape_change``.
 
+   Default: ``small``
+
+   3d convolution only support ``none``, ``guess_once``,
+   ``guess_on_shape_change``, ``time_once``, ``time_on_shape_change``.
+
+
+.. attribute:: config.dnn.conv.algo_bwd
+
+   String value: ``none``, ``deterministic``, ``fft``, ``guess_once``,
+                 ``guess_on_shape_change``, ``time_once``,
+                 ``time_on_shape_change``.
+
+   Default: ``none``
+
+   3d convolution only support ``none``, ``guess_once``,
+   ``guess_on_shape_change``, ``time_once``, ``time_on_shape_change``.
 
 .. attribute:: config.gcc.cxxflags
 
@@ -709,19 +722,20 @@ import theano and print the config variable, as in:
 
     Bool value, default: True
 
-    Do NanGuardMode generate an error when it see a nan.
+    Controls whether NanGuardMode generates an error when it sees a nan.
 
 .. attribute:: config.NanGuardMode.inf_is_error
 
     Bool value, default: True
 
-    Do NanGuardMode generate an error when it see an inf.
+    Controls whether NanGuardMode generates an error when it sees an inf.
 
 .. attribute:: config.NanGuardMode.nan_is_error
 
     Bool value, default: True
 
-    Do NanGuardMode generate an error when it see a big value (>1e10).
+    Controls whether NanGuardMode generates an error when it sees a
+    big value (>1e10).
 
 .. attribute:: numpy
 
@@ -829,7 +843,7 @@ import theano and print the config variable, as in:
 
 .. attribute:: reoptimize_unpickled_function
 
-    Bool value, default: True
+    Bool value, default: False (changed in master after Theano 0.7 release)
 
     Theano users can use the standard python pickle tools to save a compiled
     theano function. When pickling, both graph before and after the optimization

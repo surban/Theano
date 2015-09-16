@@ -1652,6 +1652,7 @@ Linear Algebra
 	      number, then the stop is not inclusive.
 
     Example:
+
     >>> a = T.mgrid[0:5, 0:3]
     >>> a[0].eval()
     array([[0, 0, 0],
@@ -1664,8 +1665,8 @@ Linear Algebra
            [0, 1, 2],
            [0, 1, 2],
            [0, 1, 2],
-           [0, 1, 2]], dtype=int8)	    
-	    
+           [0, 1, 2]], dtype=int8)
+
 .. function:: ogrid
 
     :returns: an instance which returns an open (i.e. not fleshed out) mesh-grid 
@@ -1675,6 +1676,7 @@ Linear Algebra
               not a complex number, then the stop is not inclusive.
 
     Example:
+
     >>> b = T.ogrid[0:5, 0:3]
     >>> b[0].eval()
     array([[0],
@@ -1683,8 +1685,8 @@ Linear Algebra
            [3],
            [4]], dtype=int8)
     >>> b[1].eval()
-    array([[0, 1, 2, 3]], dtype=int8)
-      
+    array([[0, 1, 2]], dtype=int8)
+
       
 Gradient / Differentiation
 ==========================
