@@ -1,6 +1,6 @@
 import copy
-import theano
 import numpy
+import logging
 from six.moves import xrange
 
 try:
@@ -8,8 +8,10 @@ try:
 except ImportError:
     pass
 
+import theano
 from theano import tensor, scalar, gof
 from theano.compile import optdb
+from theano.compile.ops import shape_i
 from theano.gof import (local_optimizer, EquilibriumDB,
                         SequenceDB, Optimizer, toolbox)
 from theano.gof.optdb import LocalGroupDB
@@ -25,9 +27,10 @@ from .basic_ops import (as_gpuarray_variable,
                         host_from_gpu, gpu_from_host,
                         HostFromGpu, GpuFromHost,
                         GpuSplit, GpuContiguous,
-                        gpu_alloc, GpuAlloc, GpuReshape,
+                        gpu_alloc, GpuAlloc, GpuAllocEmpty, GpuReshape,
                         GpuEye, gpu_join, GpuJoin)
-from .blas import gpu_dot22, GpuGemv, GpuGemm, GpuGer
+from .blas import (gpu_dot22, GpuGemv, GpuGemm, GpuGer,
+                   gpugemm_no_inplace)
 from .conv import GpuConv
 from .nnet import (GpuCrossentropySoftmaxArgmax1HotWithBias,
                    GpuCrossentropySoftmax1HotWithBiasDx,
@@ -35,8 +38,12 @@ from .nnet import (GpuCrossentropySoftmaxArgmax1HotWithBias,
 from .elemwise import (GpuElemwise, GpuDimShuffle, GpuCAReduceCuda,
                        GpuCAReduceCPY)
 from .subtensor import (GpuIncSubtensor, GpuSubtensor,
+                        GpuAdvancedSubtensor1,
                         GpuAdvancedIncSubtensor1,
                         GpuAdvancedIncSubtensor1_dev20)
+from .opt_util import alpha_merge, output_merge
+
+_logger = logging.getLogger("theano.sandbox.gpuarray.opt")
 
 gpu_optimizer = EquilibriumDB()
 gpu_cut_copies = EquilibriumDB()
@@ -489,6 +496,12 @@ def local_gpua_incsubtensor(node):
 
 
 @register_opt('fast_compile')
+@op_lifter([tensor.AdvancedSubtensor1])
+def local_gpua_advanced_subtensor(node):
+    return GpuAdvancedSubtensor1()
+
+
+@register_opt('fast_compile')
 @op_lifter([tensor.AdvancedIncSubtensor1])
 def local_gpua_advanced_incsubtensor(node):
 
@@ -496,7 +509,16 @@ def local_gpua_advanced_incsubtensor(node):
     if pygpu.get_default_context().kind != "cuda":
         return None
 
-    x, y = node.inputs[0:2]
+    x, y, ilist = node.inputs
+
+    # Gpu Ops needs both inputs to have the same dtype
+    if (x.type.dtype != y.type.dtype):
+        dtype = scalar.upcast(x.type.dtype, y.type.dtype)
+        if x.type.dtype != dtype:
+            x = tensor.cast(x, dtype)
+        if y.type.dtype != dtype:
+            y = tensor.cast(y, dtype)
+
     set_instead_of_inc = node.op.set_instead_of_inc
     active_device_no = theano.sandbox.cuda.active_device_number()
     device_properties = theano.sandbox.cuda.device_properties
@@ -504,11 +526,11 @@ def local_gpua_advanced_incsubtensor(node):
     compute_capability = device_properties(active_device_no)['major']
 
     if (compute_capability < 2 or x.ndim != 2 or y.ndim != 2):
-        return GpuAdvancedIncSubtensor1(
-            set_instead_of_inc=set_instead_of_inc)
+        return [GpuAdvancedIncSubtensor1(
+                set_instead_of_inc=set_instead_of_inc)(x, y, ilist)]
     else:
-        return GpuAdvancedIncSubtensor1_dev20(
-            set_instead_of_inc=set_instead_of_inc)
+        return [GpuAdvancedIncSubtensor1_dev20(
+                set_instead_of_inc=set_instead_of_inc)(x, y, ilist)]
 
 
 @register_opt('fast_compile')
@@ -573,7 +595,7 @@ def local_gpua_careduce(node):
                 dtype=getattr(node.op, 'dtype', None),
                 acc_dtype=getattr(node.op, 'acc_dtype', None))
 
-            reshaped_x = x.reshape(tensor.stack(*new_in_shp))
+            reshaped_x = x.reshape(tensor.stack(new_in_shp))
             gpu_reshaped_x = gpu_from_host(reshaped_x)
             gvar = greduce(gpu_reshaped_x)
             # We need to have the make node called, otherwise the mask can
@@ -585,7 +607,7 @@ def local_gpua_careduce(node):
 
                 if reduce_reshaped_x.ndim != node.outputs[0].ndim:
                     unreshaped_reduce = reduce_reshaped_x.reshape(
-                        tensor.stack(*shape_of[node.outputs[0]]))
+                        tensor.stack(shape_of[node.outputs[0]]))
                 else:
                     unreshaped_reduce = reduce_reshaped_x
                 return [unreshaped_reduce]
@@ -601,6 +623,37 @@ def local_gpua_gemv(node):
 @op_lifter([tensor.blas.Gemm])
 def local_gpua_gemm(node):
     return GpuGemm(inplace=node.op.inplace)
+
+
+@register_opt('fast_compile')
+@op_lifter([tensor.basic.Dot])
+def local_gpua_hgemm(node):
+    from theano.sandbox.cuda import nvcc_compiler
+    if nvcc_compiler.nvcc_version < '7.5':
+        _logger.warning("Not performing dot of float16 on the GPU since "
+                        "cuda 7.5 is not available. Updating could speed up "
+                        "your code.")
+        return
+    A = node.inputs[0]
+    B = node.inputs[1]
+    if (A.ndim == 2 and B.ndim == 2 and
+            A.dtype == 'float16' and B.dtype == 'float16'):
+        fgraph = node.inputs[0].fgraph
+        C = GpuAllocEmpty(dtype='float16')(shape_i(A, 0, fgraph),
+                                           shape_i(B, 1, fgraph))
+        return gpugemm_no_inplace(C, 1.0, A, B, 0.0)
+
+
+@register_opt()
+@alpha_merge(GpuGemm, alpha_in=1, beta_in=4, nd=2)
+def local_gpuagemm_alpha_merge(node, *inputs):
+    return [gpugemm_no_inplace(*inputs)]
+
+
+@register_opt()
+@output_merge(GpuGemm, alpha_in=1, beta_in=4, out_in=0, nd=2)
+def local_gpuagemm_output_merge(node, *inputs):
+    return [gpugemm_no_inplace(*inputs)]
 
 
 @register_opt('fast_compile')

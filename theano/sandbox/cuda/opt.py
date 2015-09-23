@@ -795,6 +795,11 @@ def local_gpu_careduce(node):
             replace = False
             if x.owner and isinstance(x.owner.op, HostFromGpu):
                 replace = True
+            # If this is a useless reduce, remove it as
+            # local_cut_useless_reduce.  This is needed as the code
+            # below do not support when x.ndim == 0.
+            if x.type == node.outputs[0].type:
+                return [x]
             elif (all([c != "output" and isinstance(c.op, GpuFromHost)
                       for c, i in node.outputs[0].clients])
                   and x.owner and x.owner.op.__class__ in
@@ -851,7 +856,7 @@ def local_gpu_careduce(node):
                             new_in_shp.append(x_shape[i])
 
                     new_greduce = GpuCAReduce(new_mask, scalar_op)
-                    reshaped_x = x.reshape(tensor.stack(*new_in_shp))
+                    reshaped_x = x.reshape(tensor.stack(new_in_shp))
                     gpu_reshaped_x = as_cuda_ndarray_variable(reshaped_x)
                     reshaped_gpu_inputs = [gpu_reshaped_x]
                     if new_greduce.supports_c_code(reshaped_gpu_inputs):
@@ -860,7 +865,7 @@ def local_gpu_careduce(node):
 
                         if reduce_reshaped_x.ndim != out.ndim:
                             rval = reduce_reshaped_x.reshape(
-                                tensor.stack(*shape_of[out]))
+                                tensor.stack(shape_of[out]))
                         else:
                             rval = reduce_reshaped_x
                     else:
@@ -2141,7 +2146,7 @@ def local_gpualloc(node):
                        i.owner.op in [host_from_gpu, tensor.alloc]
                        for i in c.inputs[1:]])
                   for c, idx in node.outputs[0].clients]):
-            # if the client is a subtensor with input on gpu or alloc
+            # if the client is on gpu or alloc
             replace = True
         if replace and node.inputs[0].dtype != 'float32':
             replace = False

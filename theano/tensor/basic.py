@@ -185,7 +185,7 @@ def as_tensor_variable(x, name=None, ndim=None):
     if isinstance(x, (tuple, list)) and python_any(isinstance(xi, Variable)
                                                    for xi in x):
         try:
-            return stack(*x)
+            return stack(x)
         except (TypeError, ValueError):
             pass
 
@@ -459,18 +459,29 @@ if int(config.tensor.cmp_sloppy) > 1:
     # When config.tensor.cmp_sloppy>1 we are even more sloppy. This is
     # useful to test the GPU as they don't use extended precision and
     # this cause some difference bigger then the normal sloppy.
+    float16_atol = 5e-3
+    float16_rtol = 1e-2
+
     float32_atol = 5e-4
     float32_rtol = 1e-3
+
     float64_rtol = 1e-4
     float64_atol = 1e-3
 elif int(config.tensor.cmp_sloppy):
+    float16_atol = 1e-3
+    float16_rtol = 5e-3
+
     float32_atol = 1e-4
     float32_rtol = 1e-3
+
     float64_rtol = 1e-4
     float64_atol = 1e-3
 else:
     # If you change those value in test don't forget to put them back
     # when the test end.  Don't forget the case when the test fail.
+    float16_atol = 5e-4
+    float16_rtol = 5e-4
+
     float32_atol = 1e-5
     float32_rtol = 1e-5
 
@@ -481,16 +492,25 @@ else:
     float64_rtol = 1.0000000000000001e-06
 
 
+def _get_atol_rtol(a, b):
+    tiny = ('float16',)
+    narrow = ('float32', 'complex64')
+    if (str(a.dtype) in tiny) or (str(b.dtype) in tiny):
+        atol = float16_atol
+        rtol = float16_rtol
+    elif (str(a.dtype) in narrow) or (str(b.dtype) in narrow):
+        atol = float32_atol
+        rtol = float32_rtol
+    else:
+        atol = float64_atol
+        rtol = float64_rtol
+    return atol, rtol
+
+
 def _allclose(a, b, rtol=None, atol=None):
     a = numpy.asarray(a)
     b = numpy.asarray(b)
-    narrow = 'float32', 'complex64'
-    if (str(a.dtype) in narrow) or (str(b.dtype) in narrow):
-        atol_ = float32_atol
-        rtol_ = float32_rtol
-    else:
-        atol_ = float64_atol
-        rtol_ = float64_rtol
+    atol_, rtol_ = _get_atol_rtol(a, b)
     if rtol is not None:
         rtol_ = rtol
     if atol is not None:
@@ -1682,7 +1702,7 @@ def smallest(*args):
         a, b = args
         return switch(a < b, a, b)
     else:
-        return min(stack(*args), axis=0)
+        return min(stack(args), axis=0)
 
 
 @constructor
@@ -1697,7 +1717,7 @@ def largest(*args):
         a, b = args
         return switch(a > b, a, b)
     else:
-        return max(stack(*args), axis=0)
+        return max(stack(args), axis=0)
 
 
 ##########################
@@ -3010,7 +3030,7 @@ def mean(input, axis=None, dtype=None, op=False, keepdims=False,
 
     if dtype == 'float16' or (dtype is None and input.dtype == 'float16'):
         s = cast(s, 'float16')
-
+    s.name = 'mean'
     return s
 
 
@@ -3055,7 +3075,9 @@ def var(input, axis=None, keepdims=False):
     centered_input = input - mean_input
 
     # return the mean sqr
-    return mean((centered_input ** 2), axis, keepdims=keepdims)
+    v = mean((centered_input ** 2), axis, keepdims=keepdims)
+    v.name = 'var'
+    return v
 
 
 @constructor
@@ -3803,8 +3825,8 @@ class Join(Op):
         if 'float' in out_dtype or 'complex' in out_dtype:
             # assume that this is differentiable
             split = Split(len(tensors))
-            split_gz = split(gz, axis, stack(*[shape(x)[axis]
-                                               for x in tensors]))
+            split_gz = split(gz, axis, stack([shape(x)[axis]
+                                              for x in tensors]))
             # If there is only one split, it might not be in a list.
             if not isinstance(split_gz, list):
                 split_gz = [split_gz]
@@ -3933,6 +3955,7 @@ def shape_padleft(t, n_ones=1):
 
     See Also
     --------
+    shape_padaxis
     shape_padright
     Dimshuffle
 
@@ -3949,6 +3972,7 @@ def shape_padright(t, n_ones=1):
 
     See Also
     --------
+    shape_padaxis
     shape_padleft
     Dimshuffle
 
@@ -3960,16 +3984,90 @@ def shape_padright(t, n_ones=1):
 
 
 @constructor
-def stack(*tensors):
-    """Insert the arguments as slices into a tensor of 1 rank greater.
+def shape_padaxis(t, axis):
+    """Reshape `t` by inserting 1 at the dimension `axis`.
 
-    The size in dimension 0 of the result will be equal to the number
-    of tensors passed.
+    Example
+    -------
+    >>> tensor = theano.tensor.tensor3()
+    >>> theano.tensor.shape_padaxis(tensor, axis=0)
+    DimShuffle{x,0,1,2}.0
+    >>> theano.tensor.shape_padaxis(tensor, axis=1)
+    DimShuffle{0,x,1,2}.0
+    >>> theano.tensor.shape_padaxis(tensor, axis=3)
+    DimShuffle{0,1,2,x}.0
+    >>> theano.tensor.shape_padaxis(tensor, axis=-1)
+    DimShuffle{0,1,2,x}.0
+
+    See Also
+    --------
+    shape_padleft
+    shape_padright
+    Dimshuffle
 
     """
-    if len(tensors) == 0:
-        raise Exception('theano.tensor.stack(*tensors) must have at least'
+    _t = as_tensor_variable(t)
+
+    ndim = _t.ndim + 1
+    if not -ndim <= axis < ndim:
+        msg = 'axis {0} is out of bounds [-{1}, {1})'.format(axis, ndim)
+        raise IndexError(msg)
+    if axis < 0:
+        axis += ndim
+
+    pattern = [i for i in xrange(_t.type.ndim)]
+    pattern.insert(axis, 'x')
+    return DimShuffle(_t.broadcastable, pattern)(_t)
+
+
+@constructor
+def stack(*tensors, **kwargs):
+    """Insert the arguments as slices into a tensor of 1 rank greater.
+
+    The size in dimension `axis` of the result will be equal to the number
+    of tensors passed.
+
+    Note: The interface stack(*tensors) is deprecated, you should use
+    stack(tensors, axis=0) insted.
+
+    Parameters
+    ----------
+    tensors : list or tuple of tensors
+        A list of tensors to be stacked.
+    axis : int
+        The index of the new axis. Default value is 0.
+
+    """
+    # ---> Remove this when moving to the new interface:
+    if not tensors and not kwargs:
+        raise Exception('theano.tensor.stack(tensors, axis) must have at least'
                         ' one parameter')
+
+    if not kwargs and not isinstance(tensors[0], (list, tuple)):
+        warnings.warn('stack(*tensors) interface is deprecated, use'
+                      ' stack(tensors, axis=0) instead.', DeprecationWarning,
+                      stacklevel=3)
+        axis = 0
+    elif 'tensors' in kwargs:
+        tensors = kwargs['tensors']
+        if 'axis' in kwargs:
+            axis = kwargs['axis']
+        else:
+            axis = 0
+    else:
+        if len(tensors) == 2:
+            axis = tensors[1]
+        elif 'axis' in kwargs:
+            axis = kwargs['axis']
+        else:
+            axis = 0
+        tensors = tensors[0]
+    # <--- Until here.
+
+    if len(tensors) == 0:
+        raise Exception('tensors is empty. You should at least provide one'
+                        ' tensor to theano.tensor.stack(tensors, axis).')
+
     # If all tensors are scalars of the same type, call make_vector.
     # It makes the graph simpler, by not adding DimShuffles and Rebroadcasts
 
@@ -3991,7 +4089,7 @@ def stack(*tensors):
         tensors = list(map(as_tensor_variable, tensors))
         dtype = scal.upcast(*[i.dtype for i in tensors])
         return theano.tensor.opt.MakeVector(dtype)(*tensors)
-    return join(0, *[shape_padleft(t, 1) for t in tensors])
+    return join(axis, *[shape_padaxis(t, axis) for t in tensors])
 
 
 @constructor
@@ -5662,7 +5760,7 @@ def stacklists(arg):
 
     """
     if isinstance(arg, (tuple, list)):
-        return stack(*list(map(stacklists, arg)))
+        return stack(list(map(stacklists, arg)))
     else:
         return arg
 
