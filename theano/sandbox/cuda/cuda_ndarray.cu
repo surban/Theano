@@ -3932,7 +3932,6 @@ int CudaNdarray_CopyFromCudaNdarray(CudaNdarray * self,
             pattern[i + added_dims] = i;
         CudaNdarray_dimshuffle(new_other, self->nd, pattern);
         other = new_other;
-		free(pattern);
     }
     assert(self->nd == other->nd);
     //standard elemwise dim checks (also compute total size)
@@ -5003,7 +5002,7 @@ CudaNdarray_Dimshuffle(PyObject* _unused, PyObject* args)
         return NULL;
     }
 
-    pattern = (int *) malloc( pattern_dim * sizeof(int));
+    pattern = (int *) alloca( pattern_dim * sizeof(int));
 
     for (Py_ssize_t i = 0; i < pattern_dim; i++)
     {
@@ -5064,14 +5063,9 @@ CudaNdarray_Dimshuffle(PyObject* _unused, PyObject* args)
         goto CudaNdarray_dimshuffle_fail;
     }
 
-    free(pattern);
-
     return rval;
 
     CudaNdarray_dimshuffle_fail:
-
-    if (pattern != NULL)
-        free(pattern);
 
     Py_XDECREF(rval);
     return NULL;
