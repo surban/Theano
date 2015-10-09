@@ -10528,6 +10528,10 @@ static PyTypeObject *__Pyx_ImportType(const char *module_name, const char *class
         goto bad;
 #endif
     if (!strict && (size_t)basicsize > size) {
+        /* surban: This warning always occurs using Anaconda Python on
+                   win32, although scan seems to work fine. Therefore
+                   I disabled it. */
+        /*
         PyOS_snprintf(warning, sizeof(warning),
             "%s.%s size changed, may indicate binary incompatibility",
             module_name, class_name);
@@ -10536,6 +10540,7 @@ static PyTypeObject *__Pyx_ImportType(const char *module_name, const char *class
         #else
         if (PyErr_WarnEx(NULL, warning, 0) < 0) goto bad;
         #endif
+        */
     }
     else if ((size_t)basicsize != size) {
         PyErr_Format(PyExc_ValueError,
