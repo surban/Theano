@@ -307,6 +307,9 @@ class GpuElemwise(GpuOp):
     def c_headers(self):
         return self.src_generator.c_headers()
 
+    def c_header_dirs(self):
+        return self.src_generator.c_header_dirs()
+
     def c_support_code(self, *args, **kwargs):
         return self.src_generator.c_support_code(*args, **kwargs)
 
