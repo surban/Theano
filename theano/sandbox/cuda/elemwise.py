@@ -906,6 +906,12 @@ nd_collapse_[i]=0;
         except gof.utils.MethodNotDefined:
             return ''
 
+    def c_header_dirs(self):
+        try:
+            return self.scalar_op.c_header_dirs()
+        except gof.utils.MethodNotDefined:
+            return []
+
     def c_support_code(self):
         return self.scalar_op.c_support_code()
 

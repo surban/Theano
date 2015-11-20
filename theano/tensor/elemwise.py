@@ -1210,6 +1210,13 @@ class Elemwise(OpenMPOp):
             scalar_headers = []
         return ['<vector>', '<algorithm>'] + scalar_headers
 
+    def c_header_dirs(self):
+        try:
+            scalar_header_dirs = self.scalar_op.c_header_dirs()
+        except theano.gof.utils.MethodNotDefined:
+            scalar_header_dirs = []
+        return scalar_header_dirs
+
     def c_support_code(self):
         return self.scalar_op.c_support_code()
 
