@@ -3588,6 +3588,15 @@ class Composite(ScalarOp):
                 pass
         return rval
 
+    def c_header_dirs(self):
+        rval = []
+        for subnode in self.fgraph.toposort():
+            try:
+                rval += subnode.op.c_header_dirs()
+            except gof.utils.MethodNotDefined:
+                pass
+        return rval
+
     def c_support_code(self):
         rval = []
         for subnode in self.fgraph.toposort():
