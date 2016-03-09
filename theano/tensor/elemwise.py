@@ -24,6 +24,7 @@ config = theano.config
 # so we redefine them here
 discrete_dtypes = list(map(str, scalar.discrete_types))
 float_dtypes = list(map(str, scalar.float_types))
+int_dtypes = list(map(str, scalar.int_types))
 
 
 # tensor depends on elemwise to provide definitions for several ops
@@ -209,7 +210,7 @@ class DimShuffle(Op):
                 ob.append(ib[value])
 
         output = TensorType(dtype=input.type.dtype,
-                            broadcastable=ob).make_variable()
+                            broadcastable=ob)()
 
         return Apply(self, [input], [output])
 
@@ -460,7 +461,7 @@ class Elemwise(OpenMPOp):
     scalar.ScalarOp to get help about controlling the output type)
 
     Parameters
-    -----------
+    ----------
     scalar_op
         An instance of a subclass of scalar.ScalarOp which works uniquely
         on scalars.
@@ -502,12 +503,11 @@ class Elemwise(OpenMPOp):
 
         self.ufunc = None
         self.nfunc = None
+        if nfunc_spec is None:
+            nfunc_spec = getattr(scalar_op, 'nfunc_spec', None)
         self.nfunc_spec = nfunc_spec
         if nfunc_spec:
             self.nfunc = getattr(numpy, nfunc_spec[0])
-        elif scalar_op.nin > 0:
-            self.ufunc = numpy.frompyfunc(scalar_op.impl, scalar_op.nin,
-                                          scalar_op.nout)
 
         # precompute the hash of this node
         self._rehash()
@@ -527,7 +527,7 @@ class Elemwise(OpenMPOp):
         self.nfunc = None
         if getattr(self, 'nfunc_spec', None):
             self.nfunc = getattr(numpy, self.nfunc_spec[0])
-        elif self.scalar_op.nin > 0:
+        elif 0 < self.scalar_op.nin < 32:
             self.ufunc = numpy.frompyfunc(self.scalar_op.impl,
                                           self.scalar_op.nin,
                                           self.scalar_op.nout)
@@ -792,6 +792,43 @@ class Elemwise(OpenMPOp):
 
         return ret
 
+    def prepare_node(self, node, storage_map, compute_map):
+        # Postpone the ufunc building to the last minutes
+        # NumPy ufunc support only up to 31 inputs.
+        # But our c code support more.
+        if (len(node.inputs) < 32 and
+                (self.nfunc is None or
+                 self.scalar_op.nin != len(node.inputs)) and
+                self.ufunc is None):
+
+            ufunc = numpy.frompyfunc(self.scalar_op.impl,
+                                     len(node.inputs),
+                                     self.scalar_op.nout)
+            if self.scalar_op.nin > 0:
+                # We can reuse it for many nodes
+                self.ufunc = ufunc
+            else:
+                node.tag.ufunc = ufunc
+
+        # Numpy ufuncs will sometimes perform operations in
+        # float16, in particular when the input is int8.
+        # This is not something that we want, and we do not
+        # do it in the C code, so we specify that the computation
+        # should be carried out in the returned dtype.
+        # This is done via the "sig" kwarg of the ufunc, its value
+        # should be something like "ff->f", where the characters
+        # represent the dtype of the inputs and outputs.
+
+        # NumPy 1.10.1 raise an error when giving the signature
+        # when the input is complex. So add it only when inputs is int.
+        out_dtype = node.outputs[0].dtype
+        if (out_dtype in float_dtypes and
+                isinstance(self.nfunc, numpy.ufunc) and
+                node.inputs[0].dtype in discrete_dtypes):
+            char = numpy.sctype2char(out_dtype)
+            sig = char * node.nin + '->' + char * node.nout
+            node.tag.sig = sig
+
     def perform(self, node, inputs, output_storage):
         if len(node.inputs) >= 32:
             # Some versions of NumPy will segfault, other will raise a
@@ -838,19 +875,8 @@ class Elemwise(OpenMPOp):
         if self.nfunc and len(inputs) == self.nfunc_spec[1]:
             ufunc = self.nfunc
             nout = self.nfunc_spec[2]
-            # Numpy ufuncs will sometimes perform operations in
-            # float16, in particular when the input is int8.
-            # This is not something that we want, and we do not
-            # do it in the C code, so we specify that the computation
-            # should be carried out in the returned dtype.
-            # This is done via the "sig" kwarg of the ufunc, its value
-            # should be something like "ff->f", where the characters
-            # represent the dtype of the inputs and outputs.
-            out_dtype = node.outputs[0].dtype
-            if out_dtype in float_dtypes and isinstance(ufunc, numpy.ufunc):
-                char = numpy.sctype2char(out_dtype)
-                sig = char * node.nin + '->' + char * node.nout
-                ufunc_kwargs['sig'] = sig
+            if hasattr(node.tag, 'sig'):
+                ufunc_kwargs['sig'] = node.tag.sig
             # Unfortunately, the else case does not allow us to
             # directly feed the destination arguments to the nfunc
             # since it sometimes requires resizing. Doing this
@@ -859,9 +885,18 @@ class Elemwise(OpenMPOp):
         else:
             # the second calling form is used because in certain versions of
             # numpy the first (faster) version leads to segfaults
-            ufunc = (self.ufunc or
-                     numpy.frompyfunc(self.scalar_op.impl, len(inputs),
-                                      self.scalar_op.nout))
+            if self.ufunc:
+                ufunc = self.ufunc
+            else:
+                if not hasattr(node.tag, 'ufunc'):
+                    # It happen that make_thunk isn't called, like in
+                    # get_scalar_constant_value
+                    node.tag.ufunc = numpy.frompyfunc(self.scalar_op.impl,
+                                                      len(node.inputs),
+                                                      self.scalar_op.nout)
+
+                ufunc = node.tag.ufunc
+
             nout = ufunc.nout
 
         variables = ufunc(*ufunc_args, **ufunc_kwargs)
@@ -1250,16 +1285,6 @@ class Elemwise(OpenMPOp):
         when doing constant folding of this node.
         """
         return node.outputs[0].ndim == 0
-
-# def elemwise_to_scal(fgraph):
-# TODO: why is this commented out? should it be removed?
-#       it has needed maintenance despite being commented
-#     mapping = {}
-#     inputs = []
-#     outputs = []
-#     for node in fgraph.io_toposort():
-#         if not isinstance(node.op, Elemwise):
-#             raise TypeError('All ops in the graph must be Elemwise.')
 
 
 ################

@@ -19,9 +19,9 @@ from six.moves import xrange
 import theano
 from theano import gof
 from theano import scalar
-from theano.tensor import basic as tensor
-from theano.tensor import subtensor
-from theano.tensor import opt
+from theano.tensor import basic as tensor, subtensor, opt
+from theano.tensor.type import (values_eq_approx_remove_inf,
+                                values_eq_approx_remove_nan)
 from theano.tensor.opt import copy_stack_trace
 from theano.compile import optdb
 from theano.gof import Apply
@@ -29,7 +29,7 @@ from theano.gof import Apply
 from theano.tensor.nnet.sigm import sigmoid, softplus
 from theano.gradient import DisconnectedType
 from theano.gradient import grad_not_implemented
-from theano.tensor.type import values_eq_approx_remove_nan
+from theano.tensor.nnet.blocksparse import sparse_block_dot
 
 
 ############
@@ -171,7 +171,7 @@ class SoftmaxWithBias(gof.Op):
         {
             if (NULL != %(sm)s) Py_XDECREF(%(sm)s);
             %(sm)s = (PyArrayObject*)PyArray_SimpleNew(2, PyArray_DIMS(%(x)s),
-                                                       PyArray_TYPE((PyArrayObject*) py_%(x)s));
+                                                       PyArray_TYPE(%(x)s));
             if(!%(sm)s) {
                 PyErr_SetString(PyExc_MemoryError,
                      "failed to alloc sm output");
@@ -189,7 +189,6 @@ class SoftmaxWithBias(gof.Op):
         {
             size_t j;
             double sum = 0.0;
-            bool  discount_max = false;
 
             const dtype_%(x)s* __restrict__ x_i = (dtype_%(x)s*)(PyArray_BYTES(%(x)s) + PyArray_STRIDES(%(x)s)[0] * i);
             const dtype_%(b)s* __restrict__ b_i = (dtype_%(b)s*)(PyArray_BYTES(%(b)s));
@@ -375,7 +374,7 @@ class SoftmaxGrad(gof.Op):
             Py_XDECREF(%(dx)s);
             %(dx)s = (PyArrayObject*) PyArray_SimpleNew(2,
                                                         PyArray_DIMS(%(sm)s),
-                                                        PyArray_TYPE((PyArrayObject*) py_%(sm)s));
+                                                        PyArray_TYPE(%(sm)s));
             if (!%(dx)s)
             {
                 PyErr_SetString(PyExc_MemoryError,
@@ -430,6 +429,7 @@ class Softmax(gof.Op):
                              x.type)
         if x.ndim == 1:
             x = tensor.shape_padleft(x, n_ones=1)
+
         return Apply(self, [x], [x.type()])
 
     def perform(self, node, input_storage, output_storage):
@@ -491,7 +491,7 @@ class Softmax(gof.Op):
         {
             Py_XDECREF(%(sm)s);
             %(sm)s = (PyArrayObject*)PyArray_SimpleNew(2, PyArray_DIMS(%(x)s),
-                                                       PyArray_TYPE((PyArrayObject*) py_%(x)s));
+                                                       PyArray_TYPE(%(x)s));
             if(!%(sm)s) {
                 PyErr_SetString(PyExc_MemoryError,
                      "failed to alloc sm output");
@@ -507,12 +507,10 @@ class Softmax(gof.Op):
         {
             size_t j;
             double sum = 0.0;
-            bool  discount_max = false;
 
             const dtype_%(x)s* __restrict__ x_i = (dtype_%(x)s*)(PyArray_BYTES(%(x)s) + PyArray_STRIDES(%(x)s)[0] * i);
             dtype_%(sm) s* __restrict__ sm_i = (dtype_%(sm)s*)(PyArray_BYTES(%(sm)s) + PyArray_STRIDES(%(sm)s)[0] * i);
 
-            size_t row_max_j=0;
             dtype_%(sm)s row_max = x_i[0];
             //std::cout << "0 " << row_max << "\\n";
             // Get the maximum value of the row
@@ -520,7 +518,6 @@ class Softmax(gof.Op):
             {
                 dtype_%(sm)s row_ij = x_i[j * Sx1] ;
                 //std::cout << "1 " << row_ij << "\\n";
-                row_max_j = (row_ij > row_max) ? j : row_max_j;
                 row_max   = (row_ij > row_max) ? row_ij : row_max;
             }
 
@@ -598,12 +595,212 @@ class Softmax(gof.Op):
 softmax_op = Softmax()
 
 
+class LogSoftmax(gof.Op):
+    """
+    LogSoftmax activation function
+    :math:`\\varphi(\\mathbf{x})_j =
+    \\e^{(\mathbf{x}_j - log{\sum_{k=1}^K e^{\mathbf{x}_k})}}
+    where :math:`K` is the total number of neurons in the layer. This
+    activation function gets applied row-wise.
+
+    """
+    __props__ = ()
+
+    def make_node(self, x):
+        x = tensor.as_tensor_variable(x)
+        if x.type.ndim not in (1, 2) \
+                or x.type.dtype not in tensor.float_dtypes:
+            raise ValueError('x must be 1-d or 2-d tensor of floats. Got %s' %
+                             x.type)
+        if x.ndim == 1:
+            x = tensor.shape_padleft(x, n_ones=1)
+
+        return Apply(self, [x], [x.type()])
+
+    def perform(self, node, input_storage, output_storage):
+        x, = input_storage
+        xdev = x - x.max(axis=1)[:, None]
+        lsm = xdev - numpy.log(numpy.sum(numpy.exp(xdev), axis=1,
+                               keepdims=True))
+        output_storage[0][0] = lsm
+
+    def grad(self, inp, grads):
+        x, = inp
+        sm = softmax_op(x)
+        return [grads[0] - tensor.sum(grads[0], axis=1, keepdims=True) * sm]
+
+    def R_op(self, inputs, eval_points):
+        # I think the Jacobian is symmetric so the R_op
+        # is the same as the grad
+        if None in eval_points:
+            return [None]
+        return self.grad(inputs, eval_points)
+
+    def infer_shape(self, node, shape):
+        return shape
+
+    def c_headers(self):
+        return ['<cmath>']
+
+    @staticmethod
+    def c_code_template(dtype):
+        init_decl = """
+          npy_intp* Nx = PyArray_DIMS(%(x)s);
+          npy_intp Sx1 = 0;
+          npy_intp Ssm1 = 0;
+
+          if (PyArray_NDIM(%(x)s) != 2)
+          {
+              PyErr_SetString(PyExc_ValueError, "not a 2d tensor");
+              %(fail)s;
+          }
+          if ((PyArray_TYPE(%(x)s) != NPY_DOUBLE) &&
+              (PyArray_TYPE(%(x)s) != NPY_FLOAT))
+          {
+              PyErr_SetString(PyExc_TypeError, "not a float");
+              %(fail)s;
+          }
+
+          if ((NULL == %(sm)s)
+              || (PyArray_DIMS(%(sm)s)[0] != PyArray_DIMS(%(x)s)[0])
+              || (PyArray_DIMS(%(sm)s)[1] != PyArray_DIMS(%(x)s)[1]))
+          {
+              Py_XDECREF(%(sm)s);
+              %(sm)s = (PyArrayObject*)PyArray_SimpleNew(
+                  2, PyArray_DIMS(%(x)s),
+                  PyArray_TYPE(%(x)s));
+              if(!%(sm)s) {
+                  PyErr_SetString(PyExc_MemoryError,
+                       "failed to alloc sm output");
+                  %(fail)s
+              }
+          }
+          Sx1 = PyArray_STRIDES(%(x)s)[1]/sizeof(dtype_%(x)s);
+          Ssm1 = PyArray_STRIDES(%(sm)s)[1]/sizeof(dtype_%(sm)s);
+          """
+
+        begin_row_loop = """
+          // minibatch loop
+          for (size_t i = 0; i < Nx[0]; ++i)
+          {
+              size_t j;
+              double sum = 0.0;
+
+              const dtype_%(x)s* __restrict__ x_i = (dtype_%(x)s*)(
+                  PyArray_BYTES(%(x)s) + PyArray_STRIDES(%(x)s)[0] * i);
+              dtype_%(sm)s* __restrict__ sm_i = (dtype_%(sm)s*)(
+                  PyArray_BYTES(%(sm)s) + PyArray_STRIDES(%(sm)s)[0] * i);
+
+              dtype_%(sm)s row_max = x_i[0];
+              // Get the maximum value of the row
+              for (j = 1; j < Nx[1]; ++j)
+              {
+                  dtype_%(sm)s x_ij = x_i[j * Sx1] ;
+                  row_max = (x_ij > row_max) ? x_ij : row_max;
+              }
+              """
+
+        inside_row_loop = """
+              // Compute xdev and sum(exp(xdev), axis=1)
+              double xdev_exp_row_sum = 0.0;
+              for (j = 0; j < Nx[1]; j++)
+              {
+                  // use sm_i to temporary store xdev
+                  sm_i[j * Ssm1] = (dtype_%(sm)s) (x_i[j * Sx1] - row_max);
+                  xdev_exp_row_sum += exp(sm_i[j * Ssm1]);
+              }
+
+              // Write sm = xdev - log(sum(exp(xdev), axis=1))
+              xdev_exp_row_sum = log(xdev_exp_row_sum);
+              for (j = 0; j < Nx[1]; ++j)
+              {
+                  sm_i[j * Ssm1] -= (dtype_%(sm)s) xdev_exp_row_sum;
+              }
+              """
+        end_row_loop = """
+          }
+          """
+        return (init_decl, begin_row_loop, inside_row_loop, end_row_loop)
+
+    def c_code(self, node, name, inp, out, sub):
+        x, = inp
+        sm, = out
+        code_template = ''.join(self.c_code_template(
+            node.inputs[0].type.dtype_specs()[1]))
+        return code_template % dict(locals(), **sub)
+
+    @staticmethod
+    def c_code_cache_version():
+        return (0,)
+
+logsoftmax_op = LogSoftmax()
+
+
+@opt.register_specialize('stabilize', 'fast_compile')
+@gof.local_optimizer([tensor.Elemwise])
+def local_logsoftmax(node):
+    """
+    Detect Log(Softmax(x)) and replace it with LogSoftmax(x)
+
+    Note: only forward pass is affected
+    """
+    if (isinstance(node.op, tensor.Elemwise) and
+            isinstance(node.op.scalar_op, scalar.basic.Log) and
+            len(node.inputs) == 1 and
+            node.inputs[0].owner is not None and
+            isinstance(node.inputs[0].owner.op, Softmax)):
+        inVars = node.inputs[0].owner.inputs[0]
+        new_op = LogSoftmax()
+        ret = new_op(inVars)
+        ret.tag.values_eq_approx = values_eq_approx_remove_inf
+        return [ret]
+
+
+@opt.register_specialize('stabilize', 'fast_compile')
+@gof.local_optimizer([SoftmaxGrad])
+def local_logsoftmax_grad(node):
+    """
+    Detect Log(Softmax(x))'s grad and replace it with LogSoftmax(x)'s grad
+
+    Note: only grad is affected
+    """
+    if (isinstance(node.op, SoftmaxGrad) and
+        len(node.inputs) == 2 and
+        node.inputs[0].owner is not None and
+        isinstance(node.inputs[0].owner.op, tensor.Elemwise) and
+        len(node.inputs[0].owner.inputs) >= 2 and
+        node.inputs[0].owner.inputs[1].owner is not None and
+        node.inputs[0].owner.inputs[1].owner.op == softmax_op and
+        node.inputs[1] == node.inputs[0].owner.inputs[1] and
+        not (
+            # skip if it will be optimized by
+            # local_advanced_indexing_crossentropy_onehot_grad
+            node.inputs[0].owner.op == tensor.true_div and
+            node.inputs[0].owner.inputs[0].owner is not None and
+            isinstance(node.inputs[0].owner.inputs[0].owner.op,
+                       subtensor.AdvancedIncSubtensor))):
+        # get parameters from unoptimized op
+        sm = node.inputs[0].owner.inputs[1]
+        # sm_input = node.inputs[1].owner.inputs[0]
+        grads = node.inputs[0].owner.inputs[0]
+        if grads.broadcastable[1] and not sm.broadcastable[1]:
+            grads = tensor.alloc(grads, grads.shape[0], sm.shape[1])
+
+        ret = grads - tensor.sum(grads, axis=1, keepdims=True) * sm
+        ret.tag.values_eq_approx = values_eq_approx_remove_nan
+        return [ret]
+
+
 def softmax_graph(c):
     return tensor.exp(c) / tensor.exp(c).sum(axis=-1, keepdims=True)
 
 
 def softmax(c):
     return softmax_op(c)
+
+
+def logsoftmax(c):
+    return logsoftmax_op(c)
 
 
 @opt.register_specialize('fast_compile_gpu')
@@ -908,7 +1105,7 @@ class CrossentropySoftmaxArgmax1HotWithBias(gof.Op):
         {
             if (NULL != %(nll)s) Py_XDECREF(%(nll)s);
             %(nll)s = (PyArrayObject*)PyArray_SimpleNew(1,
-                PyArray_DIMS(%(y_idx)s), PyArray_TYPE((PyArrayObject*) py_%(x)s));
+                PyArray_DIMS(%(y_idx)s), PyArray_TYPE(%(x)s));
             if(!%(nll)s)
             {
                 PyErr_SetString(PyExc_MemoryError,
@@ -921,7 +1118,7 @@ class CrossentropySoftmaxArgmax1HotWithBias(gof.Op):
         {
             Py_XDECREF(%(am)s);
             %(am)s = (PyArrayObject*) PyArray_SimpleNew(1,
-                PyArray_DIMS(%(y_idx)s), PyArray_TYPE((PyArrayObject*) py_%(y_idx)s));
+                PyArray_DIMS(%(y_idx)s), PyArray_TYPE(%(y_idx)s));
             if(!%(am)s)
             {
                 PyErr_SetString(PyExc_MemoryError,
@@ -1095,7 +1292,7 @@ class CrossentropySoftmax1HotWithBiasDx(gof.Op):
             if (NULL != %(dx)s) Py_XDECREF(%(dx)s);
             %(dx)s = (PyArrayObject*) PyArray_SimpleNew(2,
                                                         PyArray_DIMS(%(sm)s),
-                                                        PyArray_TYPE((PyArrayObject*) py_%(sm)s));
+                                                        PyArray_TYPE(%(sm)s));
             if(!%(dx)s) {
                 PyErr_SetString(PyExc_MemoryError,
                      "failed to alloc dx output");
@@ -1248,16 +1445,8 @@ class CrossentropyCategorical1Hot(gof.Op):
             y[i] = -numpy.log(coding[i, one_of_n[i]])
         y_out[0] = y
 
-# Enabling this infer_shape method make 2 tests fail:
-# theano/tensor/nnet/tests/test_nnet.py:T_CrossentropyCategorical1Hot.
-#     {test_softmax_grad_optimizations,test_softmax_grad_optimizations_vector}
-# This is caused by the local_fill_to_alloc that call broadcast_like
-# that look into the shape feature and return a Rebroadcast instead of an alloc.
-# I disable this infer_shape until we fix the optimizations or determine that
-# this is not needed anymore and we update the tests.
-        # see issue gh-788
-#    def infer_shape(self, node, in_shapes):
-#        return [(in_shapes[0][0],)]
+    def infer_shape(self, node, in_shapes):
+        return [(in_shapes[0][0],)]
 
     def grad(self, inp, grads):
         coding, one_of_n = inp
@@ -1479,7 +1668,7 @@ def local_advanced_indexing_crossentropy_onehot(node):
             sm = log.owner.inputs[0]
 
     # Second case: log(softmax(x)[rows, labels])
-    if node.op == tensor.log:
+    elif node.op == tensor.log:
         pre_log = node.inputs[0].owner
         if pre_log and isinstance(pre_log.op, subtensor.AdvancedSubtensor):
             try:
@@ -1989,27 +2178,6 @@ prepend_0_to_each_row = Prepend_scalar_constant_to_each_row(0.)
 prepend_1_to_each_row = Prepend_scalar_constant_to_each_row(1.)
 
 
-# numerically stabilize log softmax (X)
-# as  X-X.max(axis=1).dimshuffle(0,'x') - log(exp(X-X.max(axis=1).dimshuffle(0,'x')).sum(axis=1)).dimshuffle(0,'x)
-def make_out_pattern(X):
-    stabilized_X = X - X.max(axis=1).dimshuffle(0, 'x')
-    out_var = stabilized_X - tensor.log(tensor.exp(stabilized_X).sum(
-        axis=1)).dimshuffle(0, 'x')
-    # tell DEBUG_MODE that it's OK if the original graph produced NaN and the optimized graph does not
-    out_var.values_eq_approx = values_eq_approx_remove_nan
-    return out_var
-
-
-local_log_softmax = gof.PatternSub(in_pattern=(tensor.log, (softmax_op, 'x')),
-                                   out_pattern=(make_out_pattern, 'x'),
-                                   allow_multiple_clients=True)
-
-# don't do register_stabilize, this is to make local_log_softmax run
-# only after another more specific optimization that stabilizes cross entropy
-# opt.register_stabilize(local_log_softmax, name = 'local_log_softmax')
-opt.register_specialize(local_log_softmax, 'fast_compile_gpu', name='local_log_softmax')
-
-
 def relu(x, alpha=0):
     """
     Compute the element-wise rectified linear activation function.
@@ -2049,3 +2217,146 @@ def relu(x, alpha=0):
         f1 = 0.5 * (1 + alpha)
         f2 = 0.5 * (1 - alpha)
         return f1 * x + f2 * abs(x)
+
+
+def h_softmax(x, batch_size, n_outputs, n_classes, n_outputs_per_class,
+              W1, b1, W2, b2, target=None):
+    """ Two-level hierarchical softmax.
+
+    The architecture is composed of two softmax layers: the first predicts the
+    class of the input x while the second predicts the output of the input x in
+    the predicted class.
+    More explanations can be found in the original paper [1]_.
+
+    If target is specified, it will only compute the outputs of the
+    corresponding targets. Otherwise, if target is None, it will compute all
+    the outputs.
+
+    The outputs are grouped in the same order as they are initially defined.
+
+    .. versionadded:: 0.7.1
+
+    Parameters
+    ----------
+    x: tensor of shape (batch_size, number of features)
+        the minibatch input of the two-layer hierarchical softmax.
+    batch_size: int
+        the size of the minibatch input x.
+    n_outputs: int
+        the number of outputs.
+    n_classes: int
+        the number of classes of the two-layer hierarchical softmax. It
+        corresponds to the number of outputs of the first softmax. See note at
+        the end.
+    n_outputs_per_class: int
+        the number of outputs per class. See note at the end.
+    W1: tensor of shape (number of features of the input x, n_classes)
+        the weight matrix of the first softmax, which maps the input x to the
+        probabilities of the classes.
+    b1: tensor of shape (n_classes,)
+        the bias vector of the first softmax layer.
+    W2: tensor of shape (n_classes, number of features of the input x, n_outputs_per_class)
+        the weight matrix of the second softmax, which maps the input x to
+        the probabilities of the outputs.
+    b2: tensor of shape (n_classes, n_outputs_per_class)
+        the bias vector of the second softmax layer.
+    target: tensor of shape either (batch_size,) or (batch_size, 1)
+        (optional, default None)
+        contains the indices of the targets for the minibatch
+        input x. For each input, the function computes the output for its
+        corresponding target. If target is None, then all the outputs are
+        computed for each input.
+
+    Returns
+    -------
+    output_probs: tensor of shape (batch_size, n_outputs) or (batch_size, 1)
+        Output of the two-layer hierarchical softmax for input x. If target is
+        not specified (None), then all the outputs are computed and the
+        returned tensor has shape (batch_size, n_outputs). Otherwise, when
+        target is specified, only the corresponding outputs are computed and
+        the returned tensor has thus shape (batch_size, 1).
+
+    Notes
+    -----
+    The product of n_outputs_per_class and n_classes has to be greater or equal
+    to n_outputs. If it is strictly greater, then the irrelevant outputs will
+    be ignored.
+    n_outputs_per_class and n_classes have to be the same as the corresponding
+    dimensions of the tensors of W1, b1, W2 and b2.
+    The most computational efficient configuration is when n_outputs_per_class
+    and n_classes are equal to the square root of n_outputs.
+
+    References
+    ----------
+    .. [1] J. Goodman, "Classes for Fast Maximum Entropy Training,"
+        ICASSP, 2001, <http://arxiv.org/abs/cs/0108006>`.
+    """
+
+    # First softmax that computes the probabilities of belonging to each class
+    class_probs = theano.tensor.nnet.softmax(tensor.dot(x, W1) + b1)
+
+    if target is None:  # Computes the probabilites of all the outputs
+
+        # Second softmax that computes the output probabilities
+        activations = tensor.tensordot(x, W2, (1, 1)) + b2
+        output_probs = theano.tensor.nnet.softmax(
+            activations.reshape((-1, n_outputs_per_class)))
+        output_probs = output_probs.reshape((batch_size, n_classes, -1))
+        output_probs = class_probs.dimshuffle(0, 1, 'x') * output_probs
+        output_probs = output_probs.reshape((batch_size, -1))
+        # output_probs.shape[1] is n_classes * n_outputs_per_class, which might
+        # be greater than n_outputs, so we ignore the potential irrelevant
+        # outputs with the next line:
+        output_probs = output_probs[:, :n_outputs]
+
+    else:  # Computes the probabilities of the outputs specified by the targets
+
+        target = target.flatten()
+
+        # Classes to which belong each target
+        target_classes = target // n_outputs_per_class
+
+        # Outputs to which belong each target inside a class
+        target_outputs_in_class = target % n_outputs_per_class
+
+        # Second softmax that computes the output probabilities
+        activations = sparse_block_dot(
+            W2.dimshuffle('x', 0, 1, 2), x.dimshuffle(0, 'x', 1),
+            tensor.zeros((batch_size, 1), dtype='int32'), b2,
+            target_classes.dimshuffle(0, 'x'))
+
+        output_probs = theano.tensor.nnet.softmax(activations.dimshuffle(0, 2))
+        target_class_probs = class_probs[tensor.arange(batch_size),
+                                         target_classes]
+        output_probs = output_probs[tensor.arange(batch_size),
+                                    target_outputs_in_class]
+        output_probs = target_class_probs * output_probs
+
+    return output_probs
+
+
+def elu(x, alpha=1):
+    """
+    Compute the element-wise exponential linear activation function.
+
+    .. versionadded:: 0.8.0
+
+    Parameters
+    ----------
+    x : symbolic tensor
+        Tensor to compute the activation function for.
+    alpha : scalar
+
+
+    Returns
+    -------
+    symbolic tensor
+        Element-wise exponential linear activation function applied to `x`.
+
+    References
+    -----
+    .. [1] Djork-Arne Clevert,  Thomas Unterthiner, Sepp Hochreiter
+        "Fast and Accurate Deep Network Learning by
+        Exponential Linear Units (ELUs)" <http://arxiv.org/abs/1511.07289>`.
+    """
+    return tensor.switch(x > 0, x, alpha * (tensor.exp(x) - 1))

@@ -2,7 +2,6 @@
 Define the `function` function.
 
 """
-import six.moves.cPickle as pickle
 import logging
 
 import traceback as tb
@@ -24,7 +23,8 @@ def function_dump(filename, inputs, outputs=None, mode=None, updates=None,
                   givens=None,
                   no_default_updates=False, accept_inplace=False, name=None,
                   rebuild_strict=True, allow_input_downcast=None, profile=None,
-                  on_unused_input=None):
+                  on_unused_input=None,
+                  extra_tag_to_remove=None):
     """
     This is helpful to make a reproducable case for problem during Theano
     compilation.
@@ -45,9 +45,15 @@ def function_dump(filename, inputs, outputs=None, mode=None, updates=None,
 
     To load such a dump and do the compilation:
 
-    >>> import cPickle, theano
+    >>> from six.moves import cPickle
+    >>> import theano
     >>> d = cPickle.load(open("func_dump.bin", "rb"))  # doctest: +SKIP
     >>> f = theano.function(**d)  # doctest: +SKIP
+
+    Note:
+    The parameter extra_tag_to_remove, is passed to the StripPickler used.
+    To pickle graph made by Blocks, it must be:
+    ['annotations', 'replacement_of', 'aggregation_scheme', 'roles']
 
     """
     assert isinstance(filename, string_types)
@@ -58,7 +64,11 @@ def function_dump(filename, inputs, outputs=None, mode=None, updates=None,
              allow_input_downcast=allow_input_downcast, profile=profile,
              on_unused_input=on_unused_input)
     with open(filename, 'wb') as f:
-        pickle.dump(d, f, -1)
+        import theano.misc.pkl_utils
+        pickler = theano.misc.pkl_utils.StripPickler(
+            f, protocol=-1,
+            extra_tag_to_remove=extra_tag_to_remove)
+        pickler.dump(d)
 
 
 def function(inputs, outputs=None, mode=None, updates=None, givens=None,
@@ -70,7 +80,7 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
 
     Parameters
     ----------
-    inputs : list of either Variable or Param instances.
+    inputs : list of either Variable or In instances.
         Function parameters, these are not allowed to be shared variables.
     outputs : list or dict of Variables or Out instances.
         If it is a dict, the keys must be strings. Expressions to compute.
@@ -110,6 +120,8 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
     profile: None, True, or ProfileStats instance
         Accumulate profiling information into a given ProfileStats instance.
         If argument is `True` then a new ProfileStats instance will be used.
+        If argument is a string, a new ProfileStats instance will be created
+        with that string as its ``message`` attribute.
         This profiling object will be available via self.profile.
     on_unused_input
         What to do if a variable in the 'inputs' list is not used in the graph.
@@ -268,7 +280,6 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
                         "input.")
 
     # compute some features of the arguments:
-    uses_In = any([isinstance(i, In) for i in inputs])
     uses_tuple = any([isinstance(i, (list, tuple)) for i in inputs])
     uses_updates = bool(updates)
     uses_givens = bool(givens)
@@ -280,7 +291,7 @@ def function(inputs, outputs=None, mode=None, updates=None, givens=None,
                                    (hasattr(i, 'mutable') and i.mutable))):
             check_for_aliased_inputs = True
 
-    if uses_In or uses_tuple:
+    if uses_tuple:
         # we must use old semantics in this case.
         if profile:
             raise NotImplementedError("profiling not supported in old-style "

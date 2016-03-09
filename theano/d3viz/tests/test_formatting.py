@@ -1,15 +1,14 @@
-from nose.plugins.skip import SkipTest
-
-from theano.d3viz import has_requirements
-if not has_requirements:
-    raise SkipTest('Missing requirements')
-
 import numpy as np
 import unittest
 
 import theano as th
 from theano.d3viz.formatting import PyDotFormatter
 from theano.d3viz.tests import models
+
+from nose.plugins.skip import SkipTest
+from theano.d3viz.formatting import pydot_imported
+if not pydot_imported:
+    raise SkipTest('Missing requirements')
 
 
 class TestPyDotFormatter(unittest.TestCase):
@@ -29,9 +28,16 @@ class TestPyDotFormatter(unittest.TestCase):
         f = th.function(m.inputs, m.outputs)
         pdf = PyDotFormatter()
         graph = pdf(f)
-        self.assertEqual(len(graph.get_nodes()), 11)
+        expected = 11
+        if th.config.mode == "FAST_COMPILE":
+            expected = 12
+        self.assertEqual(len(graph.get_nodes()), expected)
         nc = self.node_counts(graph)
-        assert nc['apply'] == 5
+
+        if th.config.mode == "FAST_COMPILE":
+            assert nc['apply'] == 6
+        else:
+            assert nc['apply'] == 5
         assert nc['output'] == 1
 
     def test_ofg(self):
@@ -43,7 +49,10 @@ class TestPyDotFormatter(unittest.TestCase):
         sub_graphs = graph.get_subgraph_list()
         assert len(sub_graphs) == 2
         ofg1, ofg2 = sub_graphs
-        assert len(ofg1.get_nodes()) == 5
+        if th.config.mode == "FAST_COMPILE":
+            assert len(ofg1.get_nodes()) == 9
+        else:
+            assert len(ofg1.get_nodes()) == 5
         assert len(ofg1.get_nodes()) == len(ofg2.get_nodes())
 
     def test_ofg_nested(self):

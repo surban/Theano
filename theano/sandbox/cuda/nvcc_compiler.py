@@ -8,8 +8,9 @@ import warnings
 
 import numpy
 
+from theano import config
 from theano.compat import decode, decode_iter
-from theano.gof import local_bitwidth
+from theano.configdefaults import local_bitwidth
 from theano.gof.utils import hash_from_file
 from theano.gof.cmodule import (std_libs, std_lib_dirs,
                                 std_include_dirs, dlimport,
@@ -18,67 +19,6 @@ from theano.gof.cmodule import (std_libs, std_lib_dirs,
 from theano.misc.windows import output_subprocess_Popen
 
 _logger = logging.getLogger("theano.sandbox.cuda.nvcc_compiler")
-
-from theano.configparser import (config, AddConfigVar, StrParam,
-                                 BoolParam, ConfigParam)
-
-AddConfigVar('nvcc.compiler_bindir',
-             "If defined, nvcc compiler driver will seek g++ and gcc"
-             " in this directory",
-             StrParam(""),
-             in_c_key=False)
-
-user_provided_cuda_root = True
-
-
-def default_cuda_root():
-    global user_provided_cuda_root
-    v = os.getenv('CUDA_ROOT', "")
-    user_provided_cuda_root = False
-    if v:
-        return v
-    return find_cuda_root()
-
-AddConfigVar('cuda.root',
-        """directory with bin/, lib/, include/ for cuda utilities.
-        This directory is included via -L and -rpath when linking
-        dynamically compiled modules.  If AUTO and nvcc is in the
-        path, it will use one of nvcc parent directory.  Otherwise
-        /usr/local/cuda will be used.  Leave empty to prevent extra
-        linker directives.  Default: environment variable "CUDA_ROOT"
-        or else "AUTO".
-        """,
-        StrParam(default_cuda_root),
-        in_c_key=False)
-
-
-def filter_nvcc_flags(s):
-    assert isinstance(s, str)
-    flags = [flag for flag in s.split(' ') if flag]
-    if any([f for f in flags if not f.startswith("-")]):
-        raise ValueError(
-            "Theano nvcc.flags support only parameter/value pairs without"
-            " space between them. e.g.: '--machine 64' is not supported,"
-            " but '--machine=64' is supported. Please add the '=' symbol."
-            " nvcc.flags value is '%s'" % s)
-    return ' '.join(flags)
-
-AddConfigVar('nvcc.flags',
-             "Extra compiler flags for nvcc",
-             ConfigParam("", filter_nvcc_flags),
-             # Not needed in c key as it is already added.
-             # We remove it as we don't make the md5 of config to change
-             # if theano.sandbox.cuda is loaded or not.
-             in_c_key=False)
-
-
-AddConfigVar('nvcc.fastmath',
-             "",
-             BoolParam(False),
-             # Not needed in c key as it is already added.
-             # We remove it as we don't make the md5 of config to change
-             # if theano.sandbox.cuda is loaded or not.
-             in_c_key=False)
 
 nvcc_path = 'nvcc'
 nvcc_version = None
@@ -115,14 +55,6 @@ def is_nvcc_available():
             return False
 
 
-def find_cuda_root():
-    s = os.getenv("PATH")
-    if not s:
-        return
-    for dir in s.split(os.path.pathsep):
-        if os.path.exists(os.path.join(dir, "nvcc")):
-            return os.path.split(dir)[0]
-
 rpath_defaults = []
 
 
@@ -131,6 +63,8 @@ def add_standard_rpath(rpath):
 
 
 class NVCC_compiler(Compiler):
+    supports_amdlibm = False
+
     @staticmethod
     def try_compile_tmp(src_code, tmp_prefix='', flags=(),
                         try_run=False, output=False):
@@ -227,7 +161,7 @@ class NVCC_compiler(Compiler):
         include_dirs
             A list of include directory names (each gets prefixed with -I).
         lib_dirs
-            A list of library search path directory names (each gets 
+            A list of library search path directory names (each gets
             prefixed with -L).
         libs
             A list of libraries to link with (each gets prefixed with -l).
@@ -254,6 +188,10 @@ class NVCC_compiler(Compiler):
         Otherwise nvcc never finish.
 
         """
+        # Remove empty string directory
+        include_dirs = [d for d in include_dirs if d]
+        lib_dirs = [d for d in lib_dirs if d]
+
         rpaths = list(rpaths)
 
         if sys.platform == "win32":
@@ -269,6 +207,9 @@ class NVCC_compiler(Compiler):
             preargs = list(preargs)
         if sys.platform != 'win32':
             preargs.append('-fPIC')
+        if config.cmodule.remove_gxx_opt:
+            preargs = [p for p in preargs if not p.startswith('-O')]
+
         cuda_root = config.cuda.root
 
         # The include dirs gived by the user should have precedence over
@@ -277,34 +218,35 @@ class NVCC_compiler(Compiler):
         if os.path.abspath(os.path.split(__file__)[0]) not in include_dirs:
             include_dirs.append(os.path.abspath(os.path.split(__file__)[0]))
 
-        libs = std_libs() + libs
+        libs = libs + std_libs()
         if 'cudart' not in libs:
             libs.append('cudart')
 
-        lib_dirs = std_lib_dirs() + lib_dirs
-        if any(ld == os.path.join(cuda_root, 'lib') or
-               ld == os.path.join(cuda_root, 'lib64') for ld in lib_dirs):
-            warnings.warn("You have the cuda library directory in your "
-                          "lib_dirs. This has been known to cause problems "
-                          "and should not be done.")
+        lib_dirs = lib_dirs + std_lib_dirs()
+
+        # config.dnn.include_path add this by default for cudnn in the
+        # new back-end. This should not be used in this back-end. So
+        # just remove them.
+        lib_dirs = [ld for ld in lib_dirs if
+                    not(ld == os.path.join(cuda_root, 'lib') or
+                        ld == os.path.join(cuda_root, 'lib64'))]
 
         if sys.platform != 'darwin':
             # sometimes, the linker cannot find -lpython so we need to tell it
             # explicitly where it is located
             # this returns somepath/lib/python2.x
-            python_lib = distutils.sysconfig.get_python_lib(plat_specific=1, \
-                            standard_lib=1)
+            python_lib = distutils.sysconfig.get_python_lib(plat_specific=1,
+                                                            standard_lib=1)
             python_lib = os.path.dirname(python_lib)
             if python_lib not in lib_dirs:
                 lib_dirs.append(python_lib)
 
         cppfilename = os.path.join(location, 'mod.cu')
-        cppfile = open(cppfilename, 'w')
+        with open(cppfilename, 'w') as cppfile:
 
-        _logger.debug('Writing module C++ code to %s', cppfilename)
+            _logger.debug('Writing module C++ code to %s', cppfilename)
+            cppfile.write(src_code)
 
-        cppfile.write(src_code)
-        cppfile.close()
         lib_filename = os.path.join(location, '%s.%s' %
                 (module_name, get_lib_extension()))
 
@@ -314,7 +256,12 @@ class NVCC_compiler(Compiler):
         # '--gpu-code=compute_13',
         # nvcc argument
         preargs1 = []
+        preargs2 = []
         for pa in preargs:
+            if pa.startswith('-Wl,'):
+                preargs1.append('-Xlinker')
+                preargs1.append(pa[4:])
+                continue
             for pattern in ['-O', '-arch=', '-ccbin=', '-G', '-g', '-I',
                             '-L', '--fmad', '--ftz', '--maxrregcount',
                             '--prec-div', '--prec-sqrt',  '--use_fast_math',
@@ -324,8 +271,9 @@ class NVCC_compiler(Compiler):
 
                 if pa.startswith(pattern):
                     preargs1.append(pa)
-        preargs2 = [pa for pa in preargs
-                    if pa not in preargs1]  # other arguments
+                    break
+            else:
+                preargs2.append(pa)
 
         # Don't put -G by default, as it slow things down.
         # We aren't sure if -g slow things down, so we don't put it by default.
@@ -357,7 +305,8 @@ class NVCC_compiler(Compiler):
         # provided an cuda.root flag, we need to add one, but
         # otherwise, we don't add it. See gh-1540 and
         # https://wiki.debian.org/RpathIssue for details.
-        if (user_provided_cuda_root and
+
+        if (not type(config.cuda).root.is_default and
             os.path.exists(os.path.join(config.cuda.root, 'lib'))):
 
             rpaths.append(os.path.join(config.cuda.root, 'lib'))

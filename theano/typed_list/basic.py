@@ -1,4 +1,3 @@
-import copy
 
 import numpy
 
@@ -52,6 +51,15 @@ class TypedListVariable(_typed_list_py_operators, Variable):
     """
 
 TypedListType.Variable = TypedListVariable
+
+
+class TypedListConstant(_typed_list_py_operators, Constant):
+    """
+    Subclass to add the typed list operators to the basic `Variable` class.
+
+    """
+
+TypedListType.Constant = TypedListConstant
 
 
 class GetItem(Op):
@@ -109,7 +117,7 @@ Parameters
 ----------
 x
     Typed list.
-index 
+index
     The index of the value to return from `x`.
 
 """
@@ -588,7 +596,6 @@ x
 
 
 class MakeList(Op):
-
     __props__ = ()
 
     def make_node(self, a):
@@ -596,7 +603,7 @@ class MakeList(Op):
         a2 = []
         for elem in a:
             if not isinstance(elem, theano.gof.Variable):
-                elem = as_tensor_variable(elem)
+                elem = theano.tensor.as_tensor_variable(elem)
             a2.append(elem)
         if not all(a2[0].type == elem.type for elem in a2):
             raise TypeError(
@@ -607,7 +614,8 @@ class MakeList(Op):
 
     def perform(self, node, inputs, outputs):
         (out,) = outputs
-        out[0] = list(inputs)
+        # We need to make sure that we don't get a view on our inputs
+        out[0] = [_lessbroken_deepcopy(inp) for inp in inputs]
 
 make_list = MakeList()
 """

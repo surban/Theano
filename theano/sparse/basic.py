@@ -273,7 +273,7 @@ def sp_ones_like(x):
 
     Returns
     -------
-    matrix
+    A sparse matrix
         The same as `x` with data changed for ones.
 
     """
@@ -293,7 +293,7 @@ def sp_zeros_like(x):
 
     Returns
     -------
-    matrix
+    A sparse matrix
         The same as `x` with zero entries for all element.
 
     """
@@ -790,7 +790,7 @@ shape
 
 Returns
 -------
-matrix
+sparse matrix
     A sparse matrix having the properties specified by the inputs.
 
 Notes
@@ -820,7 +820,7 @@ shape
 
 Returns
 -------
-matrix
+sparse matrix
     A sparse matrix having the properties specified by the inputs.
 
 Notes
@@ -1053,7 +1053,7 @@ x
 
 Returns
 -------
-matrix
+theano.tensor.matrix
     A dense matrix, the same as `x`.
 
 Notes
@@ -1121,7 +1121,7 @@ x
 
 Returns
 -------
-matrix
+sparse matrix
     The same as `x` in a sparse csr matrix format.
 
 """
@@ -1137,7 +1137,7 @@ x
 
 Returns
 -------
-matrix
+sparse matrix
     The same as `x` in a sparse csc matrix format.
 
 """
@@ -1187,7 +1187,7 @@ index
 
 Returns
 -------
-matrix
+sparse matrix
     The corresponding rows in `x`.
 
 """
@@ -1284,7 +1284,7 @@ index
 
 Returns
 -------
-vector
+theano.tensor.vector
     The corresponding elements in `x`.
 
 """
@@ -1436,7 +1436,8 @@ index
 
 Returns
 -------
-The corresponding slice in `x`.
+sparse matrix
+    The corresponding slice in `x`.
 
 
 Notes
@@ -1511,7 +1512,7 @@ index
 
 Returns
 -------
-scalar
+theano.tensor.scalar
     The corresponding item in `x`.
 
 Notes
@@ -1566,7 +1567,7 @@ x
 
 Returns
 -------
-matrix
+sparse matrix
     `x` transposed.
 
 Notes
@@ -1617,7 +1618,7 @@ x
 
 Returns
 -------
-matrix
+sparse matrix
     -`x`.
 
 Notes
@@ -1765,7 +1766,7 @@ def row_scale(x, s):
 
     Returns
     -------
-    matrix
+    A sparse matrix
         A sparse matrix in the same format as `x` whose each row has been
         multiplied by the corresponding element of `s`.
 
@@ -1930,7 +1931,7 @@ x
 
 Returns
 -------
-vector
+theano.tensor.vector
     A dense vector representing the diagonal elements.
 
 Notes
@@ -1985,7 +1986,7 @@ x
 
 Returns
 -------
-matrix
+sparse matrix
     A sparse matrix having `x` as diagonal.
 
 Notes
@@ -2044,7 +2045,7 @@ x
 
 Returns
 -------
-matrix
+sparse matrix
     The same as `x` with indices sorted.
 
 Notes
@@ -2070,7 +2071,7 @@ def clean(x):
 
     Returns
     -------
-    matrix
+    A sparse matrix
         The same as `x` with indices sorted and zeros
         removed.
 
@@ -2166,7 +2167,7 @@ y
 
 Returns
 -------
-matrix
+A sparse matrix
     The sum of the two sparse matrices element wise.
 
 Notes
@@ -2270,7 +2271,7 @@ y
 
 Returns
 -------
-matrix
+A sparse matrix
     A sparse matrix containing the addition of the vector to
     the data of the sparse matrix.
 
@@ -2297,7 +2298,7 @@ def add(x, y):
 
     Returns
     -------
-    matrix
+    A sparse matrix
         `x` + `y`
 
     Notes
@@ -2348,7 +2349,7 @@ def sub(x, y):
 
     Returns
     -------
-    matrix
+    A sparse matrix
         `x` - `y`
 
     Notes
@@ -2547,7 +2548,7 @@ y
 
 Returns
 -------
-matrix
+A sparse matrix
     The product x * y element wise.
 
 Notes
@@ -2572,7 +2573,7 @@ def mul(x, y):
 
     Returns
     -------
-    matrix
+    A sparse matrix
         `x` + `y`
 
     Notes
@@ -2683,10 +2684,10 @@ class __ComparisonOpSD(gof.op.Op):
         x, y = as_sparse_variable(x), tensor.as_tensor_variable(y)
 
         assert y.type.ndim == 2
+        out = tensor.TensorType(dtype='uint8', broadcastable=(False, False))()
         return gof.Apply(self,
                          [x, y],
-                         [SparseType(dtype='uint8',
-                                     format=x.type.format)()])
+                         [out])
 
     def perform(self, node, inputs, outputs):
         (x, y) = inputs
@@ -2694,7 +2695,9 @@ class __ComparisonOpSD(gof.op.Op):
         assert _is_sparse(x)
         assert x.shape == y.shape
         assert _is_dense(y)
-        out[0] = self.comparison(x, y).astype('uint8')
+        o = self.comparison(x, y).astype('uint8')
+        o = numpy.asarray(o)
+        out[0] = o
 
     def infer_shape(self, node, ins_shapes):
         return [ins_shapes[0]]
@@ -2852,7 +2855,7 @@ y
 
 Returns
 -------
-matrix
+matrix variable
     `x` == `y`
 
 Notes
@@ -2873,7 +2876,7 @@ y
 
 Returns
 -------
-matrix
+matrix variable
     `x` != `y`
 
 Notes
@@ -2894,7 +2897,7 @@ y
 
 Returns
 -------
-matrix
+matrix variable
     `x` < `y`
 
 Notes
@@ -2915,7 +2918,7 @@ y
 
 Returns
 -------
-matrix
+matrix variable
     `x` > `y`
 
 Notes
@@ -2935,6 +2938,7 @@ y
 
 Returns
 -------
+matrix variable
     `x` <= `y`
 
 Notes
@@ -2955,7 +2959,7 @@ y
 
 Returns
 -------
-matrix
+matrix variable
     `x` >= `y`
 
 Notes
@@ -3197,7 +3201,7 @@ x
 
 Returns
 -------
-matrix
+sparse matrix
     Exactly `x` but with a data attribute exempt of zeros.
 
 Notes
@@ -3718,7 +3722,7 @@ def structured_dot(x, y):
 
     Returns
     -------
-    matrix
+    A sparse matrix
         The dot product of `a` and `b`.
 
     Notes
@@ -4110,7 +4114,7 @@ p
 
 Returns
 -------
-matrix
+sparse matrix
     A dense matrix containing the dot product of `x` by `y`.T only
     where `p` is 1.
 

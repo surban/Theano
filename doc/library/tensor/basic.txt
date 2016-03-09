@@ -8,11 +8,13 @@ Basic Tensor Functionality
 
 .. testsetup::
 
+   import theano
    import theano.tensor as T
    from theano.tensor import scalar, iscalar, TensorType, dmatrix, ivector
    from theano.tensor import set_subtensor, inc_subtensor, batched_dot
    from theano import shared
    import numpy
+   import numpy as np
 
 Theano supports any kind of Python object, but its focus is support for
 symbolic matrix expressions.  When you type,
@@ -427,7 +429,8 @@ TensorVariable
     you'll want to call.
 
 
-.. class:: _tensor_py_operators(object)
+.. autoclass:: _tensor_py_operators
+   :members:
 
     This mix-in class adds convenient attributes, methods, and support
     to TensorVariable, TensorConstant and TensorSharedVariable for
@@ -507,7 +510,7 @@ TensorVariable
     .. method:: diagonal(offset=0, axis1=0, axis2=1)
     .. method:: astype(dtype)
     .. method:: take(indices, axis=None, mode='raise')
-    .. method:: copy()
+    .. method:: copy() Return a new symbolic variable that is a copy of the variable. Does not copy the tag.
     .. method:: norm(L, axis=None)
     .. method:: nonzero(self, return_matrix=False)
     .. method:: nonzero_values(self)
@@ -655,6 +658,7 @@ dimensions, see :meth:`_tensor_py_operators.dimshuffle`.
         `len(reps)` must be equal and, if specified, `ndim` must be
         equal to both.
 
+.. autofunction:: roll
 
 Creating Tensor
 ===============
@@ -703,30 +707,62 @@ Creating Tensor
               except for the main diagonal, whose values are equal to one. The output
               will have same dtype as `x`.
 
-
 .. function:: stack(tensors, axis=0)
 
-    Warning: The interface stack(*tensors) is deprecated!
+    Stack tensors in sequence on given axis (default is 0). 
 
-    Return a Tensor representing for the arguments all stacked up into a single Tensor.
-    (of 1 rank greater).
+    Take a sequence of tensors and stack them on given axis to make a single
+    tensor. The size in dimension `axis` of the result will be equal to the number
+    of tensors passed.
 
     :param tensors: a list or a tuple of one or more tensors of the same rank.
     :param axis: the axis along which the tensors will be stacked. Default value is 0.
     :returns: A tensor such that rval[0] == tensors[0], rval[1] == tensors[1], etc.
 
-    >>> x0 = T.scalar()
-    >>> x1 = T.scalar()
-    >>> x2 = T.scalar()
-    >>> x = T.stack([x0, x1, x2])
+    Examples:
+
+    >>> a = theano.tensor.scalar()
+    >>> b = theano.tensor.scalar()
+    >>> c = theano.tensor.scalar()
+    >>> x = theano.tensor.stack([a, b, c])
     >>> x.ndim # x is a vector of length 3.
     1
+    >>> a = theano.tensor.tensor4()
+    >>> b = theano.tensor.tensor4()
+    >>> c = theano.tensor.tensor4()
+    >>> x = theano.tensor.stack([a, b, c])
+    >>> x.ndim # x is a 5d tensor.
+    5
+    >>> rval = x.eval(dict((t, np.zeros((2, 2, 2, 2))) for t in [a, b, c]))
+    >>> rval.shape # 3 tensors are stacked on axis 0
+    (3, 2, 2, 2, 2)
 
+    We can also specify different axis than default value 0
+
+    >>> x = theano.tensor.stack([a, b, c], axis=3)
+    >>> x.ndim
+    5
+    >>> rval = x.eval(dict((t, np.zeros((2, 2, 2, 2))) for t in [a, b, c]))
+    >>> rval.shape # 3 tensors are stacked on axis 3
+    (2, 2, 2, 3, 2)
+    >>> x = theano.tensor.stack([a, b, c], axis=-2)
+    >>> x.ndim
+    5
+    >>> rval = x.eval(dict((t, np.zeros((2, 2, 2, 2))) for t in [a, b, c]))
+    >>> rval.shape # 3 tensors are stacked on axis -2
+    (2, 2, 2, 3, 2)
 
 .. function:: stack(*tensors)
 
-    Return a Tensor representing for the arguments all stacked up into a single Tensor.
-    (of 1 rank greater).
+    .. warning::
+
+        The interface `stack(*tensors)` is deprecated!  Use
+        `stack(tensors, axis=0)` instead.
+
+    Stack tensors in sequence vertically (row wise).
+
+    Take a sequence of tensors and stack them vertically to make a single
+    tensor.
 
     :param tensors: one or more tensors of the same rank
     :returns: A tensor such that rval[0] == tensors[0], rval[1] == tensors[1], etc.
@@ -1075,14 +1111,14 @@ Theano indexing with a "mask" (incorrect approach):
    <BLANKLINE>
           [[3, 4, 5],
            [3, 4, 5],
-           [3, 4, 5]]], dtype=int8)
+           [3, 4, 5]]])
 
 Getting a Theano result like NumPy:
 
 .. doctest:: indexing
 
    >>> t[(t > 4).nonzero()].eval()
-   array([5, 6, 7, 8], dtype=int8)
+   array([5, 6, 7, 8])
 
 The gradient of Advanced indexing needs in many cases NumPy
 1.8. It is not released yet as of April 30th, 2013. You can use NumPy
@@ -1512,10 +1548,15 @@ Linear Algebra
 
 .. function:: dot(X, Y)
 
+     For 2-D arrays it is equivalent to matrix multiplication, and for
+     1-D arrays to inner product of vectors (without complex
+     conjugation). For N dimensions it is a sum product over the last
+     axis of a and the second-to-last of b:
+
     :param X: left term
     :param Y: right term
-    :type X: symbolic matrix or vector
-    :type Y: symbolic matrix or vector
+    :type X: symbolic tensor
+    :type Y: symbolic tensor
     :rtype: symbolic matrix or vector
     :return: the inner product of `X` and `Y`.
 
@@ -1704,13 +1745,13 @@ Linear Algebra
            [1, 1, 1],
            [2, 2, 2],
            [3, 3, 3],
-           [4, 4, 4]], dtype=int8)
+           [4, 4, 4]])
     >>> a[1].eval()
     array([[0, 1, 2],
            [0, 1, 2],
            [0, 1, 2],
            [0, 1, 2],
-           [0, 1, 2]], dtype=int8)
+           [0, 1, 2]])
 
 .. function:: ogrid
 
@@ -1728,9 +1769,9 @@ Linear Algebra
            [1],
            [2],
            [3],
-           [4]], dtype=int8)
+           [4]])
     >>> b[1].eval()
-    array([[0, 1, 2]], dtype=int8)
+    array([[0, 1, 2]])
 
       
 Gradient / Differentiation
@@ -1738,58 +1779,7 @@ Gradient / Differentiation
 
 .. automodule:: theano.gradient
     :members: grad
+    :noindex:
 
 See the :ref:`gradient <libdoc_gradient>` page for complete documentation
 of the gradient module.
-
-.. _R_op_list:
-
-
-List of Implemented R op
-========================
-
-
-See the :ref:`gradient tutorial <tutcomputinggrads>` for the R op documentation.
-
-list of ops that support R-op:
- * with test [Most is tensor/tests/test_rop.py]
-    * SpecifyShape
-    * MaxAndArgmax
-    * Subtensor
-    * IncSubtensor set_subtensor too
-    * Alloc
-    * Dot
-    * Elemwise
-    * Sum
-    * Softmax
-    * Shape
-    * Join
-    * Rebroadcast
-    * Reshape
-    * Flatten
-    * DimShuffle
-    * Scan [In scan_module/tests/test_scan.test_rop]
-
- * without test
-    * Split
-    * ARange
-    * ScalarFromTensor
-    * AdvancedSubtensor1
-    * AdvancedIncSubtensor1
-    * AdvancedIncSubtensor
-
-Partial list of ops without support for R-op:
-
- * All sparse ops
- * All linear algebra ops.
- * PermuteRowElements
- * Tile
- * AdvancedSubtensor
- * TensorDot
- * Outer
- * Prod
- * MulwithoutZeros
- * ProdWithoutZeros
- * CAReduce(for max,... done for MaxAndArgmax op)
- * MaxAndArgmax(only for matrix on axis 0 or 1)
-

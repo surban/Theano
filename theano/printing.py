@@ -22,25 +22,20 @@ from theano.gof import Op, Apply
 from theano.compile import Function, debugmode, SharedVariable
 from theano.compile.profilemode import ProfileMode
 
-# pydot-ng is a fork of pydot that is better maintained, and works
-# with more recent version of its dependencies (in particular pyparsing)
+pydot_imported = False
 try:
+    # pydot-ng is a fork of pydot that is better maintained
     import pydot_ng as pd
     if pd.find_graphviz():
         pydot_imported = True
-    else:
-        pydot_imported = False
-except Exception:
-    # Sometimes, a Windows-specific exception is raised
-    pydot_imported = False
-# Fall back on pydot if necessary
-if not pydot_imported:
+except ImportError:
     try:
+        # fall back on pydot if necessary
         import pydot as pd
         if pd.find_graphviz():
             pydot_imported = True
-    except Exception:
-        pass
+    except ImportError:
+        pass  # tests should not fail on optional dependency
 
 _logger = logging.getLogger("theano.printing")
 VALID_ASSOC = set(['left', 'right', 'either'])
@@ -48,7 +43,7 @@ VALID_ASSOC = set(['left', 'right', 'either'])
 
 def debugprint(obj, depth=-1, print_type=False,
                file=None, ids='CHAR', stop_on_name=False,
-               done=None):
+               done=None, print_storage=False):
     """Print a computation graph as text to stdout or a file.
 
     :type obj: Variable, Apply, or Function instance
@@ -70,6 +65,10 @@ def debugprint(obj, depth=-1, print_type=False,
     :type done: None or dict
     :param done: A dict where we store the ids of printed node.
         Useful to have multiple call to debugprint share the same ids.
+    :type print_storage: bool
+    :param print_storage: If True, this will print the storage map
+        for Theano functions. Combined with allow_gc=False, after the
+        execution of a Theano function, we see the intermediate result.
 
     :returns: string if `file` == 'str', else file arg
 
@@ -101,8 +100,9 @@ def debugprint(obj, depth=-1, print_type=False,
         done = dict()
     results_to_print = []
     profile_list = []
-    order = []
-    if isinstance(obj, (list, tuple)):
+    order = []  # Toposort
+    smap = []  # storage_map
+    if isinstance(obj, (list, tuple, set)):
         lobj = obj
     else:
         lobj = [obj]
@@ -110,23 +110,41 @@ def debugprint(obj, depth=-1, print_type=False,
         if isinstance(obj, gof.Variable):
             results_to_print.append(obj)
             profile_list.append(None)
+            smap.append(None)
+            order.append(None)
         elif isinstance(obj, gof.Apply):
             results_to_print.extend(obj.outputs)
             profile_list.extend([None for item in obj.outputs])
+            smap.extend([None for item in obj.outputs])
+            order.extend([None for item in obj.outputs])
         elif isinstance(obj, Function):
             results_to_print.extend(obj.maker.fgraph.outputs)
             profile_list.extend(
                 [obj.profile for item in obj.maker.fgraph.outputs])
-            order = obj.maker.fgraph.toposort()
+            if print_storage:
+                smap.extend(
+                    [obj.fn.storage_map for item in obj.maker.fgraph.outputs])
+            else:
+                smap.extend(
+                    [None for item in obj.maker.fgraph.outputs])
+            topo = obj.maker.fgraph.toposort()
+            order.extend(
+                [topo for item in obj.maker.fgraph.outputs])
         elif isinstance(obj, gof.FunctionGraph):
             results_to_print.extend(obj.outputs)
-            profile_list.extend([None for item in obj.outputs])
-            order = obj.toposort()
+            profile_list.extend([getattr(obj, 'profile', None)
+                                 for item in obj.outputs])
+            smap.extend([getattr(obj, 'storage_map', None)
+                         for item in obj.outputs])
+            topo = obj.toposort()
+            order.extend([topo for item in obj.outputs])
         elif isinstance(obj, (integer_types, float, np.ndarray)):
             print(obj)
         elif isinstance(obj, (theano.In, theano.Out)):
             results_to_print.append(obj.variable)
             profile_list.append(None)
+            smap.append(None)
+            order.append(None)
         else:
             raise TypeError("debugprint cannot print an object of this type",
                             obj)
@@ -151,16 +169,16 @@ N.B.:
   to remove when optimizing a graph because their <total time> is very low.
 """, file=_file)
 
-    for r, p in zip(results_to_print, profile_list):
+    for r, p, s, o in zip(results_to_print, profile_list, smap, order):
         # Add the parent scan op to the list as well
         if (hasattr(r.owner, 'op') and
                 isinstance(r.owner.op, theano.scan_module.scan_op.Scan)):
                     scan_ops.append(r)
 
         debugmode.debugprint(r, depth=depth, done=done, print_type=print_type,
-                             file=_file, order=order, ids=ids,
+                             file=_file, order=o, ids=ids,
                              scan_ops=scan_ops, stop_on_name=stop_on_name,
-                             profile=p)
+                             profile=p, smap=s)
 
     if len(scan_ops) > 0:
         print("", file=_file)
@@ -710,7 +728,6 @@ def pydotprint(fct, outfile=None,
     if not pydot_imported:
         raise RuntimeError("Failed to import pydot. You must install pydot"
                            " and graphviz for `pydotprint` to work.")
-        return
 
     g = pd.Dot()
 
@@ -842,8 +859,8 @@ def pydotprint(fct, outfile=None,
     # it, we must copy it.
     outputs = list(outputs)
     if isinstance(fct, Function):
-        for i, fg_ii in reversed(zip(fct.maker.expanded_inputs,
-                                     fct.maker.fgraph.inputs)):
+        function_inputs = zip(fct.maker.expanded_inputs, fct.maker.fgraph.inputs)
+        for i, fg_ii in reversed(list(function_inputs)):
             if i.update is not None:
                 k = outputs.pop()
                 # Use the fgaph.inputs as it isn't the same as maker.inputs
@@ -995,7 +1012,11 @@ def pydotprint(fct, outfile=None,
             else:
                 new_name = basename + '_' + str(idx)
             new_name = os.path.join(path, new_name + ext)
-            pydotprint(scan_op.op.fn, new_name, compact, format, with_ids,
+            if hasattr(scan_op.op, 'fn'):
+                to_print = scan_op.op.fn
+            else:
+                to_print = scan_op.op.outputs
+            pydotprint(to_print, new_name, compact, format, with_ids,
                        high_contrast, cond_highlight, colorCodes,
                        max_label_size, scan_graphs)
 
@@ -1006,7 +1027,8 @@ def pydotprint(fct, outfile=None,
             g.write(outfile, prog='dot', format=format)
         except pd.InvocationException:
             # based on https://github.com/Theano/Theano/issues/2988
-            if map(int, pd.__version__.split(".")) < [1, 0, 28]:
+            version = getattr(pd, '__version__', "")
+            if version and [int(n) for n in version.split(".")] < [1, 0, 28]:
                 raise Exception("Old version of pydot detected, which can "
                                 "cause issues with pydot printing. Try "
                                 "upgrading pydot version to a newer one")
@@ -1038,13 +1060,13 @@ def pydotprint_variables(vars,
     if outfile is None:
         outfile = os.path.join(config.compiledir, 'theano.pydotprint.' +
                                config.device + '.' + format)
-    try:
-        import pydot as pd
-    except ImportError:
-        err = ("Failed to import pydot. You must install pydot for " +
-               "`pydotprint_variables` to work.")
-        print(err)
-        return
+    if not pydot_imported:
+        raise RuntimeError("Failed to import pydot. You must install pydot"
+                           " and graphviz for `pydotprint_variables` to work.")
+    if pd.__name__ == "pydot_ng":
+        raise RuntimeError("pydotprint_variables do not support pydot_ng."
+                           "pydotprint_variables is also deprecated, "
+                           "use pydotprint() that support pydot_ng")
     g = pd.Dot()
     my_list = {}
     orphanes = []
@@ -1168,11 +1190,12 @@ def pydotprint_variables(vars,
     except pd.InvocationException as e:
         # Some version of pydot are bugged/don't work correctly with
         # empty label. Provide a better user error message.
-        if pd.__version__ == "1.0.28" and "label=]" in e.message:
+        version = getattr(pd, '__version__', "")
+        if version == "1.0.28" and "label=]" in e.message:
             raise Exception("pydot 1.0.28 is know to be bugged. Use another "
                             "working version of pydot")
         elif "label=]" in e.message:
-            raise Exception("Your version of pydot " + pd.__version__ +
+            raise Exception("Your version of pydot " + version +
                             " returned an error. Version 1.0.28 is known"
                             " to be bugged and 1.0.25 to be working with"
                             " Theano. Using another version of pydot could"

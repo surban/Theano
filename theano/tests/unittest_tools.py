@@ -6,11 +6,19 @@ from six.moves import StringIO
 import sys
 import unittest
 
+try:
+    from nose.plugins.attrib import attr
+except ImportError:
+    # This is an old version of nose
+    def attr(tag):
+        def func(f):
+            return f
+        return func
 import numpy
 
 import theano
 import theano.tensor as T
-from theano.configparser import config, AddConfigVar, StrParam
+from theano.configparser import config
 try:
     from nose.plugins.skip import SkipTest
 except ImportError:
@@ -19,22 +27,6 @@ except ImportError:
         Skip this test
         """
 _logger = logging.getLogger("theano.tests.unittest_tools")
-
-
-def good_seed_param(seed):
-    if seed == "random":
-        return True
-    try:
-        int(seed)
-    except Exception:
-        return False
-    return True
-
-AddConfigVar('unittests.rseed',
-             "Seed to use for randomized unit tests. "
-             "Special value 'random' means using a seed of None.",
-             StrParam(666, is_valid=good_seed_param),
-             in_c_key=False)
 
 
 def fetch_seed(pseed=None):
@@ -227,12 +219,12 @@ class InferShapeTester(unittest.TestCase):
                     shp = inp.shape
                 if len(set(shp)) != len(shp):
                     _logger.warn(
-                        "While testing the shape inference, we received an"
-                        " input with a shape that has some repeated values: %s"
+                        "While testing shape inference for %r, we received an"
+                        " input with a shape that has some repeated values: %r"
                         ", like a square matrix. This makes it impossible to"
                         " check if the values for these dimensions have been"
                         " correctly used, or if they have been mixed up.",
-                        str(inp.shape))
+                        cls, inp.shape)
                     break
 
         outputs_function = theano.function(inputs, outputs, mode=mode)

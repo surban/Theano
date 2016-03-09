@@ -11,35 +11,13 @@ from six import string_types, iteritems, itervalues
 from theano.compile.mode import (Mode, register_mode,
                                  predefined_modes, predefined_linkers,
                                  predefined_optimizers)
-from theano.configparser import config, AddConfigVar, IntParam, BoolParam
+from theano.configparser import config
 from theano.compile.function_module import FunctionMaker
 
 from .profiling import ProfileStats
 
 run_cthunk = None  # Will be imported only when needed.
 import_time = time.time()
-
-
-AddConfigVar('ProfileMode.n_apply_to_print',
-             "Number of apply instances to print by default",
-             IntParam(15, lambda i: i > 0),
-             in_c_key=False)
-
-AddConfigVar('ProfileMode.n_ops_to_print',
-             "Number of ops to print by default",
-             IntParam(20, lambda i: i > 0),
-             in_c_key=False)
-
-AddConfigVar('ProfileMode.min_memory_size',
-             "For the memory profile, do not print apply nodes if the size "
-             "of their outputs (in bytes) is lower then this threshold",
-             IntParam(1024, lambda i: i >= 0),
-             in_c_key=False)
-
-AddConfigVar('ProfileMode.profile_memory',
-             """Enable profiling of memory used by Theano functions""",
-             BoolParam(False),
-             in_c_key=False)
 
 
 class Profile_Maker(FunctionMaker):
@@ -596,7 +574,7 @@ class ProfileMode(Mode):
         if not variable_shape:
             print("\nProfile of Theano intermediate memory disabled. "
                   "To enable, set the Theano flag ProfileMode.profile_memory "
-                  "to True.""")
+                  "to True.")
         else:
             print("""
             The memory profile in ProfileMode is removed!
@@ -718,7 +696,7 @@ Test them first, as they are not guaranteed to always provide a speedup.""")
         if not printed_tip:
             print("  Sorry, no tip for today.")
 
-    def clone(self, link_kwargs=None, message=None):
+    def clone(self, link_kwargs=None, optimizer="", message=None):
         """
         Create a new instance of this Mode.
 
@@ -727,7 +705,9 @@ Test them first, as they are not guaranteed to always provide a speedup.""")
 
         """
         new_linker = self.linker.clone(**link_kwargs)
-        new_optimizer = self.provided_optimizer
+        new_optimizer = optimizer
+        if optimizer == "":
+            new_optimizer = self.provided_optimizer
         new_mode = type(self)(linker=new_linker,
                               optimizer=new_optimizer)
         # If self is in the list or profiles to print, then add the

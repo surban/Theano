@@ -1,8 +1,6 @@
 """
     Tests for block sparse dot
 """
-import unittest
-
 import numpy
 from numpy.random import randn
 
@@ -10,15 +8,12 @@ import theano
 from theano import tensor
 import theano.tests.unittest_tools as utt
 
-from theano.sandbox.blocksparse import sparse_block_dot, \
-    sparse_block_gemv, sparse_block_outer
+from theano.tensor.nnet.blocksparse import (
+    sparse_block_dot, sparse_block_gemv, sparse_block_outer,
+    SparseBlockGemv, SparseBlockOuter)
 
 
-class BlockSparse_Gemv_and_Outer(unittest.TestCase):
-
-    def runTest(self):
-        pass
-
+class BlockSparse_Gemv_and_Outer(utt.InferShapeTester):
     def setUp(self):
         utt.seed_rng()
         mode = None
@@ -29,6 +24,8 @@ class BlockSparse_Gemv_and_Outer(unittest.TestCase):
         )
         self.gemv_op = sparse_block_gemv
         self.outer_op = sparse_block_outer
+        self.gemv_class = SparseBlockGemv
+        self.outer_class = SparseBlockOuter
 
     @staticmethod
     def gemv_data():
@@ -40,14 +37,6 @@ class BlockSparse_Gemv_and_Outer(unittest.TestCase):
         inputWindowSize = 4
         outputWindowSize = 3
         batchSize = 2
-
-#        nInputBlock = 2
-#        nOutputBlock = 2
-#        inputSize = 2
-#        outputSize = 2
-#        inputWindowSize = 1
-#        outputWindowSize = 1
-#        batchSize = 1
 
         input = randn(batchSize, inputWindowSize, inputSize).astype('float32')
         permutation = numpy.random.permutation
@@ -120,30 +109,6 @@ class BlockSparse_Gemv_and_Outer(unittest.TestCase):
             # o[b] += numpy.tensordot(h[b], w, [(0,1),(0,2)])
             o[b] += numpy.einsum('ik,ijkl', h[b], w)
         return o
-
-    @staticmethod
-    def gemv_data2():
-
-        nInputBlock = 100
-        nOutputBlock = 100
-        inputSize = 50
-        outputSize = 50
-        inputWindowSize = 30
-        outputWindowSize = 30
-        batchSize = 1
-
-        input = randn(batchSize, inputWindowSize, inputSize).astype('float32')
-        permutation = numpy.random.permutation
-        inputIndice = numpy.vstack(permutation(nInputBlock)[:inputWindowSize]
-                                   for _ in range(batchSize)).astype('int32')
-        outputIndice = numpy.vstack(
-            permutation(nOutputBlock)[:outputWindowSize]
-            for _ in range(batchSize)).astype('int32')
-        weight = randn(nInputBlock, nOutputBlock,
-                       inputSize, outputSize).astype('float32')
-        bias = randn(nOutputBlock, outputSize).astype('float32')
-
-        return weight, input, inputIndice, bias, outputIndice
 
     @staticmethod
     def outer_numpy(o, x, y, xIdx, yIdx):
@@ -235,12 +200,6 @@ class BlockSparse_Gemv_and_Outer(unittest.TestCase):
         W_val, h_val, iIdx_val, b_val, oIdx_val = \
             BlockSparse_Gemv_and_Outer.gemv_data()
 
-        h_val = randn(1, 1, 1).astype('float32')
-        iIdx_val = numpy.random.permutation(1)[:1][None, :]
-        oIdx_val = numpy.random.permutation(1)[:1][None, :]
-        W_val = randn(1, 1, 1, 1).astype('float32')
-        b_val = randn(1, 1).astype('float32')
-
         iIdx = theano.tensor.constant(iIdx_val)
         oIdx = theano.tensor.constant(oIdx_val)
 
@@ -250,8 +209,9 @@ class BlockSparse_Gemv_and_Outer(unittest.TestCase):
         def op(b, h, W):
             return self.gemv_op(b.take(oIdx, axis=0), W, h, iIdx, oIdx)
 
-        utt.verify_grad(metaop, [b_val, h_val, W_val], mode=self.mode)
-        utt.verify_grad(op, [b_val, h_val, W_val], mode=self.mode)
+        eps = 3e-3
+        utt.verify_grad(metaop, [b_val, h_val, W_val], mode=self.mode, eps=eps)
+        utt.verify_grad(op, [b_val, h_val, W_val], mode=self.mode, eps=eps)
 
     def test_sparseblockgemv_grad_1(self):
         """
@@ -317,3 +277,40 @@ class BlockSparse_Gemv_and_Outer(unittest.TestCase):
             o_val, x_val, y_val, xIdx_val, yIdx_val)
 
         utt.assert_allclose(ref_out, th_out)
+
+    def test_dot_infershape(self):
+        b = tensor.fmatrix()
+        W = tensor.ftensor4()
+        h = tensor.ftensor3()
+        iIdx = tensor.imatrix()
+        oIdx = tensor.imatrix()
+
+        self._compile_and_check([W, h, iIdx, b, oIdx],
+                                [sparse_block_dot(W, h, iIdx, b, oIdx)],
+                                self.gemv_data(),
+                                self.gemv_class)
+
+    def test_gemv_infershape(self):
+        b = tensor.fmatrix()
+        W = tensor.ftensor4()
+        h = tensor.ftensor3()
+        iIdx = tensor.imatrix()
+        oIdx = tensor.imatrix()
+
+        self._compile_and_check(
+            [W, h, iIdx, b, oIdx],
+            [self.gemv_op(b.take(oIdx, axis=0), W, h, iIdx, oIdx)],
+            self.gemv_data(),
+            self.gemv_class)
+
+    def test_outer_infershape(self):
+        o = tensor.ftensor4()
+        x = tensor.ftensor3()
+        y = tensor.ftensor3()
+        xIdx = tensor.imatrix()
+        yIdx = tensor.imatrix()
+
+        self._compile_and_check([o, x, y, xIdx, yIdx],
+                                [self.outer_op(o, x, y, xIdx, yIdx)],
+                                self.outer_data(),
+                                self.outer_class)

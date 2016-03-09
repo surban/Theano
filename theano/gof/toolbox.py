@@ -127,9 +127,12 @@ class GetCheckpoint:
     def __init__(self, history, fgraph):
         self.h = history
         self.fgraph = fgraph
+        self.nb = 0
 
     def __call__(self):
-        return len(self.h.history[self.fgraph])
+        self.h.history[self.fgraph] = []
+        self.nb += 1
+        return self.nb
 
 
 class LambdExtract:
@@ -147,6 +150,13 @@ class LambdExtract:
 
 
 class History(Feature):
+    """Keep an history of changes to an FunctionGraph.
+
+    This history can be reverted up to the last checkpoint.. We can
+    revert to only 1 point in the past. This limit was added to lower
+    the memory usage.
+
+    """
     pickle_rm_attr = ["checkpoint", "revert"]
 
     def __init__(self):
@@ -187,7 +197,8 @@ class History(Feature):
         """
         h = self.history[fgraph]
         self.history[fgraph] = None
-        while len(h) > checkpoint:
+        assert fgraph.checkpoint.nb == checkpoint
+        while h:
             f = h.pop()
             f()
         self.history[fgraph] = h
@@ -262,6 +273,8 @@ class ReplaceValidate(History, Validator):
             if hasattr(fgraph, attr):
                 raise AlreadyThere("ReplaceValidate feature is already present"
                                    " or in conflict with another plugin.")
+        self._nodes_removed = set()
+        self.fail_validate = False
         History.on_attach(self, fgraph)
         Validator.on_attach(self, fgraph)
         self.unpickle(fgraph)
@@ -278,6 +291,7 @@ class ReplaceValidate(History, Validator):
     def on_detach(self, fgraph):
         History.on_detach(self, fgraph)
         Validator.on_detach(self, fgraph)
+        del self._nodes_removed
         del fgraph.replace_validate
         del fgraph.replace_all_validate
         del fgraph.replace_all_validate_remove
@@ -297,7 +311,18 @@ class ReplaceValidate(History, Validator):
                 msg = str(e)
                 s1 = 'The type of the replacement must be the same'
                 s2 = 'does not belong to this FunctionGraph'
-                if (s1 not in msg and s2 not in msg):
+                s3 = 'maximum recursion depth exceeded'
+                if s3 in msg:
+                    # There is nothing safe we can do to recover from this.
+                    # So don't revert as this raise a different error
+                    # that isn't helpful.
+                    e.args += (
+                        "Please, report this to theano-dev mailing list."
+                        " As a temporary work around, you can raise Python"
+                        " stack limit with:"
+                        " import sys; sys.setrecursionlimit(10000)",)
+                    raise
+                elif (s1 not in msg and s2 not in msg):
                     out = sys.stderr
                     print("<<!! BUG IN FGRAPH.REPLACE OR A LISTENER !!>>",
                           type(e), e, reason, file=out)
@@ -314,6 +339,7 @@ class ReplaceValidate(History, Validator):
             raise
         if verbose:
             print(reason, r, new_r)
+        # The return is needed by replace_all_validate_remove
         return chk
 
     def replace_all_validate_remove(self, fgraph, replacements,
@@ -324,6 +350,7 @@ class ReplaceValidate(History, Validator):
 
         """
         chk = fgraph.replace_all_validate(replacements, reason)
+        self._nodes_removed.update(remove)
         for rm in remove:
             if rm in fgraph.apply_nodes or rm in fgraph.variables:
                 fgraph.revert(chk)
@@ -345,6 +372,15 @@ class ReplaceValidate(History, Validator):
         if "history" in d:
             del d["history"]
         return d
+
+    def on_import(self, fgraph, node, reason):
+        if node in self._nodes_removed:
+            self.fail_validate = True
+
+    def validate(self, fgraph):
+        if self.fail_validate:
+            self.fail_validate = False
+            raise theano.gof.InconsistencyError("Trying to reintroduce a removed node")
 
 
 class NodeFinder(Bookkeeper):
@@ -432,18 +468,44 @@ class PrintListener(Feature):
 
 
 class PreserveNames(Feature):
+    """
+    This preserve some variables names during optimization.
+
+    Deprecated. We need to keep it to allow unpickling.
+    """
 
     def on_change_input(self, fgraph, node, i, r, new_r, reason=None):
         if r.name is not None and new_r.name is None:
             new_r.name = r.name
 
 
+class PreserveVariableAttributes(Feature):
+    """
+    This preserve some variables attributes and tag during optimization.
+    """
+
+    def on_change_input(self, fgraph, node, i, r, new_r, reason=None):
+        if r.name is not None and new_r.name is None:
+            new_r.name = r.name
+        if getattr(r.tag, 'nan_guard_mode_check', False) and getattr(
+                new_r.tag, 'nan_guard_mode_check', False) is False:
+            new_r.tag.nan_guard_mode_check = r.tag.nan_guard_mode_check
+
+
 class NoOutputFromInplace(Feature):
+
+    def __init__(self, first_output_idx=0, last_output_idx=None):
+        self.first_idx = first_output_idx
+        self.last_idx = last_output_idx
 
     def validate(self, fgraph):
         if not hasattr(fgraph, 'destroyers'):
             return True
-        for out in list(fgraph.outputs):
+
+        outputs_to_validate = list(fgraph.outputs)[self.first_idx:
+                                                   self.last_idx]
+
+        for out in outputs_to_validate:
 
             if out.owner is None:
                 continue

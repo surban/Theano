@@ -18,9 +18,9 @@ def replace_patterns(x, replace):
 
     Parameters
     ----------
-    s: str
+    s : str
         String on which function is applied
-    replace: dict
+    replace : dict
         `key`, `value` pairs where key is a regular expression and `value` a
         string by which `key` is replaced
     """
@@ -34,7 +34,7 @@ def escape_quotes(s):
 
     Parameters
     ----------
-    s: str
+    s : str
         String on which function is applied
     """
     s = re.sub(r'''(['"])''', r'\\\1', s)
@@ -66,27 +66,28 @@ def d3viz(fct, outfile, copy_deps=True, *args, **kwargs):
         Path to output HTML file.
     copy_deps : bool, optional
         Copy javascript and CSS dependencies to output directory.
-    *args : tuple, optional
-        Arguments passed to PyDotFormatter.
-    *kwargs : dict, optional
-        Arguments passed to PyDotFormatter.
+
+    Notes
+    -----
+    This function accepts extra parameters which will be forwarded to
+    :class:`theano.d3viz.formatting.PyDotFormatter`.
+
     """
 
     # Create DOT graph
     formatter = PyDotFormatter(*args, **kwargs)
     graph = formatter(fct)
-    dot_graph = escape_quotes(graph.create_dot()).replace('\n', '')
+    dot_graph = escape_quotes(str(graph.create_dot())).replace('\n', '').replace('\r', '')
 
     # Create output directory if not existing
     outdir = os.path.dirname(outfile)
-    if not os.path.exists(outdir):
+    if not outdir == '' and not os.path.exists(outdir):
         os.makedirs(outdir)
 
     # Read template HTML file
     template_file = os.path.join(__path__, 'html', 'template.html')
-    f = open(template_file)
-    template = f.read()
-    f.close()
+    with open(template_file) as f:
+        template = f.read()
 
     # Copy dependencies to output directory
     src_deps = __path__
@@ -103,7 +104,7 @@ def d3viz(fct, outfile, copy_deps=True, *args, **kwargs):
     replace = {
         '%% JS_DIR %%': os.path.join(dst_deps, 'js'),
         '%% CSS_DIR %%': os.path.join(dst_deps, 'css'),
-        '%% DOT_GRAPH %%': os.path.basename(dot_graph),
+        '%% DOT_GRAPH %%': dot_graph,
     }
     html = replace_patterns(template, replace)
 
@@ -121,10 +122,12 @@ def d3write(fct, path, *args, **kwargs):
         A compiled Theano function, variable, apply or a list of variables.
     path: str
         Path to output file
-    *args : tuple, optional
-        Arguments passed to PyDotFormatter.
-    *kwargs : dict, optional
-        Arguments passed to PyDotFormatter.
+
+    Notes
+    -----
+    This function accepts extra parameters which will be forwarded to
+    :class:`theano.d3viz.formatting.PyDotFormatter`.
+
     """
 
     formatter = PyDotFormatter(*args, **kwargs)

@@ -14,7 +14,7 @@ except ImportError:
     flake8_available = False
 
 __authors__ = ("Saizheng Zhang")
-__copyright__ = "(c) 2015, Universite de Montreal"
+__copyright__ = "(c) 2016, Universite de Montreal"
 __contact__ = "Saizheng Zhang <saizhenglisa..at..gmail.com>"
 
 # We ignore:
@@ -51,13 +51,7 @@ whitelist_flake8 = [
     "compile/tests/test_pfunc.py",
     "compile/tests/test_debugmode.py",
     "compile/tests/test_profiling.py",
-    "typed_list/type.py",
     "typed_list/__init__.py",
-    "typed_list/opt.py",
-    "typed_list/basic.py",
-    "typed_list/tests/test_type.py",
-    "typed_list/tests/test_opt.py",
-    "typed_list/tests/test_basic.py",
     "tensor/__init__.py",
     "tensor/tests/test_subtensor.py",
     "tensor/tests/test_utils.py",
@@ -85,7 +79,6 @@ whitelist_flake8 = [
     "tensor/tests/test_blas_c.py",
     "tensor/tests/test_blas_scipy.py",
     "tensor/tests/test_mpi.py",
-    "tensor/signal/downsample.py",
     "tensor/signal/conv.py",
     "tensor/signal/tests/test_conv.py",
     "tensor/signal/tests/test_downsample.py",
@@ -99,20 +92,10 @@ whitelist_flake8 = [
     "tensor/nnet/tests/test_sigm.py",
     "scalar/__init__.py",
     "scalar/tests/test_basic.py",
-    "sandbox/__init__.py",
-    "sandbox/rng_mrg.py",
-    "sandbox/theano_object.py",
-    "sandbox/scan.py",
-    "sandbox/symbolic_module.py",
-    "sandbox/conv.py",
-    "sandbox/debug.py",
     "sandbox/tests/test_theano_object.py",
     "sandbox/tests/test_scan.py",
-    "sandbox/tests/test_rng_mrg.py",
     "sandbox/tests/test_neighbourhoods.py",
-    "sandbox/tests/test_multinomial.py",
     "sandbox/tests/__init__.py",
-    "sandbox/cuda/dnn.py",
     "sandbox/cuda/var.py",
     "sandbox/cuda/GpuConvGrad3D.py",
     "sandbox/cuda/basic_ops.py",
@@ -157,39 +140,15 @@ whitelist_flake8 = [
     "sandbox/linalg/ops.py",
     "sandbox/linalg/__init__.py",
     "sandbox/linalg/tests/test_linalg.py",
-    "sandbox/gpuarray/basic_ops.py",
-    "sandbox/gpuarray/nnet.py",
-    "sandbox/gpuarray/elemwise.py",
-    "sandbox/gpuarray/type.py",
     "sandbox/gpuarray/__init__.py",
-    "sandbox/gpuarray/kernel_codegen.py",
-    "sandbox/gpuarray/conv.py",
-    "sandbox/gpuarray/neighbours.py",
-    "sandbox/gpuarray/tests/test_subtensor.py",
-    "sandbox/gpuarray/tests/test_scan.py",
-    "sandbox/gpuarray/tests/test_neighbours.py",
-    "sandbox/gpuarray/tests/test_conv_cuda_ndarray.py",
-    "sandbox/gpuarray/tests/test_type.py",
-    "sandbox/gpuarray/tests/test_opt.py",
-    "sandbox/gpuarray/tests/test_blas.py",
-    "sandbox/gpuarray/tests/test_elemwise.py",
-    "sandbox/gpuarray/tests/test_nnet.py",
-    "sandbox/gpuarray/tests/test_basic_ops.py",
     "scan_module/scan_utils.py",
     "scan_module/scan_views.py",
     "scan_module/scan.py",
     "scan_module/scan_op.py",
     "scan_module/scan_perform_ext.py",
     "scan_module/__init__.py",
-    "scan_module/scan_opt.py",
     "scan_module/tests/test_scan.py",
     "scan_module/tests/test_scan_opt.py",
-    "misc/tests/test_may_share_memory.py",
-    "misc/tests/test_pycuda_theano_simple.py",
-    "misc/tests/test_gnumpy_utils.py",
-    "misc/tests/test_pycuda_utils.py",
-    "misc/tests/test_cudamat_utils.py",
-    "misc/tests/test_pycuda_example.py",
     "misc/hooks/reindent.py",
     "misc/hooks/check_whitespace.py",
     "sparse/__init__.py",
@@ -204,13 +163,11 @@ whitelist_flake8 = [
     "gof/unify.py",
     "gof/__init__.py",
     "gof/sandbox/equilibrium.py",
-    "d3viz/__init__.py",
-    "d3viz/tests/test_d3viz.py",
-    "d3viz/tests/test_formatting.py"
+    "d3viz/__init__.py"
 ]
 
 
-def list_files(dir_path=theano.__path__[0], pattern='*.py'):
+def list_files(dir_path=theano.__path__[0], pattern='*.py', no_match=".#"):
     """
     List all files under theano's path.
     """
@@ -219,7 +176,8 @@ def list_files(dir_path=theano.__path__[0], pattern='*.py'):
         for f in files:
             if fnmatch(f, pattern):
                 path = os.path.join(dir, f)
-                files_list.append(path)
+                if not f.startswith(no_match):
+                    files_list.append(path)
     return files_list
 
 
@@ -275,17 +233,16 @@ def check_all_files(dir_path=theano.__path__[0], pattern='*.py'):
     the "whitelist_flake8" in this file.
     """
 
-    f_txt = open('theano_filelist.txt', 'a')
-    for (dir, _, files) in os.walk(dir_path):
-        for f in files:
-            if fnmatch(f, pattern):
-                error_num = flake8.main.check_file(os.path.join(dir, f),
-                                                   ignore=ignore)
-                if error_num > 0:
-                    path = os.path.relpath(os.path.join(dir, f),
-                                           theano.__path__[0])
-                    f_txt.write('"' + path + '",\n')
-    f_txt.close()
+    with open('theano_filelist.txt', 'a') as f_txt:
+        for (dir, _, files) in os.walk(dir_path):
+            for f in files:
+                if fnmatch(f, pattern):
+                    error_num = flake8.main.check_file(os.path.join(dir, f),
+                                                       ignore=ignore)
+                    if error_num > 0:
+                        path = os.path.relpath(os.path.join(dir, f),
+                                               theano.__path__[0])
+                        f_txt.write('"' + path + '",\n')
 
 
 if __name__ == "__main__":

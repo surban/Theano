@@ -17,14 +17,12 @@ from theano.compat import izip
 import numpy
 
 import theano
-from theano import gof
+from theano import gof, config
 from theano.compat import get_unbound_function
-from six import string_types, iteritems, itervalues
+from six import iteritems, itervalues
 from six.moves import StringIO, xrange
 from theano.gof import (graph, utils, link, ops_with_inner_function)
 from theano.gof.link import raise_with_op
-from theano.configparser import (config, AddConfigVar, BoolParam, IntParam,
-                                 StrParam)
 from theano.compile.function_module import (
     FunctionMaker, Function, infer_reuse_pattern,
     SymbolicInputKit, SymbolicOutput, Supervisor, std_fgraph)
@@ -32,72 +30,6 @@ from theano.compile.mode import Mode, register_mode
 from theano.compile.ops import OutputGuard
 
 __docformat__ = "restructuredtext en"
-
-AddConfigVar('DebugMode.patience',
-             "Optimize graph this many times to detect inconsistency",
-             IntParam(10, lambda i: i > 0),
-             in_c_key=False)
-
-AddConfigVar('DebugMode.check_c',
-             "Run C implementations where possible",
-             BoolParam(bool(theano.config.cxx)),
-             in_c_key=False)
-
-AddConfigVar('DebugMode.check_py',
-             "Run Python implementations where possible",
-             BoolParam(True),
-             in_c_key=False)
-
-AddConfigVar('DebugMode.check_finite',
-             "True -> complain about NaN/Inf results",
-             BoolParam(True),
-             in_c_key=False)
-
-AddConfigVar('DebugMode.check_strides',
-             ("Check that Python- and C-produced ndarrays have same strides. "
-              "On difference: (0) - ignore, (1) warn, or (2) raise error"),
-             IntParam(0, lambda i: i in (0, 1, 2)),
-             in_c_key=False)
-
-AddConfigVar('DebugMode.warn_input_not_reused',
-             ("Generate a warning when destroy_map or view_map says that an "
-              "op works inplace, but the op did not reuse the input for its "
-              "output."),
-             BoolParam(True),
-             in_c_key=False)
-
-
-def is_valid_check_preallocated_output_param(param):
-    if not isinstance(param, string_types):
-        return False
-    valid = ["initial", "previous", "c_contiguous", "f_contiguous",
-             "strided", "wrong_size", "ALL", ""]
-    for p in param.split(":"):
-        if p not in valid:
-            return False
-    return True
-
-AddConfigVar('DebugMode.check_preallocated_output',
-             ('Test thunks with pre-allocated memory as output storage. '
-              'This is a list of strings separated by ":". Valid values are: '
-              '"initial" (initial storage in storage map, happens with Scan),'
-              '"previous" (previously-returned memory), '
-              '"c_contiguous", "f_contiguous", '
-              '"strided" (positive and negative strides), '
-              '"wrong_size" (larger and smaller dimensions), and '
-              '"ALL" (all of the above).'),
-             StrParam('', is_valid=is_valid_check_preallocated_output_param),
-             in_c_key=False)
-
-AddConfigVar('DebugMode.check_preallocated_output_ndim',
-             ('When testing with "strided" preallocated output memory, '
-              'test all combinations of strides over that number of '
-              '(inner-most) dimensions. You may want to reduce that number '
-              'to reduce memory or time usage, but it is advised to keep a '
-              'minimum of 2.'),
-             IntParam(4, lambda i: i > 0),
-             in_c_key=False)
-
 _logger = logging.getLogger("theano.compile.debugmode")
 
 
@@ -580,7 +512,7 @@ def debugprint(r, prefix='', depth=-1, done=None, print_type=False,
                print_view_map=False, order=None, ids='CHAR',
                stop_on_name=False, prefix_child=None,
                scan_ops=None, profile=None,
-               scan_inner_to_outer_inputs=None):
+               scan_inner_to_outer_inputs=None, smap=None):
     """
     Print the graph leading to `r` to given depth.
 
@@ -620,7 +552,8 @@ def debugprint(r, prefix='', depth=-1, done=None, print_type=False,
     scan_inner_to_outer_inputs
         A dictionary mapping a scan ops inner function inputs to the scan op
         inputs (outer inputs) for printing purposes.
-
+    smap
+        None or the storage_map when printing an Theano function.
     """
     if depth == 0:
         return
@@ -646,11 +579,11 @@ def debugprint(r, prefix='', depth=-1, done=None, print_type=False,
         if obj in done:
             id_str = done[obj]
         elif ids == "id":
-            id_str = "[@%s]" % str(id(r))
+            id_str = "[id %s]" % str(id(r))
         elif ids == "int":
-            id_str = "[@%s]" % str(len(done))
+            id_str = "[id %s]" % str(len(done))
         elif ids == "CHAR":
-            id_str = "[@%s]" % char_from_number(len(done))
+            id_str = "[id %s]" % char_from_number(len(done))
         elif ids == "":
             id_str = ""
         done[obj] = id_str
@@ -689,23 +622,21 @@ def debugprint(r, prefix='', depth=-1, done=None, print_type=False,
         already_printed = a in done  # get_id_str put it in the dict
         id_str = get_id_str(a)
 
+        if len(a.outputs) == 1:
+            idx = ""
+        else:
+            idx = ".%i" % a.outputs.index(r)
+        data = ""
+        if smap:
+            data = " " + str(smap.get(a.outputs[0], ''))
         if profile is None or a not in profile.apply_time:
-            if len(a.outputs) == 1:
-                print('%s%s %s%s \'%s\' %s %s %s' % (prefix, a.op,
-                                                     id_str,
-                                                     type_str,
+            print('%s%s%s %s%s \'%s\' %s %s %s%s' % (prefix, a.op,
+                                                     idx,
+                                                     id_str, type_str,
                                                      r_name,
                                                      destroy_map_str,
                                                      view_map_str,
-                                                     o), file=file)
-            else:
-                print('%s%s.%i %s%s \'%s\' %s %s %s' % (prefix, a.op,
-                                                        a.outputs.index(r),
-                                                        id_str, type_str,
-                                                        r_name,
-                                                        destroy_map_str,
-                                                        view_map_str,
-                                                        o), file=file)
+                                                     o, data), file=file)
         else:
             op_time = profile.apply_time[a]
             op_time_percent = (op_time / profile.fct_call_time) * 100
@@ -714,31 +645,22 @@ def debugprint(r, prefix='', depth=-1, done=None, print_type=False,
             tot_time_percent = (tot_time_dict[a] / profile.fct_call_time) * 100
 
             if len(a.outputs) == 1:
-                print("%s%s %s%s '%s' %s %s %s --> "
-                      "%8.2es %4.1f%% %8.2es %4.1f%%"
-                      % (prefix, a.op,
-                         id_str,
-                         type_str,
-                         r_name,
-                         destroy_map_str,
-                         view_map_str,
-                         o, op_time,
-                         op_time_percent,
-                         tot_time,
-                         tot_time_percent), file=file)
+                idx = ""
             else:
-                print("%s%s.%i %s%s '%s' %s %s %s --> "
-                      "%8.2es %4.1f%% %8.2es %4.1f%%"
-                      % (prefix, a.op,
-                         a.outputs.index(r),
-                         id_str, type_str,
-                         r_name,
-                         destroy_map_str,
-                         view_map_str,
-                         o, op_time,
-                         op_time_percent,
-                         tot_time,
-                         tot_time_percent), file=file)
+                idx = ".%i" % a.outputs.index(r)
+            print("%s%s%s %s%s '%s' %s %s %s%s --> "
+                  "%8.2es %4.1f%% %8.2es %4.1f%%"
+                  % (prefix, a.op,
+                     idx,
+                     id_str, type_str,
+                     r_name,
+                     destroy_map_str,
+                     view_map_str,
+                     o, data,
+                     op_time,
+                     op_time_percent,
+                     tot_time,
+                     tot_time_percent), file=file)
 
         if not already_printed:
             if (not stop_on_name or
@@ -761,7 +683,8 @@ def debugprint(r, prefix='', depth=-1, done=None, print_type=False,
                         ids=ids, stop_on_name=stop_on_name,
                         prefix_child=new_prefix_child, scan_ops=scan_ops,
                         profile=profile,
-                        scan_inner_to_outer_inputs=scan_inner_to_outer_inputs)
+                        scan_inner_to_outer_inputs=scan_inner_to_outer_inputs,
+                        smap=smap)
     else:
         if scan_inner_to_outer_inputs is not None and\
            r in scan_inner_to_outer_inputs:
@@ -777,8 +700,13 @@ def debugprint(r, prefix='', depth=-1, done=None, print_type=False,
                                        outer_id_str), file=file)
         else:
             # this is an input variable
+            data = ""
+            if smap:
+                data = " " + str(smap.get(r, ''))
             id_str = get_id_str(r)
-            print('%s%s %s%s' % (prefix, r, id_str, type_str), file=file)
+            print('%s%s %s%s%s' % (prefix, r, id_str,
+                                   type_str, data),
+                  file=file)
 
     return file
 
@@ -1788,8 +1716,7 @@ class _VariableEquivalenceTracker(object):
 # List of default version of make thunk.
 # This is needed to know if the user overrided it.
 # The GpuOp will be added here when theano.sandbox.cuda is imported.
-default_make_thunk = [get_unbound_function(theano.gof.Op.make_thunk),
-                      get_unbound_function(theano.gof.OpenMPOp.make_thunk)]
+default_make_thunk = [get_unbound_function(theano.gof.Op.make_thunk)]
 
 
 # Debug mode cheats and initializes the linker in a different way in
@@ -1883,9 +1810,15 @@ class _Linker(gof.link.LocalLinker):
                 thunk.inputs = [storage_map[v] for v in node.inputs]
                 thunk.outputs = [storage_map[v] for v in node.outputs]
                 thunk_other = thunk
+            else:
+                new_node = node.op.prepare_node(node, storage_map, compute_map)
+                if new_node is not None:
+                    node = new_node
+
+            debug = hasattr(node.op, 'debug_perform')
 
             try:
-                if not self.maker.mode.check_c_code:
+                if not self.maker.mode.check_c_code or debug:
                     raise utils.MethodNotDefined()
                 # Ops that do not inherit from gof.op.Op don't have certain
                 # methods defined that the CLinker expects (Scan is an
@@ -1903,18 +1836,18 @@ class _Linker(gof.link.LocalLinker):
             # Pure ops don't really have a perform ( or their perform just
             # raises an not implemented exception), so in those cases we
             # consider that we don't have a python implementation
-            if (self.maker.mode.check_py_code or thunks_c[-1] is None) and \
-               node.op.perform.__code__ != gof.op.PureOp.perform.__code__:
+            if (((self.maker.mode.check_py_code or thunks_c[-1] is None) and
+                 node.op.perform.__code__ != gof.op.PureOp.perform.__code__) or
+                    debug):
                 thunk = node.op.make_py_thunk(node, storage_map, compute_map,
-                                              no_recycling)
+                                              no_recycling, debug=debug)
                 thunks_py.append(thunk)
             else:
                 thunks_py.append(None)
 
             if not self.maker.mode.check_c_code and thunks_py[-1] is None:
-                _logger.warn(
-                    "Op %s don't have a perform, forcing check of the c code" %
-                    node.op)
+                _logger.warn("Op %s doesn't have a perform, "
+                             "forcing check of the C code" % node.op)
                 thunk = node.op.make_c_thunk(node, storage_map, compute_map,
                                              no_recycling)
                 thunks_c[-1] = thunk
@@ -1943,10 +1876,7 @@ class _Linker(gof.link.LocalLinker):
                                 if r not in fgraph.inputs]
 
         # Precompute some things for storage pre-allocation
-        try:
-            def_val = int(config.unittests.rseed)
-        except ValueError:
-            def_val = 666
+        def_val = int(config.unittests.rseed)
 
         #####
         # This is the function that runs when you evaluate the graph
@@ -2050,10 +1980,11 @@ class _Linker(gof.link.LocalLinker):
                                       "output storage", i)
                         try:
                             thunk_py()
-                        except utils.MethodNotDefined:
+                        except (utils.MethodNotDefined, NotImplementedError):
                             # shouldn't have put it into the list in
                             # the first place
                             thunk_py = None
+                            thunks_py[i] = None
                         except Exception as e:
                             # I think that only 1 optimization can
                             # insert a given apply node. If that is not True,
@@ -2259,8 +2190,8 @@ class _Linker(gof.link.LocalLinker):
                     for r in node.outputs:
                         if r not in r_vals:
                             idx = order.index(node)
-                            assert thunks_py[idx] is None
-                            assert thunks_c[idx] is None
+                            assert thunks_py[idx] is None, node
+                            assert thunks_c[idx] is None, node
                             raise Exception("No code run for %s" % node)
 
                 if False:
@@ -2403,13 +2334,15 @@ class _Maker(FunctionMaker):  # inheritance buys a few helper functions
 
     """
 
-    def __init__(self, inputs, outputs, optimizer, mode,
+    def __init__(self, inputs, outputs, mode,
                  accept_inplace=False,
                  function_builder=Function,
                  profile=None,
                  on_unused_input=None,
+                 fgraph=None,  # If present the optimized graph. we ignore it.
                  output_keys=None):
         self.profile = profile
+        optimizer = mode.optimizer
         # Handle the case where inputs and/or outputs is a single
         # Variable (not in a list)
         unpack_single = False
@@ -2523,6 +2456,7 @@ class _Maker(FunctionMaker):  # inheritance buys a few helper functions
         self.accept_inplace = accept_inplace
         self.function_builder = function_builder
         self.mode = mode
+        self.on_unused_input = on_unused_input  # Used for the pickling/copy
         self.output_keys = output_keys
 
     def create(self, defaults=None, trustme=False, storage_map=None):
@@ -2744,7 +2678,7 @@ class DebugMode(Mode):
 
         """
         assert m is self
-        return _Maker(i, o, self.optimizer, self, *args, **kwargs)
+        return _Maker(i, o, self, *args, **kwargs)
 
     def __init__(self,
                  optimizer='fast_run',

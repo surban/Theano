@@ -12,6 +12,7 @@ from copy import copy
 from itertools import count
 
 import theano
+from theano import config
 from theano.gof import utils
 from six import string_types, integer_types, iteritems
 from theano.misc.ordered_set import OrderedSet
@@ -22,7 +23,7 @@ __docformat__ = "restructuredtext en"
 is_same_graph_with_merge = None
 equal_computations = None
 
-NoContext = object()
+NoParams = object()
 
 
 class Node(utils.object2):
@@ -123,14 +124,24 @@ class Apply(Node):
             else:
                 raise TypeError("The 'outputs' argument to Apply must contain Variable instances with no owner, not %s" % output)
 
-    def run_context(self):
+    def run_params(self):
         """
-        Returns the context for the node, or NoContext if no context is set.
+        Returns the params for the node, or NoParams if no params is set.
 
         """
-        if hasattr(self.op, 'get_context'):
-            return self.op.get_context(self)
-        return NoContext
+        if hasattr(self.op, 'get_params'):
+            return self.op.get_params(self)
+        return NoParams
+
+    def __getstate__(self):
+        d = self.__dict__
+        # ufunc don't pickle/unpickle well
+        if hasattr(self.tag, 'ufunc'):
+            d = copy(self.__dict__)
+            t = d["tag"]
+            del t.ufunc
+            d["tag"] = t
+        return d
 
     def default_output(self):
         """
@@ -253,7 +264,7 @@ class Apply(Node):
     Property: Number of outputs.
 
     """
-    context_type = property(lambda self: self.op.context_type, doc='type to use for the context')
+    params_type = property(lambda self: self.op.params_type, doc='type to use for the params')
 
 
 class Variable(Node):
@@ -381,8 +392,7 @@ class Variable(Node):
         self.auto_name = 'auto_' + str(next(self.__count__))
 
     def __str__(self):
-        """
-        WRITEME
+        """Return a str representation of the Variable.
 
         """
         if self.name is not None:
@@ -396,8 +406,29 @@ class Variable(Node):
         else:
             return "<%s>" % str(self.type)
 
-    def __repr__(self):
-        return str(self)
+    def __repr_test_value__(self):
+        """Return a repr of the test value.
+
+        Return a printable representation of the test value. It can be
+        overridden by classes with non printable test_value to provide a
+        suitable representation of the test_value.
+        """
+        return repr(theano.gof.op.get_test_value(self))
+
+    def __repr__(self, firstPass=True):
+        """Return a repr of the Variable.
+
+        Return a printable name or description of the Variable. If
+        config.print_test_value is True it will also print the test_value if
+        any.
+        """
+        to_print = [str(self)]
+        if config.print_test_value and firstPass:
+            try:
+                to_print.append(self.__repr_test_value__())
+            except AttributeError:
+                pass
+        return '\n'.join(to_print)
 
     def clone(self):
         """
@@ -451,6 +482,31 @@ class Variable(Node):
         inputs_to_values
             A dictionary mapping theano Variables to values.
 
+        Examples
+        --------
+
+        >>> import numpy
+        >>> import theano.tensor as T
+        >>> x = T.dscalar('x')
+        >>> y = T.dscalar('y')
+        >>> z = x + y
+        >>> numpy.allclose(z.eval({x : 16.3, y : 12.1}), 28.4)
+        True
+
+        We passed :func:`eval` a dictionary mapping symbolic theano
+        variables to the values to substitute for them, and it returned
+        the numerical value of the expression.
+
+        Notes
+        -----
+
+        `eval` will be slow the first time you call it on a variable --
+        it needs to call :func:`function` to compile the expression behind
+        the scenes. Subsequent calls to :func:`eval` on that same variable
+        will be fast, because the variable caches the compiled function.
+
+        This way of computing has more overhead than a normal Theano
+        function, so don't use it too much in real scripts.
         """
 
         if inputs_to_values is None:
@@ -512,7 +568,7 @@ class Constant(Variable):
         else:
             name = str(self.data)
             if len(name) > 20:
-                name = name[:10] + '...' + name[-10]
+                name = name[:10] + '...' + name[-10:]
             return 'Constant{%s}' % name
 
     def clone(self):
@@ -817,7 +873,8 @@ def clone_get_equiv(inputs, outputs, copy_inputs_and_orphans=True, memo=None):
 
 
 def general_toposort(r_out, deps, debug_print=False,
-                     compute_deps_cache=None, deps_cache=None):
+                     compute_deps_cache=None, deps_cache=None,
+                     clients=None):
     """
     WRITEME
 
@@ -830,6 +887,9 @@ def general_toposort(r_out, deps, debug_print=False,
         deps, but that also cache its results in a dict passed as deps_cache.
     deps_cache : dict
         Must be used with compute_deps_cache.
+    clients : dict
+        If a dict is passed it will be filled with a mapping of node
+        -> clients for each node in the subgraph.
 
     Notes
     -----
@@ -868,8 +928,10 @@ def general_toposort(r_out, deps, debug_print=False,
 
     assert isinstance(r_out, (tuple, list, deque))
 
-    reachable, clients = stack_search(deque(r_out), compute_deps_cache,
-                                      'dfs', True)
+    reachable, _clients = stack_search(deque(r_out), compute_deps_cache,
+                                       'dfs', True)
+    if clients is not None:
+        clients.update(_clients)
     sources = deque([r for r in reachable if not deps_cache.get(r, None)])
 
     rset = set()
@@ -879,7 +941,7 @@ def general_toposort(r_out, deps, debug_print=False,
         if node not in rset:
             rlist.append(node)
             rset.add(node)
-            for client in clients.get(node, []):
+            for client in _clients.get(node, []):
                 deps_cache[client] = [a for a in deps_cache[client]
                                       if a is not node]
                 if not deps_cache[client]:
@@ -895,7 +957,7 @@ def general_toposort(r_out, deps, debug_print=False,
     return rlist
 
 
-def io_toposort(inputs, outputs, orderings=None):
+def io_toposort(inputs, outputs, orderings=None, clients=None):
     """
     WRITEME
 
@@ -903,10 +965,13 @@ def io_toposort(inputs, outputs, orderings=None):
     ----------
     inputs : list or tuple of Variable instances
     outputs : list or tuple of Apply instances
-    orderings: dict
+    orderings : dict
         Key: Apply instance. Value: list of Apply instance.
         It is important that the value be a container with a deterministic
         iteration order. No sets allowed!
+    clients : dict
+        If a dict is provided it will be filled with mappings of
+        node->clients for each node in the subgraph that is sorted
 
     """
     # the inputs are used only here in the function that decides what 'predecessors' to explore
@@ -957,7 +1022,7 @@ def io_toposort(inputs, outputs, orderings=None):
 
     topo = general_toposort(outputs, deps=compute_deps,
                             compute_deps_cache=compute_deps_cache,
-                            deps_cache=deps_cache)
+                            deps_cache=deps_cache, clients=clients)
     return [o for o in topo if isinstance(o, Apply)]
 
 

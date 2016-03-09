@@ -2,8 +2,11 @@
 Provide a simple user friendly API.
 
 """
-from theano import config
+import warnings
+
 from six import iteritems
+
+from theano import config
 from theano.compile import orig_function, In, Out
 from theano.compile import UnusedInputError
 from theano.compile.sharedvalue import SharedVariable, shared
@@ -83,7 +86,16 @@ def rebuild_collect_shared(outputs,
         if v in clone_d:
             return clone_d[v]
         if v.owner:
-            clone_a(v.owner, copy_inputs_over)
+            owner = v.owner
+            if owner not in clone_d:
+                for i in owner.inputs:
+                    clone_v_get_shared_updates(i, copy_inputs_over)
+
+                clone_d[owner] = owner.clone_with_new_inputs(
+                    [clone_d[i] for i in owner.inputs], strict=rebuild_strict)
+                for old_o, new_o in zip(owner.outputs, clone_d[owner].outputs):
+                    clone_d.setdefault(old_o, new_o)
+
             return clone_d.setdefault(v, v)
         elif isinstance(v, SharedVariable):
             if v not in shared_inputs:
@@ -113,25 +125,6 @@ def rebuild_collect_shared(outputs,
             return clone_d.setdefault(v, v.clone())
         else:
             return clone_d.setdefault(v, v)
-
-    def clone_a(a, copy_inputs_over):
-        """
-        Clones a variable and its inputs recursively until all are in
-        clone_d. It occures with clone_v_get_shared_updates.
-
-        """
-        if a is None:
-            return None
-        if a not in clone_d:
-            for i in a.inputs:
-                clone_v_get_shared_updates(i, copy_inputs_over)
-
-            clone_d[a] = a.clone_with_new_inputs([clone_d[i] for i in
-                                                  a.inputs],
-                                                 strict=rebuild_strict)
-            for old_o, new_o in zip(a.outputs, clone_d[a].outputs):
-                clone_d.setdefault(old_o, new_o)
-        return clone_d[a]
 
     # intialize the clone_d mapping with the replace dictionary
     if replace is None:
@@ -205,7 +198,7 @@ def rebuild_collect_shared(outputs,
                            store_into,
                            store_into.type,
                            update_val,
-                           update_val.type))
+                           getattr(update_val, 'type', None)))
             err_sug = ('If the difference is related to the broadcast pattern,'
                        ' you can call the'
                        ' tensor.unbroadcast(var, axis_to_unbroadcast[, ...])'
@@ -271,69 +264,19 @@ def rebuild_collect_shared(outputs,
             [clone_d, update_d, update_expr, shared_inputs])
 
 
-class Param(object):
-    """
-
-    Parameters
-    ----------
-    variable
-        A variable in an expression graph to use as a compiled-function
-        parameter.
-    default
-        The default value to use at call-time (can also be a Container where
-        the function will find a value at call-time).
-    name : str
-        A string to identify this parameter from function kwargs.
-    mutable : bool
-        True : function is allowed to modify this argument.
-    borrow
-        Whether the function is allowed to alias some output to this input.
-        Using None (default) means we re-use the same value as the `mutable`
-        flag. False: do not permit any output to be aliased to the input.
-    strict : bool
-        False : function arguments may be copied or cast to match the type
-        required by the parameter `variable`.
-        True : function arguments must exactly match the type required by
-        `variable`.
-    allow_downcast : bool or None
-        Only applies if `strict` is False.
-        True : allow assigned value to lose precision when cast during
-        assignment.
-        False : never allow precision loss.
-        None : only allow downcasting of a Python float to a scalar floatX.
-    implicit
-        See help(theano.io.In)
-
-    """
-
+class Param(In):
+    """Deprecated. Use In instead."""
     def __init__(self, variable, default=None, name=None, mutable=False,
                  strict=False, allow_downcast=None, implicit=None,
                  borrow=None):
-        self.variable = variable
-        self.default = default
-        self.name = name
-        self.mutable = mutable
-
-        if borrow is None:
-            self.borrow = self.mutable
-        else:
-            self.borrow = borrow
-
-        # mutable implies the output can be both aliased to the input and that
-        # the input can be destroyed. borrow simply implies the output can be
-        # aliased to the input. Thus mutable=True should require borrow=True.
-        if self.mutable and not self.borrow:
-            raise AssertionError(
-                "Symbolic input for variable %s (name=%s) has "
-                "flags mutable=True, borrow=False. This combination is "
-                "incompatible since mutable=True implies that the "
-                "input variable may be both aliased (borrow=True) and "
-                "overwritten.",
-                variable, name)
-
-        self.strict = strict
-        self.allow_downcast = allow_downcast
-        self.implicit = implicit
+        warnings.warn(
+            "The Param class is deprecated. Replace Param(default=N)"
+            " by theano.In(value=N)",
+            stacklevel=2)
+        super(Param, self).__init__(
+            variable, name=name, value=default, mutable=mutable,
+            strict=strict, allow_downcast=allow_downcast,
+            implicit=implicit, borrow=borrow)
 
 
 def pfunc(params, outputs=None, mode=None, updates=None, givens=None,
@@ -345,7 +288,7 @@ def pfunc(params, outputs=None, mode=None, updates=None, givens=None,
 
     Parameters
     ----------
-    params : list of either Variable or Param instances
+    params : list of either Variable or In instances
         Function parameters, these are not allowed to be shared variables.
     outputs : list of Variables or Out instances
         Expressions to compute.
@@ -478,7 +421,19 @@ def pfunc(params, outputs=None, mode=None, updates=None, givens=None,
                 'theano.clone(f(x), replace={x: g(x)}))`.'
                 % x)
 
-    output_vars = rebuild_collect_shared(outputs,
+    # Extend the outputs with the updates on input variables so they are also
+    # cloned
+    additional_outputs = [i.update for i in inputs if i.update]
+    if outputs is None:
+        out_list = []
+    else:
+        if isinstance(outputs, (list, tuple)):
+            out_list = list(outputs)
+        else:
+            out_list = [outputs]
+    extended_outputs = out_list + additional_outputs
+
+    output_vars = rebuild_collect_shared(extended_outputs,
                                          in_variables,
                                          replace=givens,
                                          updates=updates,
@@ -486,11 +441,24 @@ def pfunc(params, outputs=None, mode=None, updates=None, givens=None,
                                          copy_inputs_over=True,
                                          no_default_updates=no_default_updates)
     # extracting the arguments
-    input_variables, cloned_outputs, other_stuff = output_vars
+    input_variables, cloned_extended_outputs, other_stuff = output_vars
     clone_d, update_d, update_expr, shared_inputs = other_stuff
+
+    # Recover only the clones of the original outputs
+    if outputs is None:
+        cloned_outputs = []
+    else:
+        if isinstance(outputs, (list, tuple)):
+            cloned_outputs = cloned_extended_outputs[:len(outputs)]
+        else:
+            cloned_outputs = cloned_extended_outputs[0]
 
     for i, iv in zip(inputs, input_variables):
         i.variable = iv
+
+        # If needed, replace the input's update by its cloned equivalent
+        if i.update:
+            i.update = clone_d[i.update]
 
     for sv in shared_inputs:
         # pass value of None
@@ -516,16 +484,8 @@ def _pfunc_param_to_in(param, strict=False, allow_downcast=None):
         raise TypeError('Constants not allowed in param list', param)
     if isinstance(param, Variable):  # N.B. includes SharedVariable
         return In(variable=param, strict=strict, allow_downcast=allow_downcast)
-    elif isinstance(param, Param):
-        return In(
-            variable=param.variable,
-            name=param.name,
-            value=param.default,
-            mutable=param.mutable,
-            strict=param.strict,
-            borrow=param.borrow,
-            allow_downcast=param.allow_downcast,
-            implicit=param.implicit)
+    elif isinstance(param, In):
+        return param
     raise TypeError('Unknown parameter type: %s' % type(param))
 
 

@@ -4,10 +4,10 @@ Helper routines for generating gpu kernels for nvcc.
 """
 
 try:
-    import pygpu
     from pygpu import gpuarray
 except ImportError:
     pass
+
 
 def nvcc_kernel(name, params, body):
     """
@@ -71,17 +71,19 @@ def inline_reduce(N, buf, pos, count, manner_fn):
     count
         Number of executing threads.
     manner_fn
-        A function that accepts strings of arguments a and b, and returns c code
-        for their reduction.
-        Example: return "%(a)s + %(b)s" for a sum reduction.
+        A function that accepts strings of arguments a and b, and
+        returns c code for their reduction.
 
-    :postcondition:
-    This function leaves the answer in position 0 of the buffer. The
-    rest of the buffer is trashed by this function.
+          return "%(a)s + %(b)s"
+
+        for a sum reduction.
 
     Notes
     -----
-    buf should be in gpu shared memory, we access it many times.
+    `buf` should be in gpu shared memory, we access it many times.
+
+    This function leaves the answer in position 0 of the buffer. The
+    rest of the buffer is trashed by this function.
 
     """
     loop_line = manner_fn("%s[%s]" % (buf, pos), "%s[i]" % (buf))
@@ -149,6 +151,13 @@ def inline_reduce_prod(N, buf, pos, count):
               inline_reduce_sum.code_version)
 def inline_softmax(N, buf, buf2, threadPos, threadCount, dtype="float32"):
     """
+    Generate code for a softmax.
+
+    On entry, `buf` and `buf2` must contain two identical copies of
+    the input to softmax.
+
+    After the code returns `buf` contains the softmax, `buf2` contains
+    un-normalized softmax.
 
     Parameters
     ----------
@@ -161,29 +170,24 @@ def inline_softmax(N, buf, buf2, threadPos, threadCount, dtype="float32"):
     dtype
         Dtype of the softmax's output.
 
-    :Precondition: buf and buf2 contain two identical copies of the input
-        to softmax
-    :Postcondition: buf contains the softmax, buf2 contains un-normalized
-        softmax
-
     Notes
     -----
-    buf and buf2 should be in gpu shared memory, we access it many times.
+    `buf` and `buf2` should be in gpu shared memory, we access it many
+    times.
 
     We use __i as an int variable in a loop.
 
     """
     ctype = gpuarray.dtype_to_ctype(dtype)
-    return [
-            # get max of buf (trashing all but buf[0])
-            inline_reduce_max(N, buf, threadPos, threadCount),
+    # get max of buf (trashing all but buf[0])
+    return [inline_reduce_max(N, buf, threadPos, threadCount),
             '__syncthreads()',
             ('%s row_max = ' + buf + '[0]') % ctype,
             '__syncthreads()',
             'for(int __i=' + threadPos + '; __i<' + N +
-                  '; __i+=' + threadCount + '){',
-                buf + '[__i] = exp(' + buf2 + '[__i] - row_max)',
-                buf2 + '[__i] = ' + buf + '[__i]',
+            '; __i+=' + threadCount + '){',
+            buf + '[__i] = exp(' + buf2 + '[__i] - row_max)',
+            buf2 + '[__i] = ' + buf + '[__i]',
             '}',
             '__syncthreads()',
             inline_reduce_sum(N, buf, threadPos, threadCount),
@@ -192,8 +196,8 @@ def inline_softmax(N, buf, buf2, threadPos, threadCount, dtype="float32"):
             '__syncthreads()',
             # divide each exp() result by the sum to complete the job.
             'for(int __i=' + threadPos + '; __i<' + N +
-                  '; __i+=' + threadCount + '){',
-                buf + '[__i] = ' + buf2 + '[__i] / row_sum',
+            '; __i+=' + threadCount + '){',
+            buf + '[__i] = ' + buf2 + '[__i] / row_sum',
             '}',
             '__syncthreads()',
             ]
@@ -205,6 +209,9 @@ def inline_reduce_fixed_shared(N, buf, x, stride_x, load_x, pos, count,
                                b='', stride_b='', load_b='', dtype='float32'):
     """
     Return C++ code for a function that reduces a contiguous buffer.
+
+    This function leaves the answer in position 0 of the buffer. The
+    rest of the buffer is trashed by this function.
 
     Parameters
     ----------
@@ -231,20 +238,19 @@ def inline_reduce_fixed_shared(N, buf, x, stride_x, load_x, pos, count,
     dtype
         Optional, the dtype of the output.
     manner_fn
-        A function that accepts strings of arguments a and b, and returns c code
-        for their reduction. 
-        Example: return "%(a)s + %(b)s" for a sum reduction.
-    manner_init
-        A function that accepts strings of arguments a and return c code for its
-        initialization.
+        A function that accepts strings of arguments a and b, and
+        returns c code for their reduction.
 
-    :postcondition:
-    This function leaves the answer in position 0 of the buffer. The rest of the
-    buffer is trashed by this function.
+          return "%(a)s + %(b)s"
+
+        for a sum reduction.
+    manner_init
+        A function that accepts strings of arguments a and return c
+        code for its initialization.
 
     Notes
     -----
-    buf should be in gpu shared memory, we access it many times.
+    `buf` should be in gpu shared memory, we access it many times.
 
     """
     if b:
@@ -259,7 +265,7 @@ def inline_reduce_fixed_shared(N, buf, x, stride_x, load_x, pos, count,
         loop_line = manner_fn("red", manner_init("%(load_x)s(%(x)s[i * %(stride_x)s])" %
                                                  locals()))
     loop_line2 = manner_fn("%s[%s]" % (buf, pos),
-                          "%s[i]" % buf)
+                           "%s[i]" % buf)
     r_16 = manner_fn("%s[%s]" % (buf, pos), "%s[%s+16]" % (buf, pos))
     r_8 = manner_fn("%s[%s]" % (buf, pos), "%s[%s+8]" % (buf, pos))
     r_4 = manner_fn("%s[%s]" % (buf, pos), "%s[%s+4]" % (buf, pos))
@@ -321,10 +327,17 @@ def inline_softmax_fixed_shared(N, buf, x, stride_x, load_x,
                                 b='', stride_b='', load_b='',
                                 dtype="float32"):
     """
+    Generate code to perform softmax with a fixed amount of shared
+    memory.
+
+    On entry, `buf` is assumed to be empty.
+
+    On exit, `buf[0]` contains the softmax, `buf2` contains
+    un-normalized softmax.
 
     Parameters
     ----------
-    N 
+    N
         Length of the buffer, atleast waprSize(32).
     buf
         A shared memory buffer of size warpSize * sizeof(dtype).
@@ -353,13 +366,9 @@ def inline_softmax_fixed_shared(N, buf, x, stride_x, load_x,
     dtype
         Optional, the dtype of the softmax's output if not float32.
 
-    :Precondition: buf is empty
-    :Postcondition: buf[0] contains the softmax, buf2 contains un-normalized
-        softmax
-
     Notes
     -----
-    buf should be in gpu shared memory, we access it many times.
+    `buf` should be in gpu shared memory, we access it many times.
 
     We use tx as an int variable in a loop.
 

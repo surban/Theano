@@ -159,10 +159,22 @@ def std_fgraph(input_specs, output_specs, accept_inplace=False):
 
     """
     orig_inputs = [spec.variable for spec in input_specs]
-    updates = [spec.update for spec in input_specs if spec.update]
+
+    # Extract the updates and the mapping between update outputs and
+    # the updated inputs.
+    updates = []
+    update_mapping = {}
+    out_idx = len(output_specs)
+    for inp_idx in range(len(input_specs)):
+        if input_specs[inp_idx].update:
+            updates.append(input_specs[inp_idx].update)
+            update_mapping[out_idx] = inp_idx
+            out_idx += 1
+
     orig_outputs = [spec.variable for spec in output_specs] + updates
 
-    fgraph = gof.fg.FunctionGraph(orig_inputs, orig_outputs)
+    fgraph = gof.fg.FunctionGraph(orig_inputs, orig_outputs,
+                                  update_mapping=update_mapping)
 
     for node in fgraph.apply_nodes:
         if getattr(node.op, 'destroy_map', None):
@@ -187,7 +199,7 @@ def std_fgraph(input_specs, output_specs, accept_inplace=False):
     return fgraph, list(map(SymbolicOutput, updates))
 
 
-std_fgraph.features = [gof.toolbox.PreserveNames]
+std_fgraph.features = [gof.toolbox.PreserveVariableAttributes]
 
 
 class AliasedMemoryError(Exception):
@@ -230,7 +242,7 @@ class Function(object):
 
     A Function instance may be serialized using the `pickle` or
     `cPickle` modules.  This will save all default inputs, the graph,
-    and *** to the pickle file (WRITEME).
+    and WRITEME to the pickle file.
 
     A Function instance have a ``trust_input`` field that default to
     False. When True, we don't do extra check of the input to give
@@ -548,29 +560,33 @@ class Function(object):
         Copy this function. Copied function will have separated maker and
         fgraph with original function. User can choose whether to separate
         storage by changing the share_memory arguments.
-        ---------------------
-        Params:
-            share_memory -- { boolean } Default is False. When True, two
-            function share intermediate storages(storages except input and
+
+        Parameters
+        ----------
+        share_memory : boolean
+            When True, two function share intermediate storages(storages except input and
             output storages). Otherwise two functions will only share partial
             storages and same maker. If two functions share memory and
             allow_gc=False, this will increase executing speed and save memory.
 
-            swap -- { dict } Dictionary that map old SharedVariables to new
+        swap : dict
+            Dictionary that map old SharedVariables to new
             SharedVariables. Default is None.
             NOTE: The shared variable swap in only done in the new returned
             function, not in the user graph.
 
-            delete_updates -- { boolean } Default is False. If True, Copied
-            function will not have update.
-
-            name -- { string } If provided, will be the name of the new
+        delete_updates : boolean
+            If True, Copied function will not have updates.
+        name : string
+            If provided, will be the name of the new
             Function. Otherwise, it will be old + " copy"
 
-            profile -- as theano.function profile parameter
-        ---------------------
-        Returns:
-            func -- Copied theano.Function
+        profile :
+            as theano.function profile parameter
+
+        Returns
+        -------
+        Copied theano.Function
         """
         # helper function
         def checkSV(sv_ori, sv_rpl):
@@ -699,7 +715,10 @@ class Function(object):
                                 mode=maker.mode, profile=profile,
                                 on_unused_input=maker.on_unused_input,
                                 function_builder=maker.function_builder,
-                                accept_inplace=maker.accept_inplace
+                                # As this is an optimized graph, it
+                                # can contain inplace. DebugMode check
+                                # that.
+                                accept_inplace=True,
                                 ).create(input_storage,
                                          storage_map=new_storage_map)
 
@@ -843,19 +862,13 @@ class Function(object):
                 # this is a new vm-provided function or c linker
                 # they need this because the exception manipulation
                 # done by raise_with_op is not implemented in C.
+                thunk = None
                 if hasattr(self.fn, 'thunks'):
-                    # For the CVM
-                    gof.link.raise_with_op(
-                        self.fn.nodes[self.fn.position_of_error],
-                        self.fn.thunks[self.fn.position_of_error],
-                        storage_map=self.fn.storage_map)
-                else:
-                    # For the c linker We don't have access from
-                    # python to all the temps values So for now, we
-                    # just don't print the extra shapes/strides info
-                    gof.link.raise_with_op(
-                        self.fn.nodes[self.fn.position_of_error],
-                        storage_map=self.fn.storage_map)
+                    thunk = self.fn.thunks[self.fn.position_of_error]
+                gof.link.raise_with_op(
+                    node=self.fn.nodes[self.fn.position_of_error],
+                    thunk=thunk,
+                    storage_map=getattr(self.fn, 'storage_map', None))
             else:
                 # old-style linkers raise their own exceptions
                 raise
@@ -954,9 +967,14 @@ class Function(object):
             for node in self.nodes_with_inner_function:
                 ops_with_inner_function[node.op].free()
 
+    def get_shared(self):
+        """
+        Return the shared variable read or updated by by this function.
+        """
+        return [i.variable for i in self.maker.inputs if i.implicit]
+
 
 # pickling/deepcopy support for Function
-
 def _pickle_Function(f):
     # copy of the input storage list
     ins = list(f.input_storage)
@@ -1201,22 +1219,17 @@ class FunctionMaker(object):
                 print('graph_db already exists')
             else:
                 # create graph_db
-                f = open(graph_db_file, 'wb')
-                print('create new graph_db in %s' % graph_db_file)
-                # file needs to be open and closed for every pickle
-                f.close()
+                with open(graph_db_file, 'wb') as f:
+                    print('create new graph_db in %s' % graph_db_file)
             # load the graph_db dictionary
             try:
-                f = open(graph_db_file, 'rb')
-                # Temporary hack to allow
-                # theano.scan_module.tests.test_scan.T_Scan to
-                # finish. Should be changed in definitive version.
-                tmp = theano.config.unpickle_function
-                theano.config.unpickle_function = False
-                graph_db = pickle.load(f)
-
-                # hack end
-                f.close()
+                with open(graph_db_file, 'rb') as f:
+                    # Temporary hack to allow
+                    # theano.scan_module.tests.test_scan.T_Scan to
+                    # finish. Should be changed in definitive version.
+                    tmp = theano.config.unpickle_function
+                    theano.config.unpickle_function = False
+                    graph_db = pickle.load(f)
                 print('graph_db loaded and it is not empty')
             except EOFError as e:
                 # the file has nothing in it
@@ -1345,9 +1358,8 @@ class FunctionMaker(object):
             before_opt = self.fgraph.clone(check_integrity=False)
             optimizer_profile = optimizer(self.fgraph)
             graph_db.update({before_opt: self.fgraph})
-            f = open(graph_db_file, 'wb')
-            pickle.dump(graph_db, f, -1)
-            f.close()
+            with open(graph_db_file, 'wb') as f:
+                pickle.dump(graph_db, f, -1)
             print('new graph saved into graph_db')
         release_lock()
         return optimizer_profile
@@ -1450,6 +1462,10 @@ class FunctionMaker(object):
                     if theano.config.profile_optimizer:
                         profile.optimizer_profile = (optimizer,
                                                      optimizer_profile)
+                elif theano.config.profile_optimizer:
+                    warnings.warn((
+                        "config.profile_optimizer requires config.profile to "
+                        " be set to True as well"), stacklevel=3)
                 _logger.debug('Optimizing took %f seconds', opt_time)
 
                 # Add deep copy to respect the memory interface
@@ -1491,7 +1507,7 @@ class FunctionMaker(object):
         self.mode = mode
         self.accept_inplace = accept_inplace
         self.function_builder = function_builder
-        self.on_unused_input = on_unused_input  # Used only for the pickling
+        self.on_unused_input = on_unused_input  # Used for the pickling/copy
         self.output_keys = output_keys
 
         self.required = [(i.value is None) for i in self.inputs]
