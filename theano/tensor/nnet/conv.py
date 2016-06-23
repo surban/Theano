@@ -8,7 +8,7 @@ tensor.signal and tensor.signal.pool.
 See especially conv2d().
 """
 
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 
 import logging
 
@@ -129,7 +129,8 @@ def conv2d(input, filters, image_shape=None, filter_shape=None,
 
     if image_shape and filter_shape:
         try:
-            assert image_shape[1] == filter_shape[1]
+            if image_shape[1] is not None and filter_shape[1] is not None:
+                assert image_shape[1] == filter_shape[1]
         except Exception:
             print('image ', image_shape, ' filters ', filter_shape)
             raise

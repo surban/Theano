@@ -2,7 +2,7 @@
  Tests fof the lazy conditiona
 """
 
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 import unittest
 import numpy
 from nose.plugins.skip import SkipTest
@@ -481,6 +481,21 @@ class test_ifelse(unittest.TestCase, utt.TestOptimizationMixin):
             tensor.grad(ifelse(0, x, x), x)
         finally:
             theano.config.compute_test_value = backup
+
+    def test_grad_int_value(self):
+        w = theano.shared(numpy.random.rand(10))
+        b = theano.shared(numpy.random.rand())
+        params = [w, b]
+
+        x = tensor.vector()
+        y = tensor.scalar()
+
+        score = w.dot(x) + b
+        correct = (score * y > 0)
+
+        loss = ifelse(correct, 0, 1)
+        [(param, param - 0.5 * tensor.grad(cost=loss, wrt=param))
+         for param in params]
 
 
 if __name__ == '__main__':

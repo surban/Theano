@@ -1,4 +1,4 @@
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 import copy
 import os
 import sys
@@ -107,6 +107,21 @@ def test_consistency_randomstreams():
 
         samples = numpy.array(samples).flatten()
         assert(numpy.allclose(samples, java_samples))
+
+
+def test_get_substream_rstates():
+    try:
+        orig = theano.config.compute_test_value
+        theano.config.compute_test_value = 'raise'
+        n_streams = 100
+
+        dtype = 'float32'
+        rng = MRG_RandomStreams(numpy.random.randint(2147462579))
+
+        rng.get_substream_rstates(n_streams, dtype)
+
+    finally:
+        theano.config.compute_test_value = orig
 
 
 def test_consistency_cpu_serial():
@@ -351,9 +366,9 @@ def test_consistency_GPUA_serial():
     are the same as the reference (Java) implementation by L'Ecuyer et al.
 
     """
-    from theano.sandbox.gpuarray.tests.test_basic_ops import \
+    from theano.gpuarray.tests.test_basic_ops import \
         mode_with_gpu as mode
-    from theano.sandbox.gpuarray.type import gpuarray_shared_constructor
+    from theano.gpuarray.type import gpuarray_shared_constructor
 
     seed = 12345
     n_samples = 5
@@ -406,9 +421,9 @@ def test_consistency_GPUA_parallel():
     L'Ecuyer et al.
 
     """
-    from theano.sandbox.gpuarray.tests.test_basic_ops import \
+    from theano.gpuarray.tests.test_basic_ops import \
         mode_with_gpu as mode
-    from theano.sandbox.gpuarray.type import gpuarray_shared_constructor
+    from theano.gpuarray.type import gpuarray_shared_constructor
 
     seed = 12345
     n_samples = 5
@@ -1092,9 +1107,9 @@ def test_overflow_gpu_old_backend():
 
 def test_overflow_gpu_new_backend():
     # run with THEANO_FLAGS=mode=FAST_RUN,init_gpu_device=cuda1,device=cpu
-    from theano.sandbox.gpuarray.tests.test_basic_ops import \
+    from theano.gpuarray.tests.test_basic_ops import \
         mode_with_gpu as mode
-    from theano.sandbox.gpuarray.type import gpuarray_shared_constructor
+    from theano.gpuarray.type import gpuarray_shared_constructor
     seed = 12345
     n_substreams = 7
     curr_rstate = numpy.array([seed] * 6, dtype='int32')

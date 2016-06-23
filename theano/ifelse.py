@@ -10,7 +10,7 @@ which value to report. Note also that `switch` is an elemwise operation (so
 it picks each entry of a matrix according to the condition) while `ifelse`
 is a global operation with a scalar condition.
 """
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 from copy import deepcopy
 from theano.compat import izip
 import logging
@@ -213,17 +213,24 @@ class IfElse(PureOp):
                              gpu=self.gpu,
                              name=nw_name_f)
 
-        if_true = ([ins[0]] + grads + [theano.tensor.zeros_like(t)
-                                       for t in ts])
-        if_false = ([ins[0]] + [theano.tensor.zeros_like(f)
-                                for f in fs] + grads)
+        # The grads can have a different dtype then the inputs.
+        # As inputs true/false pair must have the same dtype,
+        # we must cast the zeros to the corresponding grad dtype
+        # and not the input dtype.
+        if_true = ([ins[0]] +
+                   grads +
+                   [theano.tensor.zeros_like(t, dtype=grads[i].dtype)
+                    for i, t in enumerate(ts)])
+        if_false = ([ins[0]] +
+                    [theano.tensor.zeros_like(f, dtype=grads[i].dtype)
+                     for i, f in enumerate(fs)] +
+                    grads)
 
         condition = ins[0]
         # condition does affect the elements of the output so it is connected.
         # For the sake of making the gradient convenient we assume that
         # condition + epsilon always triggers the same branch as condition
         condition_grad = condition.zeros_like().astype(theano.config.floatX)
-
         return ([condition_grad] +
                 if_true_op(*if_true, **dict(return_list=True)) +
                 if_false_op(*if_false, **dict(return_list=True)))

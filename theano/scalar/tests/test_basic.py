@@ -9,6 +9,7 @@ If you do want to rewrite these tests, bear in mind:
   * FunctionGraph and DualLinker are old, use compile.function instead.
 """
 
+
 from __future__ import absolute_import, print_function, division
 
 import unittest
@@ -153,6 +154,17 @@ class test_composite(unittest.TestCase):
         si2 = theano.scalar.float32()
         si3 = theano.scalar.float32()
         sop.make_node(si0 * si3, si1, si2)
+
+    def test_composite_neg_bool(self):
+        # Check that taking the negation of a Boolean intermediate value
+        # works correctly with Python code. It used to be an issue because
+        # `-numpy.bool_(True)` is False and `-numpy.bool_(False)` is True.
+        x = floats('x')
+        y = - (x > 0)
+        z = Composite([x], [y]).make_node(x).outputs[0]
+        f = theano.function([x], z, mode=theano.Mode(linker='py'))
+        for inp, out in zip([-1, 0, 1], [0, 0, -1]):
+            self.assertTrue(f(inp) == out)
 
 
 class test_logical(unittest.TestCase):
@@ -440,6 +452,16 @@ def test_grad_inrange():
         utt.assert_allclose(f(5, 1, 5), [0, 0, 0])
         utt.assert_allclose(f(7, 1, 5), [0, 0, 0])
 
+
+def test_grad_abs():
+    a = theano.tensor.fscalar("a")
+    b = theano.tensor.nnet.relu(a)
+    c = theano.grad(b, a)
+    f = theano.function([a], c, mode=theano.Mode(optimizer=None))
+    # Currently Theano return 0.5, but it isn't sure it won't change
+    # in the futur.
+    ret = f(0.)
+    assert ret == 0.5, ret
 
 # Testing of Composite is done in tensor/tests/test_opt.py
 # in test_fusion, TestCompositeCodegen

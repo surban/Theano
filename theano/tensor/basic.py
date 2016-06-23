@@ -1,9 +1,12 @@
 """A `Type` and `Op` classes to work with numpy.ndarrays symbolically."""
+from __future__ import absolute_import, print_function, division
+
 from six.moves import builtins
 import sys
 import warnings
 
 import numpy
+from six import integer_types
 from six.moves import xrange
 import numbers
 
@@ -21,7 +24,6 @@ from theano.tensor.type import TensorType, values_eq_approx_always_true
 from theano.tensor.type_other import NoneConst
 from theano import scalar as scal
 from functools import partial
-from six import integer_types
 from theano import compile, printing
 from theano.printing import pprint, min_informative_str
 # For history
@@ -136,13 +138,13 @@ def as_tensor_variable(x, name=None, ndim=None):
         If a new `Variable` instance is created, it will be named with this
         string.
     ndim : None or integer
-        Return a Variable with this many dimensions. Raise TypeError if it's
-        not possible.
+        Return a Variable with this many dimensions.
 
     Raises
     ------
     ValueError
-        If an `Apply` with more than one output is fetched.
+        If an `Apply` with more than one output is fetched or
+        if `x` cannot be made into a Variable with `ndim` dimensions.
     AsTensorError
         If `x` cannot be converted to a TensorType Variable.
 
@@ -588,6 +590,8 @@ def get_scalar_constant_value(orig_v, elemwise=True,
     ----------
     elemwise : bool
         If False, we won't try to go into elemwise. So this call is faster.
+        But we still investigate in Second Elemwise (as this is a substitute
+        for Alloc)
     only_process_constants : bool
         If True, we only attempt to obtain the value of `orig_v` if it's
         directly constant and don't try to dig through dimshuffles, fills,
@@ -606,18 +610,18 @@ def get_scalar_constant_value(orig_v, elemwise=True,
             # to depend on passing it None)
             raise NotScalarConstantError()
 
-        if isinstance(v, (numpy.integer, int, float)):
+        if isinstance(v, (numpy.integer, integer_types, float)):
             return numpy.asarray(v)
 
         if isinstance(v, numpy.ndarray):
-            return numpy_scalar(v)
+            return numpy_scalar(v).copy()
 
         if isinstance(v, Constant):
             if getattr(v.tag, 'unique_value', None) is not None:
                 data = v.tag.unique_value
             else:
                 data = v.data
-            return numpy_scalar(data)
+            return numpy_scalar(data).copy()
 
         if not only_process_constants and getattr(v, 'owner', None):
             if isinstance(v.owner.op, (Alloc, DimShuffle, Rebroadcast,
@@ -647,26 +651,30 @@ def get_scalar_constant_value(orig_v, elemwise=True,
                              for i in v.owner.inputs]
                     ret = [[None]]
                     v.owner.op.perform(v.owner, const, ret)
-                    return ret[0][0]
-            elif elemwise and isinstance(v.owner.op, Elemwise):
+                    return ret[0][0].copy()
+            # In fast_compile, we don't enable local_fill_to_alloc, so
+            # we need to investigate Second as Alloc. So elemwise
+            # don't disable the check for Second.
+            elif isinstance(v.owner.op, Elemwise):
                 if isinstance(v.owner.op.scalar_op, scal.Second):
                     # We don't need both input to be constant for second
                     shp, val = v.owner.inputs
                     v = val
                     continue
-                elif isinstance(v.owner.op.scalar_op,
-                                get_scalar_constant_value_elemwises):
+                elif elemwise and isinstance(
+                        v.owner.op.scalar_op,
+                        get_scalar_constant_value_elemwises):
                     const = [get_scalar_constant_value(i)
                              for i in v.owner.inputs]
                     ret = [[None]]
                     v.owner.op.perform(v.owner, const, ret)
-                    return ret[0][0]
+                    return ret[0][0].copy()
             elif (isinstance(v.owner.op, theano.tensor.subtensor.Subtensor) and
                   v.ndim == 0):
                 if isinstance(v.owner.inputs[0], TensorConstant):
                     cdata = tuple(v.owner.op.get_constant_idx(v.owner.inputs))
                     try:
-                        return v.owner.inputs[0].data.__getitem__(cdata)
+                        return v.owner.inputs[0].data.__getitem__(cdata).copy()
                     except IndexError:
                         raise IndexError(
                             str(tuple(v.owner.op.idx_list)) +
@@ -786,7 +794,7 @@ def tensor(*args, **kwargs):
 
 def _multi(*fns):
     def f2(f, *names):
-        if names and isinstance(names[0], int):
+        if names and isinstance(names[0], integer_types):
             if names == 1:
                 return f()
             else:
@@ -1290,7 +1298,7 @@ class MaxAndArgmax(Op):
     def make_node(self, x, axis=None):
         x = _as_tensor_variable(x)
 
-        if isinstance(axis, (int, numpy.integer)):
+        if isinstance(axis, (integer_types, numpy.integer)):
             axis = [int(axis)]
         elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
             axis = [int(axis)]
@@ -1307,7 +1315,7 @@ class MaxAndArgmax(Op):
             else:
                 assert (axis.dtype.startswith("int") or
                         axis.dtype.startswith("uint"))
-                if isinstance(axis.data, (int, numpy.integer)) or \
+                if isinstance(axis.data, (integer_types, numpy.integer)) or \
                    (isinstance(axis.data, numpy.ndarray) and
                         axis.data.ndim == 0):
                     axis = [int(axis.data)]
@@ -1355,7 +1363,7 @@ class MaxAndArgmax(Op):
         if axes is None:
             axes = tuple(range(x.ndim))
         else:
-            axes = tuple(axes)
+            axes = tuple(int(ax) for ax in axes)
         max[0] = theano._asarray(numpy.max(x, axes),
                                  dtype=node.outputs[0].dtype)
         # Numpy does not support multiple axes for argmax
@@ -1397,8 +1405,6 @@ class MaxAndArgmax(Op):
         %(axis_code)s
         %(max)s = (PyArrayObject*)PyArray_Max(%(x)s, axis, NULL);
         if(%(max)s == NULL){
-            PyErr_SetString(PyExc_ValueError,
-                         "MaxAndArgmax, max failed");
             %(fail)s;
         }
         if(!PyArray_CheckExact(%(max)s)){
@@ -1410,7 +1416,6 @@ class MaxAndArgmax(Op):
 
         %(argmax)s = (PyArrayObject*)PyArray_ArgMax(%(x)s, axis, NULL);
         if(%(argmax)s == NULL){
-            PyErr_SetString(PyExc_ValueError, "MaxAndArgmax, argmax failed");
             Py_CLEAR(%(max)s);
             %(fail)s;
         }
@@ -1432,7 +1437,7 @@ class MaxAndArgmax(Op):
         return ret % locals()
 
     def c_code_cache_version(self):
-        return (3,)
+        return (4,)
 
     def infer_shape(self, node, shapes):
         ishape, axis_shape = shapes
@@ -1536,7 +1541,7 @@ def makeKeepDims(x, y, axis):
 
     if axis is None:
         axis = list(range(x.type.ndim))
-    elif isinstance(axis, (int, numpy.integer)):
+    elif isinstance(axis, (integer_types, numpy.integer)):
         axis = [axis]
     elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
         axis = [int(axis)]
@@ -1544,7 +1549,7 @@ def makeKeepDims(x, y, axis):
         axis = [int(a) for a in axis]
     newaxis = []
     for a in axis:
-        if not isinstance(a, int):
+        if not isinstance(a, integer_types):
             raise ValueError(
                 "keepdims option can be used only with constant axis")
         if a < 0:
@@ -2260,7 +2265,17 @@ pprint.assign(fill, printing.FunctionPrinter('fill'))
 
 @constructor
 def ones_like(model, dtype=None):
-    """equivalent of numpy.ones_like"""
+    """equivalent of numpy.ones_like
+    Parameters
+    ----------
+    model : tensor
+    dtype : data-type, optional
+
+    Returns
+    -------
+    tensor
+        tensor the shape of model containing ones of the type of dtype.
+    """
     if dtype is None:
         dtype = model.type.dtype
     ret = fill(model, constant(1.0, dtype=dtype))
@@ -2269,7 +2284,18 @@ def ones_like(model, dtype=None):
 
 @constructor
 def zeros_like(model, dtype=None):
-    """equivalent of numpy.zeros_like"""
+    """equivalent of numpy.zeros_like
+    Parameters
+    ----------
+    model : tensor
+    dtype : data-type, optional
+
+    Returns
+    -------
+    tensor
+        tensor the shape of model containing zeros of the type of dtype.
+    """
+
     if dtype is None:
         dtype = model.type.dtype
     return fill(model, constant(0.0, dtype=dtype))
@@ -3082,7 +3108,7 @@ def mean(input, axis=None, dtype=None, op=False, keepdims=False,
 
     if axis is None:
         axis = list(range(input.ndim))
-    elif isinstance(axis, (int, numpy.integer)):
+    elif isinstance(axis, (integer_types, numpy.integer)):
         axis = [axis]
     elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
         axis = [int(axis)]
@@ -3126,7 +3152,7 @@ def var(input, axis=None, keepdims=False):
     input_ndim = input.type.ndim
     if axis is None:
         axis = list(range(input_ndim))
-    elif isinstance(axis, (int, numpy.integer)):
+    elif isinstance(axis, (integer_types, numpy.integer)):
         axis = [axis]
     elif isinstance(axis, numpy.ndarray) and axis.ndim == 0:
         axis = [int(axis)]
@@ -3769,7 +3795,7 @@ class Join(Op):
                 as_tensor_variable_args[0].type.broadcastable)
             ndim = len(bcastable)
             # Axis can also be a constant
-            if not isinstance(axis, int):
+            if not isinstance(axis, integer_types):
                 try:
                     # Note : `get_scalar_constant_value` returns a ndarray not
                     # an int
@@ -3777,7 +3803,7 @@ class Join(Op):
 
                 except NotScalarConstantError:
                     pass
-            if isinstance(axis, int):
+            if isinstance(axis, integer_types):
                 # Basically, broadcastable -> length 1, but the
                 # converse does not hold. So we permit e.g. T/F/T
                 # joins, and if they fail at runtime they fail, but if
@@ -4462,14 +4488,15 @@ class Reshape(Op):
             return [requ]
         else:
             new_dims = [node.inputs[1][i] for i in xrange(self.ndim)]
-            # since new_dims has one negative value (-1), the
+            # since new_dims can have negative value (-1), the
             # multiplication of all values should be negated
             # to give a positive value.
             # To avoid optimization complexity, we avoid checking
             # for the case when there are two or more '-1' values.
+            if self.ndim:
+                rest_size = (mul(*ishapes[0]) // -mul(*new_dims))
             return [tuple([switch(eq(new_dims[i], -1),
-                                  theano.tensor.mul(*ishapes[0]) //
-                                  (-theano.tensor.mul(*new_dims)),
+                                  rest_size,
                                   new_dims[i])
                            for i in xrange(self.ndim)])]
 
@@ -6216,7 +6243,7 @@ class AllocEmpty(gof.Op):
 
     # specify the type of the data
     def __init__(self, dtype):
-        assert isinstance(dtype, str)
+        assert isinstance(dtype, str), dtype
         self.dtype = dtype.lower()
 
     def validate_shape(self, shape):

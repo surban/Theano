@@ -1,5 +1,6 @@
-import numpy
+from __future__ import absolute_import, print_function, division
 
+import numpy
 import theano
 from theano.tensor.nnet.tests import test_abstract_conv
 from theano.sandbox.cuda import float32_shared_constructor as gpu_shared
@@ -24,7 +25,7 @@ else:
 class TestDnnConv2d(test_abstract_conv.BaseTestConv2d):
     def setUp(self):
         super(TestDnnConv2d, self).setUp()
-        # provide_shape is not used by the CuDNN impementation
+        # provide_shape is not used by the cuDNN impementation
         self.provide_shape = [False]
         self.shared = gpu_shared
 

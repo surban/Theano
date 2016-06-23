@@ -5,14 +5,15 @@ and two GPU to measure the speedup.
 
 This should be 2x if the GPUs are equivalent.
 """
+from __future__ import absolute_import, print_function, division
 import threading
 import time
 
 import numpy
 
 import theano
-from theano.sandbox.gpuarray import init_dev
-from theano.sandbox.gpuarray.blas import gpu_dot22
+from theano.gpuarray import init_dev
+from theano.gpuarray.blas import gpu_dot22
 
 
 def main(dev1, dev2):

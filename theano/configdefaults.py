@@ -1,3 +1,4 @@
+from __future__ import absolute_import, print_function, division
 import errno
 import os
 import sys
@@ -41,6 +42,8 @@ AddConfigVar('floatX',
              "Note: float16 support is experimental, use at your own risk.",
              EnumStr('float64', 'float32', 'float16',
                      convert=floatX_convert,),
+             # TODO: see gh-4466 for how to remove it.
+             in_c_key=True
              )
 
 AddConfigVar('warn_float64',
@@ -101,10 +104,9 @@ class DeviceParam(ConfigParam):
 
 AddConfigVar(
     'device',
-    ("Default device for computations. If gpu*, change the default to try "
-     "to move computation to it and to put shared variable of float32 "
-     "on it. Do not use upper case letters, only lower case even if "
-     "NVIDIA use capital letters."),
+    ("Default device for computations. If cuda* or opencl*, change the"
+     "default to try to move computation to the GPU. Do not use upper case"
+     "letters, only lower case even if NVIDIA uses capital letters."),
     DeviceParam('cpu', allow_override=False),
     in_c_key=False)
 
@@ -232,11 +234,25 @@ AddConfigVar('gpuarray.sync',
              in_c_key=True)
 
 AddConfigVar('gpuarray.preallocate',
-             """If 0 it doesn't do anything.  If between 0 and 1 it
-             will preallocate that fraction of the total GPU memory.
-             If 1 or greater it will preallocate that amount of memory
-             (in megabytes).""",
-             FloatParam(0, lambda i: i >= 0),
+             """If negative it disables the allocation cache. If
+             between 0 and 1 it enables the allocation cache and
+             preallocates that fraction of the total GPU memory.  If 1
+             or greater it will preallocate that amount of memory (in
+             megabytes).""",
+             FloatParam(0),
+             in_c_key=False)
+
+AddConfigVar('gpuarray.single_stream',
+             """
+             If your computations are mostly lots of small elements,
+             using single-stream will avoid the synchronization
+             overhead and usually be faster.  For larger elements it
+             does not make a difference yet.  In the future when true
+             multi-stream is enabled in libgpuarray, this may change.
+             If you want to make sure to have optimal performance,
+             check both options.
+             """,
+             BoolParam(True),
              in_c_key=False)
 
 
@@ -269,7 +285,8 @@ def safe_no_dnn_workmem_bwd(workmem):
     return True
 
 AddConfigVar('dnn.conv.workmem_bwd',
-             "This flag is deprecated; use dnn.conv.algo_bwd.",
+             "This flag is deprecated; use `dnn.conv.algo_bwd_filter` "
+             "and `dnn.conv.algo_bwd_data` instead.",
              ConfigParam('', allow_override=False,
                          filter=safe_no_dnn_workmem_bwd),
              in_c_key=False)
@@ -286,6 +303,20 @@ def safe_no_dnn_algo_bwd(algo):
             '`dnn.conv.algo_bwd_filter` and `dnn.conv.algo_bwd_data` instead.')
     return True
 
+# Those are the supported algorithm by Theano,
+# The tests will reference those lists.
+SUPPORTED_DNN_CONV_ALGO_FWD = ('small', 'none', 'large', 'fft', 'fft_tiling',
+                               'winograd', 'guess_once', 'guess_on_shape_change',
+                               'time_once', 'time_on_shape_change')
+
+SUPPORTED_DNN_CONV_ALGO_BWD_DATA = ('none', 'deterministic', 'fft', 'fft_tiling',
+                                    'winograd', 'guess_once', 'guess_on_shape_change',
+                                    'time_once', 'time_on_shape_change')
+
+SUPPORTED_DNN_CONV_ALGO_BWD_FILTER = ('none', 'deterministic', 'fft', 'small',
+                                      'guess_once', 'guess_on_shape_change',
+                                      'time_once', 'time_on_shape_change')
+
 AddConfigVar('dnn.conv.algo_bwd',
              "This flag is deprecated; use dnn.conv.algo_bwd_data and "
              "dnn.conv.algo_bwd_filter.",
@@ -294,31 +325,25 @@ AddConfigVar('dnn.conv.algo_bwd',
              in_c_key=False)
 
 AddConfigVar('dnn.conv.algo_fwd',
-             "Default implementation to use for CuDNN forward convolution.",
-             EnumStr('small', 'none', 'large', 'fft', 'fft_tiling',
-                     'guess_once', 'guess_on_shape_change',
-                     'time_once', 'time_on_shape_change'),
+             "Default implementation to use for cuDNN forward convolution.",
+             EnumStr(*SUPPORTED_DNN_CONV_ALGO_FWD),
              in_c_key=False)
 
 AddConfigVar('dnn.conv.algo_bwd_data',
-             "Default implementation to use for CuDNN backward convolution to "
+             "Default implementation to use for cuDNN backward convolution to "
              "get the gradients of the convolution with regard to the inputs.",
-             EnumStr('none', 'deterministic', 'fft', 'fft_tiling',
-                     'guess_once', 'guess_on_shape_change', 'time_once',
-                     'time_on_shape_change'),
+             EnumStr(*SUPPORTED_DNN_CONV_ALGO_BWD_DATA),
              in_c_key=False)
 
 AddConfigVar('dnn.conv.algo_bwd_filter',
-             "Default implementation to use for CuDNN backward convolution to "
+             "Default implementation to use for cuDNN backward convolution to "
              "get the gradients of the convolution with regard to the "
              "filters.",
-             EnumStr('none', 'deterministic', 'fft', 'small', 'guess_once',
-                     'guess_on_shape_change', 'time_once',
-                     'time_on_shape_change'),
+             EnumStr(*SUPPORTED_DNN_CONV_ALGO_BWD_FILTER),
              in_c_key=False)
 
 AddConfigVar('dnn.conv.precision',
-             "Default data precision to use for the computation in CuDNN "
+             "Default data precision to use for the computation in cuDNN "
              "convolutions (defaults to the same dtype as the inputs of the "
              "convolutions).",
              EnumStr('as_input', 'float16', 'float32', 'float64'),
@@ -334,16 +359,20 @@ def default_dnn_path(suffix):
 
 AddConfigVar('dnn.include_path',
              "Location of the cudnn header (defaults to the cuda root)",
-             StrParam(default_dnn_path('include')))
+             StrParam(default_dnn_path('include')),
+             # Added elsewhere in the c key only when needed.
+             in_c_key=False)
 
 AddConfigVar('dnn.library_path',
              "Location of the cudnn header (defaults to the cuda root)",
-             StrParam(default_dnn_path('lib64')))
+             StrParam(default_dnn_path('lib' if sys.platform == 'darwin' else 'lib64')),
+             # Added elsewhere in the c key only when needed.
+             in_c_key=False)
 
 AddConfigVar('dnn.enabled',
-             "'auto', use CuDNN if available, but silently fall back"
+             "'auto', use cuDNN if available, but silently fall back"
              " to not using it if not present."
-             " If True and CuDNN can not be used, raise an error."
+             " If True and cuDNN can not be used, raise an error."
              " If False, disable cudnn",
              StrParam("auto", "True", "False"),
              in_c_key=False)
@@ -534,7 +563,9 @@ AddConfigVar(
 AddConfigVar(
     'lib.amdlibm',
     "Use amd's amdlibm numerical library",
-    BoolParam(False))
+    BoolParam(False),
+    # Added elsewhere in the c key only when needed.
+    in_c_key=False)
 
 AddConfigVar(
     'gpuelemwise.sync',
@@ -553,6 +584,13 @@ AddConfigVar(
     # y = X.reshape((5,3,1))
     # assert y.tag.trace
     IntParam(8),
+    in_c_key=False)
+
+AddConfigVar(
+    'traceback.compile_limit',
+    "The number of stack to trace to keep during compilation. -1 mean all."
+    " If greater then 0, will also make us save Theano internal stack trace.",
+    IntParam(0),
     in_c_key=False)
 
 AddConfigVar('experimental.mrg',
@@ -626,7 +664,8 @@ AddConfigVar('warn.ignore_bug_before',
               "bugs found after that version. "
               "Warning for specific bugs can be configured with specific "
               "[warn] flags."),
-             EnumStr('0.6', 'None', 'all', '0.3', '0.4', '0.4.1', '0.5', '0.7',
+             EnumStr('0.7', 'None', 'all', '0.3', '0.4', '0.4.1', '0.5', '0.6',
+                     '0.7', '0.8', '0.8.1', '0.8.2',
                      allow_override=False),
              in_c_key=False)
 
@@ -844,7 +883,8 @@ AddConfigVar(
     "It can be used to speed up compilation, reduce overhead "
     "(particularly for scalars) and reduce the number of generated C "
     "files.",
-    BoolParam(True))
+    BoolParam(True),
+    in_c_key=True)
 
 AddConfigVar(
     'cache_optimizations',
@@ -853,7 +893,8 @@ AddConfigVar(
     "any optimized graph and its optimization. Actually slow downs a lot "
     "the first optimization, and could possibly still contains some bugs. "
     "Use at your own risks.",
-    BoolParam(False))
+    BoolParam(False),
+    in_c_key=False)
 
 
 def good_seed_param(seed):
@@ -1042,6 +1083,13 @@ AddConfigVar('profiling.debugprint',
              BoolParam(False),
              in_c_key=False)
 
+AddConfigVar('profiling.ignore_first_call',
+             """
+             Do we ignore the first call of a Theano function.
+             """,
+             BoolParam(False),
+             in_c_key=False)
+
 AddConfigVar('optdb.position_cutoff',
              'Where to stop eariler during optimization. It represent the'
              ' position of the optimizer where to stop.',
@@ -1055,13 +1103,9 @@ AddConfigVar('optdb.max_use_ratio',
 
 AddConfigVar('gcc.cxxflags',
              "Extra compiler flags for gcc",
-             StrParam(""))
-
-AddConfigVar(
-    'cmodule.mac_framework_link',
-    "If set to True, breaks certain MacOS installations with the infamous "
-    "Bus Error",
-    BoolParam(False))
+             StrParam(""),
+             # Added elsewhere in the c key only when needed.
+             in_c_key=False)
 
 AddConfigVar('cmodule.warn_no_version',
              "If True, will print a warning when compiling one or more Op "
@@ -1075,11 +1119,15 @@ AddConfigVar('cmodule.remove_gxx_opt',
              "If True, will remove the -O* parameter passed to g++."
              "This is useful to debug in gdb modules compiled by Theano."
              "The parameter -g is passed by default to g++",
-             BoolParam(False))
+             BoolParam(False),
+             # TODO: change so that this isn't needed.
+             # This can be done by handing this in compile_args()
+             in_c_key=True)
 
 AddConfigVar('cmodule.compilation_warning',
              "If True, will print compilation warnings.",
-             BoolParam(False))
+             BoolParam(False),
+             in_c_key=False)
 
 
 AddConfigVar('cmodule.preload_cache',
@@ -1298,7 +1346,9 @@ def try_blas_flag(flags):
 
 AddConfigVar('blas.ldflags',
              "lib[s] to include for [Fortran] level-3 blas implementation",
-             StrParam(default_blas_ldflags))
+             StrParam(default_blas_ldflags),
+             # Added elsewhere in the c key only when needed.
+             in_c_key=False)
 
 AddConfigVar(
     'metaopt.verbose',
@@ -1382,12 +1432,19 @@ AddConfigVar(
 
 AddConfigVar('scan.allow_gc',
              "Allow/disallow gc inside of Scan (default: False)",
-             BoolParam(False))
+             BoolParam(False),
+             in_c_key=False)
 
 AddConfigVar('scan.allow_output_prealloc',
              "Allow/disallow memory preallocation for outputs inside of scan "
              "(default: True)",
-             BoolParam(True))
+             BoolParam(True),
+             in_c_key=False)
+
+AddConfigVar('scan.debug',
+             "If True, enable extra verbose output related to scan",
+             BoolParam(False),
+             in_c_key=False)
 
 AddConfigVar('pycuda.init',
              """If True, always initialize PyCUDA when Theano want to
@@ -1402,7 +1459,9 @@ AddConfigVar('pycuda.init',
 
 AddConfigVar('cublas.lib',
              """Name of the cuda blas library for the linker.""",
-             StrParam('cublas'))
+             StrParam('cublas'),
+             # Added elsewhere in the c key only when needed.
+             in_c_key=False)
 
 AddConfigVar('lib.cnmem',
              """Do we enable CNMeM or not (a faster CUDA memory allocator).

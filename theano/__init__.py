@@ -21,12 +21,19 @@ which may be rendered with Sphinx. A rendered version is
 maintained at http://www.deeplearning.net/software/theano/library/
 
 """
+from __future__ import absolute_import, print_function, division
 
 __docformat__ = "restructuredtext en"
 
 # Set a default logger. It is important to do this before importing some other
 # theano code, since this code may want to log some messages.
 import logging
+
+import sys
+
+if sys.platform == 'win32' and sys.version_info[0:2] == (3, 5):
+    raise RuntimeError(
+        "Theano do not support Python 3.5 on Windows. Use Python 2.7 or 3.4.")
 
 theano_logger = logging.getLogger("theano")
 logging_default_handler = logging.StreamHandler()
@@ -115,7 +122,7 @@ if (config.device.startswith('cuda') or
         config.init_gpu_device.startswith('cuda') or
         config.init_gpu_device.startswith('opencl') or
         config.contexts != ''):
-    import theano.sandbox.gpuarray
+    import theano.gpuarray
 
 # Use config.numpy to call numpy.seterr
 import numpy

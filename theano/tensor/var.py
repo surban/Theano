@@ -1,8 +1,10 @@
+from __future__ import absolute_import, print_function, division
 import copy
 import traceback as tb
 import warnings
 
 import numpy
+from six import integer_types
 from six.moves import xrange
 
 import theano
@@ -319,7 +321,7 @@ class _tensor_py_operators(object):
         """
 
         if ndim is not None:
-            if not isinstance(ndim, int):
+            if not isinstance(ndim, integer_types):
                 raise ValueError("Expected ndim to be an integer, is " +
                                  str(type(ndim)))
 
@@ -522,8 +524,20 @@ class _tensor_py_operators(object):
                         counter += 1
                         new_args.append(arg)
                 view = self.dimshuffle(pattern)
-                rval = view.__getitem__(tuple(new_args))
-                return rval
+                full_slices = True
+                for arg in new_args:
+                    # We can't do arg == slice(None, None, None) as in
+                    # Python 2.7, this call __lt__ if we have a slice
+                    # with some symbolic variable.
+                    if not (isinstance(arg, slice) and
+                            arg.start is None and
+                            arg.stop is None and
+                            arg.step is None):
+                        full_slices = False
+                if full_slices:
+                    return view
+                else:
+                    return view.__getitem__(tuple(new_args))
             else:
                 return theano.tensor.subtensor.Subtensor(args)(
                     self, *theano.tensor.subtensor.Subtensor.collapse(
@@ -591,15 +605,19 @@ class _tensor_py_operators(object):
                                         dtype=dtype, keepdims=keepdims,
                                         acc_dtype=acc_dtype)
 
-    def norm(self, L, axis=None):
+    def norm(self, L, axis=None, keepdims=False):
         if L == 0:
             raise NotImplementedError()
         if numpy.isinf(L):
             raise NotImplementedError()
         # optimizations will/should catch cases like L=1, L=2
-        return theano.tensor.basic.pow(
+        y = theano.tensor.basic.pow(
             theano.tensor.basic.pow(
                 theano.tensor.basic.abs_(self), L).sum(axis=axis), 1.0 / L)
+        if keepdims:
+            return theano.tensor.basic.makeKeepDims(self, y, axis)
+        else:
+            return y
 
     def mean(self, axis=None, dtype=None, keepdims=False, acc_dtype=None):
         """See `theano.tensor.mean`."""
@@ -682,6 +700,9 @@ class _tensor_py_operators(object):
 
     def cumprod(self, axis=None):
         return theano.tensor.extra_ops.cumprod(self, axis)
+
+    def searchsorted(self, v, side='left', sorter=None):
+        return theano.tensor.extra_ops.searchsorted(self, v, side, sorter)
 
     def ptp(self, axis=None):
         """See 'theano.tensor.ptp'."""
@@ -887,8 +908,9 @@ class TensorConstant(_tensor_py_operators, Constant):
         return TensorConstantSignature((self.type, self.data))
 
     def equals(self, other):
-        # Override Contant.equals to allow to compare with numpy.ndarray
-        if isinstance(other, numpy.ndarray):
+        # Override Contant.equals to allow to compare with
+        # numpy.ndarray, and python type.
+        if isinstance(other, (numpy.ndarray, int, float)):
             # Make a TensorConstant to be able to compare
             other = theano.tensor.basic.constant(other)
         return (isinstance(other, TensorConstant) and

@@ -4,6 +4,7 @@ This module provides utility functions for the Scan Op.
 See scan.py for details on scan.
 
 """
+from __future__ import absolute_import, print_function, division
 __docformat__ = 'restructedtext en'
 __authors__ = ("Razvan Pascanu "
                "Frederic Bastien "
@@ -150,7 +151,8 @@ def traverse(out, x, x_copy, d, visited=None):
     if out in visited:
         return d
     visited.add(out)
-    from theano.sandbox import cuda, gpuarray
+    from theano.sandbox import cuda
+    from theano import gpuarray
     if out == x:
         if isinstance(x.type, cuda.CudaNdarrayType):
             d[out] = cuda.gpu_from_host(x_copy)

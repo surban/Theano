@@ -3,10 +3,11 @@ Defines the base class for optimizations as well as a certain
 amount of useful generic optimization tools.
 
 """
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 
 from collections import deque
 import copy
+import inspect
 import logging
 import pdb
 import sys
@@ -19,7 +20,7 @@ import numpy
 import theano
 from theano import config
 from theano.compat import izip, OrderedDict
-from six import string_types, iteritems, itervalues
+from six import string_types, iteritems, itervalues, integer_types
 from six.moves import reduce
 from theano.gof import graph, op, utils, unify, toolbox
 from theano.gof.fg import InconsistencyError
@@ -219,17 +220,23 @@ class SeqOptimizer(Optimizer, list):
         if fgraph.profile:
             validate_before = fgraph.profile.validate_time
             sub_validate_time = [validate_before]
+            callbacks_before = fgraph.execute_callbacks_times.copy()
         else:
             sub_validate_time = []
+            callbacks_before = []
         callback_before = fgraph.execute_callbacks_time
         nb_node_before = len(fgraph.apply_nodes)
         sub_profs = []
+        nb_nodes = []
         for optimizer in self:
             try:
+                nb_nodes_before = len(fgraph.apply_nodes)
                 t0 = time.time()
                 sub_prof = optimizer.optimize(fgraph)
                 l.append(float(time.time() - t0))
                 sub_profs.append(sub_prof)
+                nb_nodes.append((nb_nodes_before,
+                                 len(fgraph.apply_nodes)))
                 if fgraph.profile:
                     sub_validate_time.append(fgraph.profile.validate_time)
             except AssertionError:
@@ -244,11 +251,22 @@ class SeqOptimizer(Optimizer, list):
 
         if fgraph.profile:
             validate_time = fgraph.profile.validate_time - validate_before
+            callbacks_time = {}
+            for k, v in iteritems(fgraph.execute_callbacks_times):
+                if k in callbacks_before:
+                    t = v - callbacks_before[k]
+                    if t > 0:
+                        callbacks_time[k] = t
+                else:
+                    callbacks_time[k] = v
         else:
             validate_time = None
+            callbacks_time = {}
+
         callback_time = fgraph.execute_callbacks_time - callback_before
         return (self, l, validate_time, callback_time, nb_node_before,
-                len(fgraph.apply_nodes), sub_profs, sub_validate_time)
+                len(fgraph.apply_nodes), sub_profs, sub_validate_time,
+                nb_nodes, callbacks_time)
 
     def __str__(self):
         return "SeqOpt(%s)" % list.__str__(self)
@@ -268,8 +286,9 @@ class SeqOptimizer(Optimizer, list):
 
     @staticmethod
     def print_profile(stream, prof, level=0):
-        (opts, prof, validate_time, callback_time, nb_node_before,
-         nb_node_after, sub_profs, sub_validate_time) = prof
+        (opts, prof, validate_time, callback_time,
+         nb_node_before, nb_node_after, sub_profs, sub_validate_time,
+         nb_nodes, callbacks_time) = prof
         blanc = ('    ' * level)
 
         print(blanc, "SeqOptimizer", end=' ', file=stream)
@@ -281,33 +300,43 @@ class SeqOptimizer(Optimizer, list):
                " before/after optimization" % (
                    sum(prof), nb_node_before, nb_node_after)), file=stream)
         print(blanc, "  %.3fs for callback" % (callback_time), file=stream)
-        print(blanc, "      %.3fs for fgraph.validate()" % (validate_time), file=stream)
+        print(blanc, "      %.3fs for fgraph.validate()" % (validate_time),
+              file=stream)
+        if callback_time > 1:
+            print(blanc, "  callbacks_time", file=stream)
+            for i in sorted(iteritems(callbacks_time), key=lambda a: -a[1]):
+                if i[1] > 0:
+                    # We want to have the __str__ called, so we can't
+                    # just print i.
+                    print(blanc, "      ", i[0], ',', i[1], file=stream)
+
         if level == 0:
-            print(blanc, "  time      - (name, class, index) - validate time", file=stream)
+            print(blanc,
+                  "  time      - (name, class, index, nodes before, nodes after) - validate time",
+                  file=stream)
         ll = []
-        for opt in opts:
+        for (opt, nb_n) in zip(opts, nb_nodes):
             if hasattr(opt, "__name__"):
-                ll.append((opt.__name__, opt.__class__.__name__,
-                           opts.index(opt)))
+                name = opt.__name__
             else:
-                ll.append((opt.name, opt.__class__.__name__,
-                           opts.index(opt)))
+                name = opt.name
+            idx = opts.index(opt)
+            ll.append((name, opt.__class__.__name__,
+                       idx) + nb_n)
         lll = sorted(zip(prof, ll), key=lambda a: a[0])
 
         for (t, opt) in lll[::-1]:
-            # if t < 1:
-            #    continue
+            i = opt[2]
             if sub_validate_time:
-                i = opt[-1]
                 val_time = sub_validate_time[i + 1] - sub_validate_time[i]
                 print(blanc, '  %.6fs - %s - %.3fs' % (
                     t, opt, val_time), file=stream)
             else:
                 print(blanc, '  %.6fs - %s' % (t, opt), file=stream)
 
-            if sub_profs[opt[-1]]:
-                opts[opt[-1]].print_profile(stream, sub_profs[opt[-1]],
-                                            level=level + 1)
+            if sub_profs[i]:
+                opts[i].print_profile(stream, sub_profs[i],
+                                      level=level + 1)
         print(file=stream)
 
     @staticmethod
@@ -316,8 +345,8 @@ class SeqOptimizer(Optimizer, list):
         Merge 2 profiles returned by this cass apply() fct.
 
         """
-        new_t = []
-        new_l = []
+        new_t = []  # the time for the optimization
+        new_l = []  # the optimization
         new_sub_profile = []
         # merge common(same object) opt
         for l in set(prof1[0]).intersection(set(prof2[0])):
@@ -370,6 +399,13 @@ class SeqOptimizer(Optimizer, list):
             new_sub_profile.append(p[6][idx])
 
         new_opt = SeqOptimizer(*new_l)
+        new_nb_nodes = []
+        for p1, p2 in zip(prof1[8], prof2[8]):
+            new_nb_nodes.append((p1[0] + p2[0], p1[1] + p2[1]))
+        new_nb_nodes.extend(prof1[8][len(new_nb_nodes):])
+        new_nb_nodes.extend(prof2[8][len(new_nb_nodes):])
+
+        new_callbacks_times = merge_dict(prof1[9], prof2[9])
         # We need to assert based on the name as we merge also based on
         # the name.
         assert set([l.name for l in prof1[0]]).issubset(
@@ -379,7 +415,9 @@ class SeqOptimizer(Optimizer, list):
         assert len(new_t) == len(new_opt) == len(new_sub_profile)
         return (new_opt, new_t, prof1[2] + prof2[2],
                 prof1[3] + prof2[3],
-                -1, -1, new_sub_profile, [])
+                -1, -1, new_sub_profile, [],
+                new_nb_nodes,
+                new_callbacks_times)
 
 
 class _metadict:
@@ -833,7 +871,9 @@ class MergeOptimizer(Optimizer):
             callbacks_time = {}
             for k, v in iteritems(fgraph.execute_callbacks_times):
                 if k in callbacks_before:
-                    callbacks_time[k] = v - callbacks_before[k]
+                    t = v - callbacks_before[k]
+                    if t > 0:
+                        callbacks_time[k] = t
                 else:
                     callbacks_time[k] = v
         else:
@@ -863,7 +903,9 @@ class MergeOptimizer(Optimizer):
             print(blanc, "  callbacks_time", file=stream)
             for i in sorted(iteritems(callbacks_time), key=lambda a: a[1]):
                 if i[1] > 0:
-                    print(i)
+                    # We want to have the __str__ called, so we can't
+                    # just print i.
+                    print(blanc, "      ", i[0], ',', i[1], file=stream)
 
     @staticmethod
     def merge_profile(prof1, prof2):
@@ -1507,7 +1549,7 @@ class PatternSub(LocalOptimizer):
                     return retry_with_equiv()
                 else:
                     u = u.merge(expr, v)
-            elif (isinstance(pattern, (int, float)) and
+            elif (isinstance(pattern, (integer_types, float)) and
                     isinstance(expr, graph.Constant)):
                 if numpy.all(
                         theano.tensor.constant(pattern).value == expr.value):
@@ -1534,7 +1576,7 @@ class PatternSub(LocalOptimizer):
                     return pattern[0](*args)
                 elif isinstance(pattern, string_types):
                     return u[unify.Var(pattern)]
-                elif isinstance(pattern, (int, float)):
+                elif isinstance(pattern, (integer_types, float)):
                     return pattern
                 else:
                     return pattern.clone()
@@ -1586,10 +1628,14 @@ class PatternSub(LocalOptimizer):
 # Use the following classes to apply LocalOptimizers
 
 class Updater:
-    def __init__(self, importer, pruner, chin):
+    def __init__(self, importer, pruner, chin, name=None):
         self.importer = importer
         self.pruner = pruner
         self.chin = chin
+        self.name = name
+
+    def __str__(self):
+        return "Updater{%s}" % str(self.name)
 
     def on_import(self, fgraph, node, reason):
         if self.importer:
@@ -1689,7 +1735,7 @@ class NavigatorOptimizer(Optimizer):
             self.ignore_newtrees = ignore_newtrees
         self.failure_callback = failure_callback
 
-    def attach_updater(self, fgraph, importer, pruner, chin=None):
+    def attach_updater(self, fgraph, importer, pruner, chin=None, name=None):
         """
         Install some FunctionGraph listeners to help the navigator deal with
         the ignore_trees-related functionality.
@@ -1704,6 +1750,8 @@ class NavigatorOptimizer(Optimizer):
             from the graph.
         chin
             "on change input" called whenever a node's inputs change.
+        name
+            name of the Updater to attach.
 
         Returns
         -------
@@ -1718,7 +1766,7 @@ class NavigatorOptimizer(Optimizer):
         if importer is None and pruner is None:
             return None
 
-        u = Updater(importer, pruner, chin)
+        u = Updater(importer, pruner, chin, name=name)
         fgraph.attach_feature(u)
         return u
 
@@ -1781,7 +1829,10 @@ class NavigatorOptimizer(Optimizer):
         if replacements is False or replacements is None:
             return False
         old_vars = node.outputs
+        remove = []
         if isinstance(replacements, dict):
+            if "remove" in replacements:
+                remove = replacements.pop("remove")
             old_vars = list(replacements.keys())
             replacements = list(replacements.values())
         elif not isinstance(replacements, (tuple, list)):
@@ -1804,7 +1855,9 @@ class NavigatorOptimizer(Optimizer):
         if len(repl_pairs) == 0:
             return False
         try:
-            fgraph.replace_all_validate(repl_pairs, reason=lopt)
+            fgraph.replace_all_validate_remove(repl_pairs,
+                                               reason=lopt,
+                                               remove=remove)
             return True
         except Exception as e:
             # This means the replacements were rejected by the fgraph.
@@ -1865,8 +1918,8 @@ class TopoOptimizer(NavigatorOptimizer):
                     q.remove(node)
                 except ValueError:
                     pass
-
-        u = self.attach_updater(fgraph, importer, pruner)
+        u = self.attach_updater(fgraph, importer, pruner,
+                                name=getattr(self, 'name', None))
         nb = 0
         try:
             t0 = time.time()
@@ -1878,10 +1931,8 @@ class TopoOptimizer(NavigatorOptimizer):
                 current_node = node
                 nb += self.process_node(fgraph, node)
             loop_t = time.time() - t0
-        except Exception:
+        finally:
             self.detach_updater(fgraph, u)
-            raise
-        self.detach_updater(fgraph, u)
 
         callback_time = fgraph.execute_callbacks_time - callback_before
         nb_nodes_end = len(fgraph.apply_nodes)
@@ -1940,16 +1991,15 @@ class OpKeyOptimizer(NavigatorOptimizer):
                     q.remove(node)
                 except ValueError:
                     pass
-        u = self.attach_updater(fgraph, importer, pruner)
+        u = self.attach_updater(fgraph, importer, pruner,
+                                name=getattr(self, 'name', None))
         try:
             while q:
                 node = q.pop()
                 current_node = node
                 self.process_node(fgraph, node)
-        except Exception:
+        finally:
             self.detach_updater(fgraph, u)
-            raise
-        self.detach_updater(fgraph, u)
 
     def add_requirements(self, fgraph):
         """
@@ -1979,6 +2029,9 @@ class ChangeTracker:
 
     def on_attach(self, fgraph):
         fgraph.change_tracker = self
+
+    def on_detach(self, fgraph):
+        del fgraph.change_tracker
 
 
 def merge_dict(d1, d2):
@@ -2023,6 +2076,7 @@ class EquilibriumOptimizer(NavigatorOptimizer):
                  optimizers,
                  failure_callback=None,
                  ignore_newtrees=True,
+                 tracks_on_change_inputs=False,
                  max_use_ratio=None,
                  final_optimizers=None,
                  cleanup_optimizers=None):
@@ -2035,6 +2089,7 @@ class EquilibriumOptimizer(NavigatorOptimizer):
         self.global_optimizers = []
         self.final_optimizers = []
         self.cleanup_optimizers = []
+        self.tracks_on_change_inputs = tracks_on_change_inputs
 
         for opt in optimizers:
             if isinstance(opt, LocalOptimizer):
@@ -2181,8 +2236,14 @@ class EquilibriumOptimizer(NavigatorOptimizer):
                         q.remove(node)
                     except ValueError:
                         pass
-
-            u = self.attach_updater(fgraph, importer, pruner)
+            chin = None
+            if self.tracks_on_change_inputs:
+                def chin(node, i, r, new_r, reason):
+                    if node is not current_node and not isinstance(node, str):
+                        q.append(node)
+            u = self.attach_updater(fgraph, importer, pruner,
+                                    chin=chin,
+                                    name=getattr(self, 'name', None))
             try:
                 while q:
                     node = q.pop()
@@ -2259,10 +2320,18 @@ class EquilibriumOptimizer(NavigatorOptimizer):
                           "%f with the theano flag 'optdb.max_use_ratio'." %
                           config.optdb.max_use_ratio)
         fgraph.remove_feature(change_tracker)
+        assert len(loop_process_count) == len(loop_timing)
+        assert len(loop_process_count) == len(global_opt_timing)
+        assert len(loop_process_count) == len(nb_nodes)
+        assert len(loop_process_count) == len(io_toposort_timing)
+        assert len(loop_process_count) == len(global_sub_profs)
+        assert len(loop_process_count) == len(final_sub_profs)
+        assert len(loop_process_count) == len(cleanup_sub_profs)
         return (self, loop_timing, loop_process_count,
                 (start_nb_nodes, end_nb_nodes, max_nb_nodes),
                 global_opt_timing, nb_nodes, time_opts, io_toposort_timing,
-                node_created, global_sub_profs, final_sub_profs, cleanup_sub_profs)
+                node_created, global_sub_profs, final_sub_profs,
+                cleanup_sub_profs)
 
     def print_summary(self, stream=sys.stdout, level=0, depth=-1):
         name = getattr(self, 'name', None)
@@ -2552,7 +2621,7 @@ def pre_greedy_local_optimizer(list_optimizations, out):
         for opt in list_opt:
             ret = opt.transform(node)
             if ret is not False and ret is not None:
-                assert len(ret) == len(node.outputs)
+                assert len(ret) == len(node.outputs), opt
                 for k, v in zip(node.outputs, ret):
                     optimized_vars[k] = v
                 results = ret
@@ -2568,3 +2637,153 @@ def pre_greedy_local_optimizer(list_optimizations, out):
     final_outs, optimized_nodes = local_recursive_function(
         list_optimizations, out, {}, 0)
     return final_outs[out_index]
+
+
+def copy_stack_trace(from_var, to_var):
+    """
+    Copies the stack trace from one or more tensor variables to
+    one or more tensor variables.
+
+    Parameters
+    ----------
+    from_var
+        Tensor variable or list of tensor variables to copy stack traces from.
+    to_var
+        Tensor variable or list of tensor variables to copy stack traces to.
+
+    Notes
+    -----
+    The stacktrace is assumed to be of the form of a list of lists
+    of tuples. Each tuple contains the filename, line number, function name
+    and so on. Each list of tuples contains the truples belonging to a
+    particular variable.
+
+    """
+
+    # Store stack traces from from_var
+    tr = []
+    if type(from_var) is list:
+        # If from_var is a list, store concatenated stack traces
+        for v in from_var:
+            tr += getattr(v.tag, 'trace', [])
+
+    else:
+        # If from_var is not a list, it must be a single tensor variable,
+        # so just store that particular stack trace
+        tr = getattr(from_var.tag, 'trace', [])
+
+    # Copy over stack traces to to_var
+    if type(to_var) is list:
+        # Copy over stack traces from from_var to each variable in
+        # to_var, including the stack_trace of the to_var before
+        for v in to_var:
+            v.tag.trace = getattr(v.tag, 'trace', []) + tr
+    else:
+        # Copy over stack traces from from_var to each variable to
+        # to_var, including the stack_trace of the to_var before
+        to_var.tag.trace = getattr(to_var.tag, 'trace', []) + tr
+
+
+def check_stack_trace(f_or_fgraph, ops_to_check='last', bug_print='raise'):
+    """
+    This function checks if the outputs of specific ops of a compiled graph
+    have a stack.
+
+    Parameters
+    ----------
+    f_or_fgraph: theano.compile.function_module.Function or
+          theano.gof.fg.FunctionGraph
+        The compiled function or the function graph to be analysed.
+    ops_to_check: it can be of four different types:
+          - classes or instances inheriting from theano.gof.Op
+          - tuple/list of classes or instances inheriting from theano.gof.Op
+          - string
+          - function returning a boolean and taking as input an instance of
+            theano.gof.Op.
+        - if ops_to_check is a string, it should be either 'last' or 'all'.
+          'last' will check only the last op of the graph while 'all' will
+          check all the ops of the graph.
+        - if ops_to_check is an op or a tuple/list of ops, the function will
+          check that all the outputs of their occurrences in the graph have a
+          stack trace.
+        - if ops_to_check is a function, it should take as input a
+          theano.gof.Op and return a boolean indicating if the input op should
+          be checked or not.
+    bug_print: string belonging to {'raise', 'warn', 'ignore'}
+        You can specify the behaviour of the function when the specified
+        ops_to_check are not in the graph of f_or_fgraph: it can either raise
+        an exception, write a warning or simply ignore it.
+
+    Returns
+    -------
+    boolean
+        True if the outputs of the specified ops have a stack, False otherwise.
+
+    """
+    if isinstance(f_or_fgraph, theano.compile.function_module.Function):
+        fgraph = f_or_fgraph.maker.fgraph
+    elif isinstance(f_or_fgraph, theano.gof.fg.FunctionGraph):
+        fgraph = f_or_fgraph
+    else:
+        raise ValueError('The type of f_or_fgraph is not supported')
+
+    if (isinstance(ops_to_check, theano.gof.Op) or
+            (inspect.isclass(ops_to_check) and
+                issubclass(ops_to_check, theano.gof.Op))):
+        ops_to_check = (ops_to_check,)
+
+    # if ops_to_check is a string
+    if isinstance(ops_to_check, string_types):
+        if ops_to_check == 'last':
+            apply_nodes_to_check = [fgraph.outputs[i].owner for i in range(
+                len(fgraph.outputs))]
+        elif ops_to_check == 'all':
+            apply_nodes_to_check = fgraph.apply_nodes
+        else:
+            raise ValueError('The string ops_to_check is not recognised')
+
+    # if ops_to_check is a list/tuple of ops
+    elif isinstance(ops_to_check, (tuple, list)):
+        # Separate classes from instances in ops_to_check
+        op_instances = []
+        op_classes = []
+        for obj in ops_to_check:
+            if isinstance(obj, theano.gof.Op):
+                op_instances.append(obj)
+            else:
+                op_classes.append(obj)
+        op_classes = tuple(op_classes)
+
+        apply_nodes_to_check = (
+            [node for node in fgraph.apply_nodes if node.op in ops_to_check] +
+            [node for node in fgraph.apply_nodes
+             if isinstance(node.op, op_classes) or
+             (hasattr(node.op, 'scalar_op') and
+              isinstance(node.op.scalar_op, op_classes))])
+
+    # if ops_to_check is a function
+    elif hasattr(ops_to_check, '__call__'):
+        apply_nodes_to_check = [node for node in fgraph.apply_nodes
+                                if ops_to_check(node)]
+
+    else:
+        raise ValueError('ops_to_check does not have the right type')
+
+    if not apply_nodes_to_check:
+        msg = 'Provided op instances/classes are not in the graph or the ' \
+              'graph is empty'
+        if bug_print == 'warn':
+            warnings.warn(msg)
+        elif bug_print == 'raise':
+            raise Exception(msg)
+        elif bug_print == 'ignore':
+            pass
+        else:
+            raise ValueError('The string bug_print is not recognised')
+
+    for node in apply_nodes_to_check:
+        for output in node.outputs:
+            if (not hasattr(output.tag, 'trace') or not output.tag.trace):
+                return False
+
+    return True

@@ -4,6 +4,7 @@ Utility classes and methods to pickle parts of symbolic graph.
 These pickled graphs can be used, for instance, as cases for
 unit tests or regression tests.
 """
+from __future__ import absolute_import, print_function, division
 import numpy
 import os
 import pickle
@@ -274,10 +275,14 @@ class PersistentNdarrayLoad(object):
     """
     def __init__(self, zip_file):
         self.zip_file = zip_file
+        self.cache = {}
 
     def __call__(self, persid):
         array_type, name = persid.split('.')
 
+        if name in self.cache:
+            return self.cache[name]
+        ret = None
         array = numpy.lib.format.read_array(self.zip_file.open(name))
         if array_type == 'cuda_ndarray':
             if config.experimental.unpickle_gpu_on_cpu:
@@ -285,14 +290,16 @@ class PersistentNdarrayLoad(object):
                 warnings.warn("config.experimental.unpickle_gpu_on_cpu is set "
                               "to True. Unpickling CudaNdarray as "
                               "numpy.ndarray")
-                return array
+                ret = array
             elif cuda_ndarray:
-                return cuda_ndarray.cuda_ndarray.CudaNdarray(array)
+                ret = cuda_ndarray.cuda_ndarray.CudaNdarray(array)
             else:
                 raise ImportError("Cuda not found. Cannot unpickle "
                                   "CudaNdarray")
         else:
-            return array
+            ret = array
+        self.cache[name] = ret
+        return ret
 
 
 def dump(obj, file_handler, protocol=DEFAULT_PROTOCOL,

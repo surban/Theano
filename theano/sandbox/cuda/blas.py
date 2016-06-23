@@ -1,18 +1,17 @@
-from __future__ import print_function
-import copy
+from __future__ import absolute_import, print_function, division
 import os
 import logging
-_logger = logging.getLogger(__name__)
-
+from six import integer_types
+from six.moves import StringIO, reduce
 import theano
 from theano import Apply
 from theano import tensor
-from six.moves import StringIO, reduce
 from theano.sandbox.cuda.type import CudaNdarrayType
 from theano.sandbox.cuda import GpuOp
 from theano.sandbox.cuda.basic_ops import (as_cuda_ndarray_variable,
                                            gpu_contiguous)
 from theano.tensor import as_tensor_variable
+_logger = logging.getLogger(__name__)
 
 
 class GpuBatchedDot(GpuOp):
@@ -27,11 +26,11 @@ class GpuBatchedDot(GpuOp):
 
         assert inp1.dtype == "float32"
         assert inp2.dtype == "float32"
-        assert inp1.ndim == 3 # (batch, a, b)
+        assert inp1.ndim == 3  # (batch, a, b)
         assert inp2.ndim == 3
 
         return theano.Apply(self, [inp1, inp2],
-                           [self.output_type(inp1, inp2)()])
+                            [self.output_type(inp1, inp2)()])
 
     def output_type(self, inp1, inp2):
         return CudaNdarrayType(
@@ -181,8 +180,7 @@ class GpuBatchedDot(GpuOp):
             }
         } else {
             // copy inputs if not contiguous
-            """ +
-            ("\n".join("""
+            """ + ("\n".join("""
              if ((   CudaNdarray_HOST_DIMS(%(var)s)[0] > 1 && CudaNdarray_HOST_STRIDES(%(var)s)[0] != 1
                   && CudaNdarray_HOST_DIMS(%(var)s)[1] > 1 && CudaNdarray_HOST_STRIDES(%(var)s)[1] != 1
                   && CudaNdarray_HOST_DIMS(%(var)s)[2] > 1 && CudaNdarray_HOST_STRIDES(%(var)s)[2] != 1)
@@ -196,8 +194,7 @@ class GpuBatchedDot(GpuOp):
                  Py_XDECREF(%(var)s);
                  %(var)s = _copy;
              }
-             """ % dict(var=var, fail=fail) for var in (bx, by)))
-            + """
+             """ % dict(var=var, fail=fail) for var in (bx, by))) + """
 
             // fail if the output is not contiguous; we can't copy it because we
             // need to write to the original memory
@@ -361,7 +358,7 @@ class GpuDot22(GpuOp):
         if y.type.ndim != 2:
             raise TypeError(y)
         otype = CudaNdarrayType(
-                (x.type.broadcastable[0], y.type.broadcastable[1]))
+            (x.type.broadcastable[0], y.type.broadcastable[1]))
         return Apply(self, [x, y], [otype()])
 
     def c_code_cache_version(self):
@@ -449,7 +446,7 @@ class GpuDot22Scalar(GpuOp):
         if not tensor.blas._as_scalar(a):
             raise TypeError(a)
         otype = CudaNdarrayType(
-                (x.type.broadcastable[0], y.type.broadcastable[1]))
+            (x.type.broadcastable[0], y.type.broadcastable[1]))
         return Apply(self, [x, y, a], [otype()])
 
     def c_code_cache_version(self):
@@ -535,8 +532,8 @@ class GpuGemm(GpuOp):
             return 'GpuGemm{no_inplace}'
 
     def __eq__(self, other):
-        return (type(self) == type(other)\
-                and self.inplace == other.inplace)
+        return (type(self) == type(other) and
+                self.inplace == other.inplace)
 
     def __hash__(self):
         return hash(type(self)) ^ hash(self.inplace)
@@ -560,7 +557,7 @@ class GpuGemm(GpuOp):
         return (4,)
 
     def c_code(self, node, name, inputs, outputs, sub):
-        #z_out = alpha * dot(x,y) + beta * z_in
+        # z_out = alpha * dot(x,y) + beta * z_in
         # inplace version, set set z_out = z_in
         # not inplace version, we copy z_in to z_out.
         z_in, a, x, y, b = inputs
@@ -655,8 +652,8 @@ class GpuGemv(GpuOp):
             return 'GpuGemv{no_inplace}'
 
     def __eq__(self, other):
-        return (type(self) == type(other)\
-                and self.inplace == other.inplace)
+        return (type(self) == type(other) and
+                self.inplace == other.inplace)
 
     def __hash__(self):
         return hash(type(self)) ^ hash(self.inplace)
@@ -680,7 +677,7 @@ class GpuGemv(GpuOp):
         return (3,)
 
     def c_code(self, node, name, inputs, outputs, sub):
-        #z_out = alpha * dot(x,y) + beta * z_in
+        # z_out = alpha * dot(x,y) + beta * z_in
         # inplace version, set set z_out = z_in
         # not inplace version, we copy z_in to z_out.
         z_in, a, x, y, b = inputs
@@ -755,8 +752,8 @@ class GpuGer(GpuOp):
             return 'GpuGer{no_inplace}'
 
     def __eq__(self, other):
-        return (type(self) == type(other)\
-                and self.inplace == other.inplace)
+        return (type(self) == type(other) and
+                self.inplace == other.inplace)
 
     def __hash__(self):
         return hash(type(self)) ^ hash(self.inplace)
@@ -780,7 +777,7 @@ class GpuGer(GpuOp):
         return (2,)
 
     def c_code(self, node, name, inputs, outputs, sub):
-        #z_out = alpha * dot(x,y) + beta * z_in
+        # z_out = alpha * dot(x,y) + beta * z_in
         # inplace version, set set z_out = z_in
         # not inplace version, we copy z_in to z_out.
         z_in, a, x, y = inputs
@@ -874,7 +871,7 @@ class BaseGpuCorrMM(GpuOp):
             if border_mode != "valid":
                 raise ValueError("border_mode must be 'valid' if pad is given")
             border_mode = pad
-        if isinstance(border_mode, int):
+        if isinstance(border_mode, integer_types):
             border_mode = (border_mode, border_mode)
         if isinstance(border_mode, tuple):
             pad_h, pad_w = map(int, border_mode)
@@ -932,7 +929,7 @@ class BaseGpuCorrMM(GpuOp):
         # these files
         files = ['corr_gemm.cu']
         codes = [open(os.path.join(os.path.split(__file__)[0], f)).read()
-                for f in files]
+                 for f in files]
         return reduce(str.__add__, codes)
 
     def c_code_helper(self, bottom, weights, top, direction, sub, height=None, width=None):
@@ -945,7 +942,7 @@ class BaseGpuCorrMM(GpuOp):
 
         Parameters
         ----------
-        bottom 
+        bottom
             Variable name of the input images in the forward pass,
             or the gradient of the input images in backprop wrt. inputs
         weights
@@ -999,7 +996,7 @@ class BaseGpuCorrMM(GpuOp):
             out = bottom
         else:
             raise ValueError("direction must be one of 'forward', "
-                    "'backprop weights', 'backprop inputs'")
+                             "'backprop weights', 'backprop inputs'")
         # When subsampling, we cannot unambiguously infer the height and width
         # of bottom and weights from top, so we require them to be given.
         # Similarly, when pad="half", we cannot infer the weight size.
@@ -1156,7 +1153,7 @@ class GpuCorrMM(BaseGpuCorrMM):
     Parameters
     ----------
     border_mode
-	The width of a border of implicit zeros to pad the
+        The width of a border of implicit zeros to pad the
         input with. Must be a tuple with 2 elements giving the numbers of rows
         and columns to pad on each side, or a single integer to pad the same
         on all sides, or a string shortcut setting the padding at runtime:
@@ -1172,7 +1169,7 @@ class GpuCorrMM(BaseGpuCorrMM):
         but faster.
         Set to `(1, 1)` to disable subsampling.
     pad
-	Deprecated alias for `border_mode`.
+        Deprecated alias for `border_mode`.
 
     Notes
     -----
@@ -1245,8 +1242,8 @@ class GpuCorrMM_gradWeights(BaseGpuCorrMM):
     """
 
     def __init__(self, border_mode="valid",
-            subsample=(1, 1),
-            pad=(0, 0)):
+                 subsample=(1, 1),
+                 pad=(0, 0)):
         super(GpuCorrMM_gradWeights, self).__init__(border_mode, subsample, pad)
 
     def make_node(self, img, topgrad, shape=None):
@@ -1281,11 +1278,15 @@ class GpuCorrMM_gradWeights(BaseGpuCorrMM):
         bottom, top = inp[:2]
         weights, = grads
         weights = gpu_contiguous(weights)
-        d_bottom = GpuCorrMM_gradInputs(self.border_mode, self.subsample)(
-                weights, top, bottom.shape[-2:])
-        d_top = GpuCorrMM(self.border_mode, self.subsample)(
-                bottom, weights)
-        d_height_width = (theano.gradient.DisconnectedType()(),) * 2 if len(inp) == 4 else ()
+        d_bottom = GpuCorrMM_gradInputs(
+            self.border_mode, self.subsample)(weights,
+                                              top,
+                                              bottom.shape[-2:])
+        d_top = GpuCorrMM(
+            self.border_mode, self.subsample)(bottom, weights)
+        d_height_width = (
+            theano.gradient.DisconnectedType()(),
+            ) * 2 if len(inp) == 4 else ()
         return (d_bottom, d_top) + d_height_width
 
     def connection_pattern(self, node):
@@ -1307,8 +1308,8 @@ class GpuCorrMM_gradInputs(BaseGpuCorrMM):
     """
 
     def __init__(self, border_mode="valid",
-            subsample=(1, 1),
-            pad=(0, 0)):
+                 subsample=(1, 1),
+                 pad=(0, 0)):
         super(GpuCorrMM_gradInputs, self).__init__(border_mode, subsample, pad)
 
     def make_node(self, kern, topgrad, shape=None):
@@ -1340,11 +1341,14 @@ class GpuCorrMM_gradInputs(BaseGpuCorrMM):
         weights, top = inp[:2]
         bottom, = grads
         bottom = gpu_contiguous(bottom)
-        d_weights = GpuCorrMM_gradWeights(self.border_mode, self.subsample)(
+        d_weights = GpuCorrMM_gradWeights(
+            self.border_mode, self.subsample)(
                 bottom, top, weights.shape[-2:])
-        d_top = GpuCorrMM(self.border_mode, self.subsample)(
-                bottom, weights)
-        d_height_width = (theano.gradient.DisconnectedType()(),) * 2 if len(inp) == 4 else ()
+        d_top = GpuCorrMM(
+            self.border_mode, self.subsample)(bottom, weights)
+        d_height_width = (
+            theano.gradient.DisconnectedType()(),
+            ) * 2 if len(inp) == 4 else ()
         return (d_weights, d_top) + d_height_width
 
     def connection_pattern(self, node):
@@ -1410,7 +1414,7 @@ class BaseGpuCorr3dMM(GpuOp):
         # these files
         files = ['corr3d_gemm.cu']
         codes = [open(os.path.join(os.path.split(__file__)[0], f)).read()
-                for f in files]
+                 for f in files]
         return reduce(str.__add__, codes)
 
     def c_code_helper(self, bottom, weights,
@@ -1457,7 +1461,7 @@ class BaseGpuCorr3dMM(GpuOp):
             If self.pad == 'half', a variable giving the width of the filters
             for direction="backprop weights".
             Ignored otherwise.
-        depth 
+        depth
             If self.subsample[2] != 1, a variable giving the depth
             of the filters for direction="backprop weights" or the depth of the
             input images for direction="backprop inputs".
@@ -1486,7 +1490,7 @@ class BaseGpuCorr3dMM(GpuOp):
             out = bottom
         else:
             raise ValueError("direction must be one of 'forward', "
-                    "'backprop weights', 'backprop inputs'")
+                             "'backprop weights', 'backprop inputs'")
         # When subsampling, we cannot unambiguously infer the height and width
         # of bottom and weights from top, so we require them to be given.
         # Similarly, when pad="half", we cannot infer the weight size.
@@ -1753,10 +1757,16 @@ class GpuCorr3dMM(BaseGpuCorr3dMM):
         bottom, weights = inp
         top, = grads
         top = gpu_contiguous(top)
-        d_bottom = GpuCorr3dMM_gradInputs(self.border_mode, self.subsample, self.pad)(
-                weights, top, bottom.shape[-3:])
-        d_weights = GpuCorr3dMM_gradWeights(self.border_mode, self.subsample, self.pad)(
-                bottom, top, weights.shape[-3:])
+        d_bottom = GpuCorr3dMM_gradInputs(self.border_mode,
+                                          self.subsample,
+                                          self.pad)(weights,
+                                                    top,
+                                                    bottom.shape[-3:])
+        d_weights = GpuCorr3dMM_gradWeights(self.border_mode,
+                                            self.subsample,
+                                            self.pad)(bottom,
+                                                      top,
+                                                      weights.shape[-3:])
         return d_bottom, d_weights
 
 
@@ -1861,11 +1871,14 @@ class GpuCorr3dMM_gradInputs(BaseGpuCorr3dMM):
         weights, top = inp[:2]
         bottom, = grads
         bottom = gpu_contiguous(bottom)
-        d_weights = GpuCorr3dMM_gradWeights(self.border_mode, self.subsample, self.pad)(
-            bottom, top, weights.shape[-3:])
-        d_top = GpuCorr3dMM(self.border_mode, self.subsample, self.pad)(
+        d_weights = GpuCorr3dMM_gradWeights(
+            self.border_mode, self.subsample, self.pad)(
+                bottom, top, weights.shape[-3:])
+        d_top = GpuCorr3dMM(
+            self.border_mode, self.subsample, self.pad)(
                 bottom, weights)
-        d_height_width_depth = (theano.gradient.DisconnectedType()(),) * 3 if len(inp) == 5 else ()
+        d_height_width_depth = (theano.gradient.DisconnectedType()(),)\
+            * 3 if len(inp) == 5 else ()
         return (d_weights, d_top) + d_height_width_depth
 
     def connection_pattern(self, node):
@@ -1936,19 +1949,19 @@ class GpuConv(GpuOp):
         raise ValueError(mode)
 
     def __init__(self, border_mode,
-            subsample=(1, 1),
-            logical_img_hw=None,
-            logical_kern_hw=None,
-            logical_kern_align_top=True,
-            version=-1,
-            direction_hint=None,
-            verbose=0,
-            kshp=None,
-            imshp=None,
-            max_threads_dim0=None,
-            nkern=None,
-            bsize=None,
-            fft_opt=True):
+                 subsample=(1, 1),
+                 logical_img_hw=None,
+                 logical_kern_hw=None,
+                 logical_kern_align_top=True,
+                 version=-1,
+                 direction_hint=None,
+                 verbose=0,
+                 kshp=None,
+                 imshp=None,
+                 max_threads_dim0=None,
+                 nkern=None,
+                 bsize=None,
+                 fft_opt=True):
         self.border_mode = border_mode
         if version != -1:
             raise Exception(
@@ -2105,7 +2118,7 @@ class GpuConv(GpuOp):
         # these files
         files = ['conv_kernel.cu', 'conv_full_kernel.cu', 'conv.cu']
         codes = [open(os.path.join(os.path.split(__file__)[0], f)).read()
-                for f in files]
+                 for f in files]
         return reduce(str.__add__, codes)
 
     def c_code(self, node, nodename, inp, out_, sub):
@@ -2184,7 +2197,7 @@ class GpuDownsampleFactorMax(GpuOp):
         return Apply(self, [x], [x.type()])
 
     # def perform(self, node, input_storage, output_storage):
-        #raise NotImplementedError('only C is implemented')
+        # raise NotImplementedError('only C is implemented')
     def c_code_cache_version(self):
         return (6)
 

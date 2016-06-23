@@ -1,3 +1,4 @@
+from __future__ import absolute_import, print_function, division
 import logging
 import warnings
 
@@ -33,7 +34,7 @@ class TensorType(Type):
         Optional name for this type.
 
     """
-
+    context_name = 'cpu'
     filter_checks_isfinite = False
     """
     When this is True, strict filtering rejects data containing NaN or

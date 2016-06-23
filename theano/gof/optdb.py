@@ -1,10 +1,10 @@
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 import copy
 import sys
 
 from theano.compat import DefaultOrderedDict
 from theano.misc.ordered_set import OrderedSet
-from six import StringIO
+from six import StringIO, integer_types
 from theano.gof import opt
 from theano import config
 
@@ -244,16 +244,26 @@ class EquilibriumDB(DB):
         optimization application. This could result in less fgraph iterations,
         but this doesn't mean it will be faster globally.
 
+    tracks_on_change_inputs
+        If True, we will re-apply local opt on nodes whose inputs
+        changed during local optimization application. This could
+        result in less fgraph iterations, but this doesn't mean it
+        will be faster globally.
+
     Notes
     -----
     We can put LocalOptimizer and Optimizer as EquilibriumOptimizer
     suppor both.
 
+    It is probably not a good idea to have ignore_newtrees=False and
+    tracks_on_change_inputs=True
+
     """
 
-    def __init__(self, ignore_newtrees=True):
+    def __init__(self, ignore_newtrees=True, tracks_on_change_inputs=False):
         super(EquilibriumDB, self).__init__()
         self.ignore_newtrees = ignore_newtrees
+        self.tracks_on_change_inputs = tracks_on_change_inputs
         self.__final__ = {}
         self.__cleanup__ = {}
 
@@ -281,6 +291,7 @@ class EquilibriumDB(DB):
             opts,
             max_use_ratio=config.optdb.max_use_ratio,
             ignore_newtrees=self.ignore_newtrees,
+            tracks_on_change_inputs=self.tracks_on_change_inputs,
             failure_callback=opt.NavigatorOptimizer.warn_inplace,
             final_optimizers=final_opts,
             cleanup_optimizers=cleanup_opts)
@@ -310,7 +321,7 @@ class SequenceDB(DB):
 
     def register(self, name, obj, position, *tags):
         super(SequenceDB, self).register(name, obj, *tags)
-        assert isinstance(position, (int, float))
+        assert isinstance(position, (integer_types, float))
         self.__position__[name] = position
 
     def query(self, *tags, **kwtags):

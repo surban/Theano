@@ -1,4 +1,4 @@
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 import time
 
 from nose.plugins.skip import SkipTest
@@ -10,6 +10,7 @@ except ImportError:
 from six.moves import xrange
 
 import theano
+from theano.gof.opt import check_stack_trace
 from theano.tensor.nnet.conv3d2d import *
 import theano.tests.unittest_tools as utt
 
@@ -74,6 +75,11 @@ def pyconv3d(signals, filters):
     return rval
 
 
+def check_diagonal_subtensor_view_traces(fn):
+    assert check_stack_trace(
+        fn, ops_to_check=(DiagonalSubtensor, IncDiagonalSubtensor))
+
+
 def test_conv3d(mode=mode_without_gpu, shared=theano.tensor._shared):
     if ndimage is None:
         raise SkipTest("conv3d2d tests need SciPy")
@@ -100,6 +106,7 @@ def test_conv3d(mode=mode_without_gpu, shared=theano.tensor._shared):
                                 updates={s_output: out},
                                 mode=mode)
 
+    check_diagonal_subtensor_view_traces(newconv3d)
     t0 = time.time()
     newconv3d()
     print(time.time() - t0)
@@ -110,6 +117,7 @@ def test_conv3d(mode=mode_without_gpu, shared=theano.tensor._shared):
                                           (s_signals, gsignals)],
                                  mode=mode,
                                  name='grad')
+    check_diagonal_subtensor_view_traces(gnewconv3d)
 
     t0 = time.time()
     gnewconv3d()

@@ -1,29 +1,29 @@
-import copy
+from __future__ import absolute_import, print_function, division
+import os
+import sys
+from six import reraise
 
+from nose.plugins.skip import SkipTest
 import numpy
 
 import theano
 from theano import config, function, tensor
 from theano.sandbox import multinomial
-from theano.compile.mode import get_default_mode, predefined_linkers
+from theano.compile.mode import get_default_mode
 import theano.sandbox.cuda as cuda
 import theano.tests.unittest_tools as utt
-import os
 from theano.compat import PY3
 from theano.misc.pkl_utils import CompatUnpickler
 
 
 def get_mode(gpu):
     mode = get_default_mode()
-    mode = copy.copy(mode)
+    if theano.config.mode == 'FAST_COMPILE':
+        mode = theano.compile.get_mode('FAST_RUN')
     if gpu:
         mode = mode.including('gpu', 'gpu_local_optimizations',
                               'local_cut_gpu_host_gpu',
                               'local_gpu_multinomial')
-    if isinstance(mode.linker, theano.gof.PerformLinker):
-        mode.linker = predefined_linkers['c|py']
-    if hasattr(mode.linker, 'c_thunks'):
-        mode.linker.c_thunks = True
     return mode
 
 
@@ -91,7 +91,18 @@ def test_n_samples_compatibility():
             u = CompatUnpickler(pkl_file, encoding="latin1")
         else:
             u = CompatUnpickler(pkl_file)
-        X, samples = u.load()
+        try:
+            X, samples = u.load()
+        except ImportError:
+            # Windows sometimes fail with nonsensical errors like:
+            #   ImportError: No module named type
+            #   ImportError: No module named copy_reg
+            # when "type" and "copy_reg" are builtin modules.
+            if sys.platform == 'win32':
+                exc_type, exc_value, exc_trace = sys.exc_info()
+                reraise(SkipTest, exc_value, exc_trace)
+            raise
+
         f = theano.function([X], samples)
         res = f(numpy.random.randn(20, 10))
         assert numpy.all(res.sum(axis=1) == 1)

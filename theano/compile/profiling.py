@@ -2,7 +2,6 @@
 ProfileStats object for runtime and memory profiling.
 
 """
-from __future__ import print_function
 #
 # TODO: measure memory usage like ProfileMode did
 # TODO: put the optimization tips into a tips section??
@@ -10,6 +9,8 @@ from __future__ import print_function
 # TODO: ensure field width for string fields makes columns line up
 # TODO: what to do about 'diff summary'? (ask Fred?)
 #
+from __future__ import absolute_import, print_function, division
+
 __authors__ = "James Bergstra"
 __reviewer__ = "Razvan Pascanu"
 __copyright__ = "(c) 2011, Universite de Montreal"
@@ -17,6 +18,7 @@ __license__ = "3-clause BSD License"
 __contact__ = "theano-dev <theano-dev@googlegroups.com>"
 
 __docformat__ = "restructuredtext en"
+
 import atexit
 import copy
 import os
@@ -82,10 +84,16 @@ def _atexit_print_fn():
                     cum_attr[key] = val
 
             if cum.optimizer_profile and ps.optimizer_profile:
-                merge = cum.optimizer_profile[0].merge_profile(
-                    cum.optimizer_profile[1],
-                    ps.optimizer_profile[1])
-                cum.optimizer_profile = (cum.optimizer_profile[0], merge)
+                try:
+                    merge = cum.optimizer_profile[0].merge_profile(
+                        cum.optimizer_profile[1],
+                        ps.optimizer_profile[1])
+                    assert len(merge) == len(cum.optimizer_profile[1])
+                    cum.optimizer_profile = (cum.optimizer_profile[0], merge)
+                except Exception as e:
+                    print("Got an exception while merging profile")
+                    print(e)
+                    cum.optimizer_profile = None
             else:
                 cum.optimizer_profile = None
 
@@ -110,7 +118,16 @@ class ProfileStats(object):
         in this class.
 
     """
-
+    def reset(self):
+        """ Ignore previous function call"""
+        #self.compile_time = 0.
+        self.fct_call_time = 0.
+        self.fct_callcount = 0
+        self.vm_call_time = 0.
+        self.apply_time = {}
+        self.apply_callcount = {}
+        # self.apply_cimpl = None
+        #self.messge = None
     #
     # Note on implementation:
     # Class variables are used here so that each one can be
@@ -216,6 +233,7 @@ class ProfileStats(object):
             if not _atexit_registered:
                 atexit.register(_atexit_print_fn)
                 _atexit_registered = True
+        self.ignore_first_call = theano.config.profiling.ignore_first_call
 
     def class_time(self):
         """
@@ -810,7 +828,7 @@ class ProfileStats(object):
                                                  running_memory_size[1])
 
                 # Mimic the combination of Theano and Python gc
-                for ins in node.inputs:
+                for ins in set(node.inputs):
                     assert not (ins in view_of and viewed_by[ins])
                     # we trac the original var, so this shouldn't happen
                     if isinstance(ins.type, CudaNdarrayType):

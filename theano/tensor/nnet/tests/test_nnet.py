@@ -1,4 +1,4 @@
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 import unittest
 
 import numpy
@@ -10,6 +10,7 @@ from theano import config
 from theano import tensor as T
 from theano import tensor
 from theano import gof
+from theano.gof.opt import check_stack_trace
 from theano.tests import unittest_tools as utt
 from theano import printing
 from theano.tensor.nnet import (categorical_crossentropy,
@@ -30,8 +31,13 @@ from theano.tensor.nnet import (categorical_crossentropy,
                                 Prepend_scalar_to_each_row,
                                 relu,
                                 h_softmax,
-                                elu)
+                                elu,
+                                binary_crossentropy)
 from theano.tensor import matrix, vector, lvector, scalar
+from theano.tensor.nnet.nnet import softsign
+from theano.tensor.tests.test_basic import (makeBroadcastTester, check_floatX,
+                                            _good_broadcast_unary_normal_float_no_complex,
+                                            upcast_int8_nfunc)
 
 
 class T_sigmoid(unittest.TestCase):
@@ -139,6 +145,14 @@ class T_SoftmaxWithBias(utt.InferShapeTester):
         f([0, 1, 0])
         # print f.maker.fgraph.toposort()
 
+    def test_softmax_with_bias_trace(self):
+        a = theano.shared(
+            numpy.random.randn(3).astype(config.floatX))
+        b = theano.shared(numpy.float32(numpy.random.randn()))
+        sm = T.nnet.softmax(a + b)
+        f = theano.function([], sm)
+        assert check_stack_trace(f, ops_to_check='last')
+
     def test_infer_shape(self):
         admat = matrix()
         advec = vector()
@@ -201,11 +215,11 @@ class T_LogSoftmax(utt.InferShapeTester):
         # numerically stable log-softmax with crossentropy
         logsm = tensor.nnet.logsoftmax(x)
         sm2 = tensor.exp(logsm)  # just used to show equivalence with sm
-        cm2 = -tensor.sum(y*logsm, axis=1)
+        cm2 = -tensor.sum(y * logsm, axis=1)
         grad = tensor.grad(cm2.mean(), x)
 
         # create some inputs into a softmax that are large and labels
-        a = numpy.exp(10*numpy.random.rand(5, 10).astype(theano.config.floatX))
+        a = numpy.exp(10 * numpy.random.rand(5, 10).astype(theano.config.floatX))
         # create some one-hot coded labels
         b = numpy.eye(5, 10).astype(theano.config.floatX)
 
@@ -244,6 +258,8 @@ class T_LogSoftmax(utt.InferShapeTester):
         f = theano.function([x], logsm)
         assert isinstance(f.maker.fgraph.outputs[0].owner.op,
                           theano.tensor.nnet.nnet.LogSoftmax)
+        assert check_stack_trace(
+            f, ops_to_check=theano.tensor.nnet.nnet.LogSoftmax)
 
     def test_local_softmax_grad_optimization_and_big_input(self):
         """Test the Logsoftmax's grad substitution.
@@ -257,7 +273,8 @@ class T_LogSoftmax(utt.InferShapeTester):
         m.check_isfinite = False
         # some inputs that are large to make the gradient explode in the non
         # optimized case
-        a = numpy.exp(10*numpy.random.rand(5, 10).astype(theano.config.floatX))
+        a = numpy.exp(
+            10 * numpy.random.rand(5, 10).astype(theano.config.floatX))
 
         def myfunc(x):
             sm = tensor.nnet.softmax(x)
@@ -265,6 +282,9 @@ class T_LogSoftmax(utt.InferShapeTester):
             return logsm
         # We set step to 0.1 because for big values we need a big epsilon
         utt.verify_grad(myfunc, [a], eps=0.1, mode=m)
+        sa = theano.shared(a)
+        f = theano.function([], myfunc(sa))
+        self.assertTrue(check_stack_trace(f, ops_to_check='all'))
 
 
 class T_SoftmaxGrad(utt.InferShapeTester):
@@ -289,7 +309,7 @@ class T_CrossentropySoftmax1Hot(unittest.TestCase):
         def f(a, b):
             return crossentropy_softmax_1hot_with_bias(a, b, y_idx)[0]
         utt.verify_grad(f, [numpy.random.rand(3, 4),
-            numpy.random.rand(4)])
+                            numpy.random.rand(4)])
 
     def test1(self):
         y_idx = [0, 1, 3]
@@ -318,12 +338,12 @@ class T_CrossentropySoftmax1HotWithBiasDx(utt.InferShapeTester):
     def test0(self):
         def ff(class_dtype):
             def f(sm):
-               # Class indices
-               y = numpy.random.randint(low=0, high=5, size=10).astype(class_dtype)
-               return theano.tensor.nnet.crossentropy_softmax_1hot_with_bias_dx(
-                   numpy.random.rand(10),  # Gradient w.r.t. NLL.
-                   sm,                     # Softmax output.
-                   y)
+                # Class indices
+                y = numpy.random.randint(low=0, high=5, size=10).astype(class_dtype)
+                return theano.tensor.nnet.crossentropy_softmax_1hot_with_bias_dx(
+                    numpy.random.rand(10),  # Gradient w.r.t. NLL.
+                    sm,                     # Softmax output.
+                    y)
             return f
         # Build a random softmax output whose rows sum to 1.
         softmax_output = numpy.random.rand(10, 5)
@@ -642,6 +662,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
         fgraph = gof.FunctionGraph(
                 [x, one_of_n],
                 [g_x])
+        assert check_stack_trace(
+            fgraph, ops_to_check=[crossentropy_softmax_1hot_with_bias_dx,
+                                  softmax_op])
 
         # print 'BEFORE'
         # for node in fgraph.toposort():
@@ -737,6 +760,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
         for expr in expressions:
             # Verify the optimizer worked on the expressions
             f = theano.function([x, y], expr, mode=mode)
+            # todo: only the first output of the op has a stack trace
+            # assert check_stack_trace(
+            #     f, ops_to_check=crossentropy_softmax_argmax_1hot_with_bias)
             if verbose:
                 theano.printing.debugprint(f)
             try:
@@ -752,6 +778,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
 
             # Also verify the gradient wrt x
             g = theano.function([x, y], T.grad(expr, x), mode=mode)
+            assert check_stack_trace(
+                g, ops_to_check=[crossentropy_softmax_1hot_with_bias_dx,
+                                 softmax_op])
             if verbose:
                 theano.printing.debugprint(g)
             try:
@@ -774,6 +803,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
 
         for expr in bias_expressions:
             f = theano.function([x, b, y], expr, mode=mode)
+            # todo: only the first output of the op has a stack trace
+            # assert check_stack_trace(
+            #     f, ops_to_check=crossentropy_softmax_argmax_1hot_with_bias)
             if verbose:
                 theano.printing.debugprint(f)
             try:
@@ -785,6 +817,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
                 theano.printing.debugprint(f)
                 raise
             g = theano.function([x, b, y], T.grad(expr, x), mode=mode)
+            assert check_stack_trace(
+                g, ops_to_check=[crossentropy_softmax_1hot_with_bias_dx,
+                                 softmax_with_bias])
             if verbose:
                 theano.printing.debugprint(g)
             try:
@@ -807,6 +842,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
 
         for expr in mean_expressions:
             f = theano.function([x, y], expr, mode=mode)
+            # todo: only the first output of the op has a stack trace
+            # assert check_stack_trace(
+            #     f, ops_to_check=[crossentropy_softmax_argmax_1hot_with_bias])
             if verbose:
                 theano.printing.debugprint(f)
             try:
@@ -821,6 +859,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
                 raise
 
             g = theano.function([x, y], T.grad(expr, x), mode=mode)
+            assert check_stack_trace(
+                g, ops_to_check=[crossentropy_softmax_1hot_with_bias_dx,
+                                 softmax_op])
             if verbose:
                 theano.printing.debugprint(g)
             try:
@@ -844,6 +885,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
 
         for expr in mean_bias_expressions:
             f = theano.function([x, b, y], expr, mode=mode)
+            # todo: only the first output of the op has a stack trace
+            # assert check_stack_trace(
+            #     f, ops_to_check=crossentropy_softmax_argmax_1hot_with_bias)
             if verbose:
                 theano.printing.debugprint(f)
             try:
@@ -856,6 +900,9 @@ class T_CrossentropyCategorical1Hot(utt.InferShapeTester):
                 theano.printing.debugprint(f)
                 raise
             g = theano.function([x, b, y], T.grad(expr, x), mode=mode)
+            assert check_stack_trace(
+                g, ops_to_check=[crossentropy_softmax_1hot_with_bias_dx,
+                                 softmax_with_bias])
             if verbose:
                 theano.printing.debugprint(g)
             try:
@@ -1261,6 +1308,8 @@ def test_argmax_pushdown():
         assert len(fgraph.toposort()) == 2  # an output_guard is second
         assert fgraph.toposort()[0].op == tensor.basic._max_and_argmax
         assert str(fgraph.toposort()[1].op) == 'OutputGuard'
+        assert check_stack_trace(
+            fgraph, ops_to_check=tensor.basic._max_and_argmax)
         x = tensor.matrix()
         # test that the max_and_argmax is not pushed down if the max is used
         out = tensor.max_and_argmax(
@@ -1304,11 +1353,12 @@ def test_argmax_pushdown_bias():
     # print 'AFTER'
     # for node in fgraph.toposort():
     #    print node.op
+    types_to_check = (tensor.DimShuffle, tensor.Elemwise, tensor.MaxAndArgmax)
     assert len(fgraph.toposort()) == 4
-    assert isinstance(fgraph.toposort()[0].op, tensor.DimShuffle)
-    assert isinstance(fgraph.toposort()[1].op, tensor.Elemwise)
-    assert isinstance(fgraph.toposort()[2].op, tensor.MaxAndArgmax)
+    for i, type in enumerate(types_to_check):
+        assert isinstance(fgraph.toposort()[i].op, type)
     assert str(fgraph.toposort()[3].op) == 'OutputGuard'
+    assert check_stack_trace(fgraph, ops_to_check=types_to_check)
 
     x = tensor.matrix()
     b = tensor.vector()
@@ -1321,7 +1371,7 @@ def test_argmax_pushdown_bias():
     config.warn.argmax_pushdown_bug = False
     try:
         theano.compile.mode.optdb.query(
-                theano.compile.mode.OPT_FAST_RUN).optimize(fgraph)
+            theano.compile.mode.OPT_FAST_RUN).optimize(fgraph)
     finally:
         config.warn.argmax_pushdown_bug = backup
 
@@ -1333,6 +1383,8 @@ def test_argmax_pushdown_bias():
     assert isinstance(fgraph.toposort()[1].op, tensor.CAReduce)
     assert isinstance(fgraph.toposort()[1].op.scalar_op, theano.scalar.Maximum)
     assert str(fgraph.toposort()[2].op) == 'OutputGuard'
+    assert check_stack_trace(
+        fgraph, ops_to_check=(SoftmaxWithBias, tensor.CAReduce))
 
 
 def test_asymptotic_32():
@@ -1405,6 +1457,9 @@ class Test_softmax_opt:
 
         # test that function contains softmax and no div.
         f = theano.function([c], p_y, mode=self.mode)
+
+        assert check_stack_trace(f, ops_to_check=softmax_op)
+
         f_ops = [n.op for n in f.maker.fgraph.toposort()]
         # print '--- f ='
         # printing.debugprint(f)
@@ -1419,6 +1474,9 @@ class Test_softmax_opt:
 
         # test that function contains softmax and no div.
         f = theano.function([c], p_y, mode=self.mode)
+
+        assert check_stack_trace(f, ops_to_check=softmax_op)
+
         f_ops = [n.op for n in f.maker.fgraph.toposort()]
         # print '--- f ='
         # printing.debugprint(f)
@@ -1522,6 +1580,7 @@ def test_stabilize_log_softmax():
     z = theano.tensor.log(y)
 
     f = theano.function([x], z, mode=mode)
+    assert check_stack_trace(f, ops_to_check='all')
 
     # check that the softmax has been optimized out
     for node in f.maker.fgraph.toposort():
@@ -1555,6 +1614,15 @@ def test_relu():
                         dtype=config.floatX)
         y = relu(x, alpha).eval({x: X, alpha: A})
         assert numpy.allclose(y, numpy.where(X > 0, X, A * X), rtol=3e-5)
+
+    # test that for alpha of ndarray don't cause upcast.
+    x = matrix('x', dtype='float32')
+    rng = numpy.random.RandomState(seed)
+    X = rng.randn(20, 30).astype('float32')
+    alpha = numpy.asarray(.123, dtype='float32')
+    y = relu(x, alpha).eval({x: X})
+    assert numpy.allclose(y, numpy.where(X > 0, X, alpha * X))
+    assert y.dtype == 'float32'
 
 
 def test_h_softmax():
@@ -1621,7 +1689,6 @@ def test_h_softmax():
     #############
     x_mat = numpy.random.normal(size=(batch_size, input_size)).astype(floatX)
     y_mat = numpy.random.randint(0, output_size, batch_size).astype('int32')
-
     tg_output = fun_output_tg(x_mat, y_mat)
     all_outputs = fun_output(x_mat)
 
@@ -1648,3 +1715,25 @@ def test_elu():
     for alpha in 1.5, 2, -1, -1.5, -2:
         y = elu(x, alpha).eval({x: X})
         utt.assert_allclose(y, numpy.where(X > 0, X, alpha * (numpy.exp(X) - 1)))
+
+
+def test_binary_crossentropy_reshape():
+    # Reported as https://github.com/Theano/Theano/issues/4086
+    a = tensor.tensor4('a')
+    for c in (binary_crossentropy(sigmoid(a.reshape((-1, 1))), 1).sum(),
+              binary_crossentropy(sigmoid(a).reshape((-1, 1)), 1).sum()):
+
+        ga = theano.grad(c, a)
+        # This only works when "specialize" options are included
+        mode = theano.compile.get_default_mode().including('fast_run')
+        fga = theano.function([a], ga, mode=mode)
+        utt.assert_allclose(fga(numpy.array([[[[30.]]]], dtype=config.floatX)),
+                            numpy.zeros((1, 1, 1, 1), dtype=config.floatX))
+
+SoftsignTester = makeBroadcastTester(
+    op=softsign,
+    expected=upcast_int8_nfunc(lambda inputs: check_floatX(
+        inputs, inputs/(1.0+numpy.fabs(inputs)))),
+    good=_good_broadcast_unary_normal_float_no_complex,
+    name='SoftsignTester',
+)

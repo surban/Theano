@@ -124,7 +124,7 @@ If arguments to GEMM are dimshuffled vectors, then we can use GEMV
 instead. This optimization is `local_gemm_to_gemv`.
 
 """
-from __future__ import print_function
+from __future__ import absolute_import, print_function, division
 import copy
 import logging
 import os
@@ -152,6 +152,7 @@ from theano.tensor import basic as T
 from theano.tensor.blas_headers import blas_header_text
 from theano.tensor.blas_headers import blas_header_version
 from theano.tensor.opt import in2out, local_dimshuffle_lift
+from theano.tensor.type import values_eq_approx_remove_inf_nan
 
 _logger = logging.getLogger('theano.tensor.blas')
 
@@ -1435,7 +1436,8 @@ class GemmOptimizer(Optimizer):
             if new_node is not node:
                 nodelist.append(new_node)
 
-        u = theano.gof.opt.Updater(on_import, None, None)
+        u = theano.gof.opt.Updater(on_import, None, None,
+                                   name="GemmOptimizer")
         fgraph.attach_feature(u)
         while did_something:
             nb_iter += 1
@@ -1465,6 +1467,7 @@ class GemmOptimizer(Optimizer):
                 if new_outputs:
                     new_outputs, old_dot22 = new_outputs
                     assert len(new_outputs) == len(node.outputs)
+                    new_outputs[0].tag.values_eq_approx = values_eq_approx_remove_inf_nan
                     try:
                         fgraph.replace_all_validate_remove(
                             list(zip(node.outputs, new_outputs)),
@@ -2433,6 +2436,8 @@ class BatchedDot(Op):
                 raise NotImplementedError()
         xshp, yshp = shapes
         return [xshp[:-1] + yshp[2:]]
+
+batched_dot = BatchedDot()
 
 
 # from opt import register_specialize, register_canonicalize

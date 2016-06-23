@@ -76,7 +76,7 @@ APPLY_SPECIFIC(conv_gi)(CudaNdarray *kerns, CudaNdarray *output,
       {
         // Obtain a convolution algorithm appropriate for the kernel and output
         // shapes. Either by choosing one according to heuristics or by making
-        // CuDNN time every implementation and choose the best one.
+        // cuDNN time every implementation and choose the best one.
         if (CHOOSE_ALGO_TIME)
         {
           // Time the different implementations to choose the best one
@@ -158,6 +158,30 @@ APPLY_SPECIFIC(conv_gi)(CudaNdarray *kerns, CudaNdarray *output,
         chosen_algo = CONV_ALGO;
     }
 
+    if (0){
+      char * a;
+      switch(chosen_algo){
+      case CUDNN_CONVOLUTION_BWD_DATA_ALGO_0:
+	a = "implicit gemm (0)";
+	break;
+      case CUDNN_CONVOLUTION_BWD_DATA_ALGO_1:
+	a = "precomp gemm (1)";
+	break;
+      case CUDNN_CONVOLUTION_BWD_DATA_ALGO_FFT:
+	a = "fft (2)";
+	break;
+      case CUDNN_CONVOLUTION_BWD_DATA_ALGO_FFT_TILING:
+	a = "fft tiling (3)";
+	break;
+#if CUDNN_VERSION > 5000
+      case CUDNN_CONVOLUTION_BWD_DATA_ALGO_WINOGRAD:
+	a = "winograd (4)";
+	break;
+#endif
+      }
+      printf("GpuDNNConvGI: algo %s\n", a);
+    }
+
     // The FFT implementation (only in V3 and onward) does not support strides,
     // 1x1 filters or inputs with a spatial dimension larger than 1024.
     // The tiled-FFT implementation (only in V4 onward) does not support
@@ -178,8 +202,8 @@ APPLY_SPECIFIC(conv_gi)(CudaNdarray *kerns, CudaNdarray *output,
       int upscale[2];
       cudnnConvolutionMode_t mode;
       cudnnDataType_t data_type;
-      err = cudnnGetConvolutionNdDescriptor_v3(desc, 2, &nd, pad, stride,
-                                               upscale, &mode, &data_type);
+      err = cudnnGetConvolutionNdDescriptor(desc, 2, &nd, pad, stride,
+                                            upscale, &mode, &data_type);
 
       if (err != CUDNN_STATUS_SUCCESS) {
         PyErr_Format(PyExc_RuntimeError,
@@ -237,7 +261,7 @@ APPLY_SPECIFIC(conv_gi)(CudaNdarray *kerns, CudaNdarray *output,
       return 1;
 
     // Perform the convolution
-    err = cudnnConvolutionBackwardData_v3(
+    err = cudnnConvolutionBackwardData(
       _handle,
       (void *)&alpha,
       APPLY_SPECIFIC(kerns), CudaNdarray_DEV_DATA(kerns),

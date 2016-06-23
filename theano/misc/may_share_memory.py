@@ -2,6 +2,7 @@
 Function to detect memory sharing for ndarray AND sparse type AND CudaNdarray.
 numpy version support only ndarray.
 """
+from __future__ import absolute_import, print_function, division
 
 import numpy
 from theano.tensor.basic import TensorType
@@ -18,7 +19,7 @@ except ImportError:
         return False
 
 from theano.sandbox import cuda
-from theano.sandbox import gpuarray
+from theano import gpuarray
 
 if cuda.cuda_available:
     from theano.sandbox.cuda.type import CudaNdarrayType

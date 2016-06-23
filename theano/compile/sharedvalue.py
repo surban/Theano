@@ -3,6 +3,8 @@ Provide a simple user friendly API to Theano-managed memory.
 
 """
 # Standard imports
+from __future__ import absolute_import, print_function, division
+
 import copy
 import logging
 
@@ -74,8 +76,6 @@ class SharedVariable(Variable):
                 raise TypeError('value and strict are ignored if you pass '
                                 'a container here')
         else:
-            if container is not None:
-                raise TypeError('Error to specify both value and container')
             self.container = Container(
                 self,
                 storage=[type.filter(value, strict=strict,

@@ -1,6 +1,8 @@
+from __future__ import absolute_import, print_function, division
 import unittest
 
 import numpy
+from six import integer_types
 
 import theano
 from theano import tensor, function
@@ -14,7 +16,7 @@ class TestKeepDims(unittest.TestCase):
     def makeKeepDims_local(self, x, y, axis):
         if axis is None:
             newaxis = list(range(x.ndim))
-        elif isinstance(axis, int):
+        elif isinstance(axis, integer_types):
             if axis < 0:
                 newaxis = [axis + x.type.ndim]
             else:
@@ -103,3 +105,29 @@ class TestKeepDims(unittest.TestCase):
                 ans1, ans2 = f(a)
                 assert numpy.allclose(ans1, ans2)
                 assert ans1.shape == ans2.shape
+
+    def test_norm(self):
+
+        x = tensor.dtensor3()
+        a = numpy.random.rand(3, 2, 4).astype(theano.config.floatX)
+        mode = theano.compile.Mode(optimizer="fast_compile", linker="py")
+
+        for axis in [0, 1, 2, [0], [1], [2], None,
+                     [0, 1], [1, 2], [0, 1, 2],
+                     [-1], [-2], [-3], [-1, -2], [-1, -2, -3], [0, -2, 2]]:
+
+            f = function([x], [x.norm(L=1, axis=axis, keepdims=True),
+                               self.makeKeepDims_local(x, x.norm(L=1, axis=axis, keepdims=False), axis)
+                               ], mode=mode)
+
+            ans1, ans2 = f(a)
+            assert numpy.allclose(ans1, ans2)
+            assert ans1.shape == ans2.shape
+
+            g = function([x], [x.norm(L=2, axis=axis, keepdims=True),
+                               self.makeKeepDims_local(x, x.norm(L=2, axis=axis, keepdims=False), axis)
+                               ], mode=mode)
+
+            ans1, ans2 = g(a)
+            assert numpy.allclose(ans1, ans2)
+            assert ans1.shape == ans2.shape
